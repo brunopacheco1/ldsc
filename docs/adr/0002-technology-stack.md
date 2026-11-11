@@ -139,8 +139,8 @@ whether the image and memory targets above still hold.
 
 ## 7. Consequences
 
-- One language and one Cargo workspace for all components, so one version
-  for all of them (mono repo).
+- One language and one Cargo workspace; each component is a module (crate)
+  of the mono repo with the same version, and can ship as its own image.
 - Contributors need Rust skills; we offset this with a CONTRIBUTING guide,
   strict lints and small modules.
 - If accepted, ADR 0003 will define the component split and ADR 0004 the

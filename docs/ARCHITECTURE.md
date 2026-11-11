@@ -21,9 +21,11 @@ judged against it.
 2. **Interoperability is tested, not assumed.** EDC and Simpl-Open are
    the reference counterparts. *Check:* an interop test per protocol flow
    runs in CI from 0.4.
-3. **Few components, one version.** One code base, one image, roles chosen
-   at start-up; a new deployable component needs an ADR. *Check:* the
-   component table above stays at four or fewer.
+3. **Few components, one version.** One mono repo and one version for all
+   components. Each component is a module of the repo and can ship as its
+   own image. A new component needs an ADR. *Check:* the component list
+   stays small and every component has a clear owner role and deployment
+   step.
 4. **Small and predictable.** No garbage-collector pauses on the request
    path, bounded memory, fast start. *Check:* the image size, memory,
    startup and p99 latency targets in ADR 0002 are measured on every
@@ -58,15 +60,21 @@ judged against it.
 
 ## Components
 
-One code base, one version, one container image. The image starts in one
-of three roles, so operators run only what they need.
+One mono repo, one version. Each component is a **module** of the mono
+repo (a crate in the Cargo workspace) and can ship as its **own image**.
 
-| # | Component | Role | Mandatory? | Protocols |
+**How the components are split is still open.** It will be evaluated and
+recorded in ADR 0003. The criteria: what each operator must run, what
+scales or fails on its own, network exposure, the number of images to
+deploy, and how EDC and Simpl-Open split the same roles. The table below is
+the **starting candidate**, not a decision.
+
+| # | Candidate component | Role | Mandatory? | Protocols |
 |---|---|---|---|---|
 | 1 | PostgreSQL | State of negotiations, transfers, credentials | Mandatory | — |
-| 2 | Identity (`ldsc identity`) | Holds the participant's DID, keys and credentials (including Gaia-X credentials from 0.7); answers presentation queries | Mandatory for each participant, unless an external DCP wallet is used | DCP (credential service) |
-| 3 | Connector (`ldsc connector`) | Control plane: catalog, contract negotiation, transfer; verifies DCP presentations. Includes the HTTP data plane, which can be switched off | Mandatory | DSP, DCP (verifier) |
-| 4 | Issuer (`ldsc issuer`) | Issues and revokes credentials (for example membership) | Optional: one per dataspace, run by the dataspace authority | DCP (issuance) |
+| 2 | Identity | Holds the participant's DID, keys and credentials (including Gaia-X credentials from 0.7); answers presentation queries | Mandatory for each participant, unless an external DCP wallet is used | DCP (credential service) |
+| 3 | Connector | Control plane: catalog, contract negotiation, transfer; verifies DCP presentations. The data plane is its own module, linked into the connector for 0.x (see below) | Mandatory | DSP, DCP (verifier) |
+| 4 | Issuer | Issues and revokes credentials (for example membership) | Optional: one per dataspace, run by the dataspace authority | DCP (issuance) |
 
 The website is a static site published by GitHub Pages; it is not deployed
 by participants.
@@ -91,8 +99,9 @@ and the start and end of a transfer (DSP). The data plane moves the bytes,
 for example by serving a file over HTTP to the consumer, with a short-lived
 token that the control plane issued.
 
-**Option A: inside the connector (proposed for 0.x).** One process, one
-image, one deployment step. No internal API to secure or version. The cost:
+**Option A: in the connector's process (decided for 0.x).** The data plane
+is its own module, but runs inside the connector's process and image: one
+deployment step. No internal API to secure or version. The cost:
 the data traffic and the protocol logic share CPU, memory and the network
 exposure; you cannot scale them apart; a bug in data handling can take down
 negotiation.

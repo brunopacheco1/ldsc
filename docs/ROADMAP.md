@@ -12,6 +12,8 @@ Each item lists its exit criteria, so "done" is checkable.
 - Timeboxed bake-off (3 days): version endpoint + catalog request + DSP TCK
   catalog tests + DCP self-issued token, with measured footprint.
 - Exit: ADR 0002 accepted by the maintainer.
+- Then ADR 0003: evaluate and decide how the system splits into
+  components (modules and images).
 
 ## 0.1 Repository foundations (no protocol code yet)
 
