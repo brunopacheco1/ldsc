@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: LDSC contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # ADR 0004: Hexagonal architecture (ports and adapters)
 
 - Status: Accepted

@@ -1,6 +1,10 @@
+# SPDX-FileCopyrightText: LDSC contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
 [workspace]
 resolver = "3"
-members = ["crates/ldsc-dsp", "crates/ldsc-dcp", "crates/ldsc"]
+members = ["crates/ldsc-dsp", "crates/ldsc-dcp", "crates/ldsc-connector"]
 
 [workspace.package]
 version = "0.0.1"

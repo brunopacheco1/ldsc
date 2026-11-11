@@ -51,8 +51,8 @@ jobs:
           LDSC_PUBLIC_URL: http://127.0.0.1:8080
           LDSC_DATASETS: CAT0101,CAT0102
         run: |
-          cargo build --locked -p ldsc
-          nohup target/debug/ldsc > ldsc.log 2>&1 &
+          cargo build --locked -p ldsc-connector
+          nohup target/debug/ldsc-connector > ldsc.log 2>&1 &
           for _ in $(seq 50); do curl -sf http://127.0.0.1:8080/health && break; sleep 0.2; done
       - name: Run TCK
         run: |

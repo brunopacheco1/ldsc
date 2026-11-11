@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: LDSC contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # ADR 0001: Record architecture decisions
 
 - Status: Accepted

@@ -3,13 +3,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-# Measures the bake-off targets of ADR 0002 for a running binary:
+# Measures the footprint targets of ADR 0002 for a running binary:
 # startup time, idle and peak memory (RSS), and latency under load.
 # Usage: scripts/measure.sh <path-to-binary>   (needs curl and oha)
 set -euo pipefail
 bin=${1:?binary}
 port=18080
-# LDSC_BIND is read by the Rust build, LDSC_HOST/LDSC_PORT by the Quarkus build.
+# LDSC_BIND is read by LDSC; LDSC_HOST/LDSC_PORT were used by the Quarkus bake-off build.
 export LDSC_BIND=127.0.0.1:$port LDSC_HOST=127.0.0.1 LDSC_PORT=$port LDSC_DATASETS=CAT0101,CAT0102 RUST_LOG=warn
 
 start=$(date +%s%N)

@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: LDSC contributors
 #
 # SPDX-License-Identifier: Apache-2.0
-"""Fail unless the DSP TCK log shows the bake-off tests (MET, CAT) passing.
+"""Fail unless the DSP TCK log shows the implemented test groups (MET, CAT) passing.
 
 The TCK prints one line per test with its display name, for example
 "CAT:01-01: Verify catalog request". A line that names a required test and

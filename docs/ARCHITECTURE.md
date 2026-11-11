@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: LDSC contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Architecture (draft)
 
 Status: **draft for review**. Language: Rust ([ADR 0002](adr/0002-technology-stack.md), accepted).

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: LDSC contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
 [package]
 name = "ldsc-dsp"
 description = "Dataspace Protocol 2025-1 message types"

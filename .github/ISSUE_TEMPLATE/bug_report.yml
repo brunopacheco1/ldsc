@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: LDSC contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Bug report
+description: Something does not work as documented or as the spec says
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: The request and response (redact secrets), the configuration, and the other connector if any (EDC, Simpl-Open, version).
+    validations:
+      required: true
+  - type: input
+    id: spec
+    attributes:
+      label: Spec section
+      description: The DSP, DCP or Gaia-X section that applies, if you know it.
+  - type: input
+    id: version
+    attributes:
+      label: LDSC version or commit
+    validations:
+      required: true

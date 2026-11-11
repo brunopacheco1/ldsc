@@ -1,0 +1,28 @@
+<!--
+SPDX-FileCopyrightText: LDSC contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Changelog
+
+All notable changes are listed here, following [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+Versions follow [Semantic Versioning](https://semver.org/); until 1.0, minor
+versions may change behaviour and configuration.
+
+## [Unreleased]
+
+### Added
+- Technology-stack spike (0.0): Rust accepted ([ADR 0002](docs/adr/0002-technology-stack.md)),
+  three images ([ADR 0003](docs/adr/0003-component-split.md)), hexagonal
+  architecture ([ADR 0004](docs/adr/0004-hexagonal-architecture.md)).
+- `ldsc-connector`: DSP 2025-1 version endpoint, catalog request and dataset
+  request; passes the DSP TCK metadata and catalog tests.
+- `ldsc-dcp`: validation of DCP 1.0 self-issued ID tokens (ES256, PS256).
+- Repository foundations: Apache-2.0 licence, REUSE compliance, code of
+  conduct (Contributor Covenant 2.1), contributing guide, governance,
+  security policy, security assurance case, releasing guide, issue forms
+  and pull request template.
+
+### Removed
+- The Java on Quarkus native bake-off slice; its results stay in ADR 0002.
