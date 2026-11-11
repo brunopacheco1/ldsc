@@ -12,7 +12,19 @@ versions may change behaviour and configuration.
 
 ## [Unreleased]
 
+### Added
+- Datasets are read from a JSON file (`LDSC_DATASETS_FILE`) of DSP 2025-1
+  `Dataset` objects, so each dataset has its own offers and distributions.
+  Definitions are checked at start (at least one offer and one
+  distribution, unique ids); a broken file stops the start.
+- Datasets keep metadata properties LDSC does not interpret (for example
+  `dct:title`) and the catalog serves them; before, they were dropped.
+
 ### Changed
+- The catalog and data service `@id`s are derived from `LDSC_PUBLIC_URL`
+  and stay the same across restarts (they were random UUIDs).
+- **Breaking:** `LDSC_DATASETS` is removed; the connector refuses to start
+  while it is set, so a catalog never goes empty silently.
 - Roadmap: 0.2 raises the OpenSSF scores: Best Practices to **passing**
   (moved from 0.1) and Scorecard fuzzing and branch protection.
 

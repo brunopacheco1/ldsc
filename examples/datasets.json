@@ -1,0 +1,61 @@
+[
+  {
+    "@id": "weather-stations",
+    "@type": "Dataset",
+    "dct:title": "Weather stations",
+    "dct:description": "Hourly readings from public weather stations.",
+    "dcat:keyword": [
+      "weather",
+      "open data"
+    ],
+    "hasPolicy": [
+      {
+        "@id": "weather-stations:offer:use",
+        "@type": "Offer",
+        "permission": [
+          {
+            "action": "use"
+          }
+        ]
+      }
+    ],
+    "distribution": [
+      {
+        "@type": "Distribution",
+        "format": "HttpData-PULL"
+      }
+    ]
+  },
+  {
+    "@id": "air-quality",
+    "@type": "Dataset",
+    "dct:title": "Air quality",
+    "dcat:keyword": [
+      "air quality"
+    ],
+    "hasPolicy": [
+      {
+        "@id": "air-quality:offer:eu-only",
+        "@type": "Offer",
+        "permission": [
+          {
+            "action": "use",
+            "constraint": [
+              {
+                "leftOperand": "spatial",
+                "operator": "eq",
+                "rightOperand": "EU"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "distribution": [
+      {
+        "@type": "Distribution",
+        "format": "HttpData-PULL"
+      }
+    ]
+  }
+]

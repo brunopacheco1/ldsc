@@ -1,0 +1,44 @@
+[
+  {
+    "@id": "CAT0101",
+    "@type": "Dataset",
+    "hasPolicy": [
+      {
+        "@id": "CAT0101:offer:use",
+        "@type": "Offer",
+        "permission": [
+          {
+            "action": "use"
+          }
+        ]
+      }
+    ],
+    "distribution": [
+      {
+        "@type": "Distribution",
+        "format": "HttpData-PULL"
+      }
+    ]
+  },
+  {
+    "@id": "CAT0102",
+    "@type": "Dataset",
+    "hasPolicy": [
+      {
+        "@id": "CAT0102:offer:use",
+        "@type": "Offer",
+        "permission": [
+          {
+            "action": "use"
+          }
+        ]
+      }
+    ],
+    "distribution": [
+      {
+        "@type": "Distribution",
+        "format": "HttpData-PULL"
+      }
+    ]
+  }
+]

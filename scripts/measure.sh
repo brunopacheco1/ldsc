@@ -10,7 +10,7 @@ set -euo pipefail
 bin=${1:?binary}
 port=18080
 # LDSC_BIND is read by LDSC; LDSC_HOST/LDSC_PORT were used by the Quarkus bake-off build.
-export LDSC_BIND=127.0.0.1:$port LDSC_HOST=127.0.0.1 LDSC_PORT=$port LDSC_DATASETS=CAT0101,CAT0102 RUST_LOG=warn
+export LDSC_BIND=127.0.0.1:$port LDSC_HOST=127.0.0.1 LDSC_PORT=$port LDSC_DATASETS_FILE=tck/datasets.json RUST_LOG=warn
 
 start=$(date +%s%N)
 "$bin" & pid=$!

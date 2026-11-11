@@ -73,12 +73,18 @@ fn assert_valid(path: &str, body: &Value) {
     assert!(errors.is_empty(), "{path}: {errors:?}\n{body:#}");
 }
 
+fn tck_datasets() -> Vec<ldsc_dsp::Dataset> {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tck/datasets.json");
+    ldsc_connector::read_datasets(std::path::Path::new(path)).unwrap()
+}
+
 fn app() -> axum::Router {
     ldsc_connector::router(&ldsc_connector::Config {
         participant_id: "did:web:provider.example".into(),
         public_url: "https://provider.example".into(),
-        datasets: vec!["CAT0101".into(), "CAT0102".into()],
+        datasets: tck_datasets(),
     })
+    .unwrap()
 }
 
 async fn call(req: Request<Body>) -> (StatusCode, Value) {
@@ -176,4 +182,115 @@ fn schema_check_is_not_vacuous() {
         "dataset": [{"@id": "d", "distribution": [{"format": "f", "accessService": "s"}]}]
     });
     assert!(!validator("catalog/catalog-schema.json").is_valid(&missing_policy));
+}
+
+#[tokio::test]
+async fn ids_are_stable_and_distributions_point_to_the_service() {
+    let msg = json!({"@context": ["https://w3id.org/dspace/2025/1/context.jsonld"], "@type": "CatalogRequestMessage"});
+    let (_, first) = call(post("/dsp/2025-1/catalog/request", &msg)).await;
+    let (_, second) = call(post("/dsp/2025-1/catalog/request", &msg)).await;
+    assert_eq!(first["@id"], "https://provider.example/dsp/2025-1/catalog");
+    assert_eq!(first["@id"], second["@id"]);
+    let service = &first["service"][0]["@id"];
+    assert_eq!(service, "https://provider.example/dsp/2025-1");
+    for d in first["dataset"].as_array().unwrap() {
+        assert_eq!(&d["distribution"][0]["accessService"], service);
+    }
+}
+
+#[tokio::test]
+async fn example_datasets_file_is_valid() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/datasets.json");
+    let datasets = ldsc_connector::read_datasets(std::path::Path::new(path)).unwrap();
+    let app = ldsc_connector::router(&ldsc_connector::Config {
+        participant_id: "did:web:provider.example".into(),
+        public_url: "https://provider.example/".into(),
+        datasets,
+    })
+    .unwrap();
+    let msg = json!({"@context": ["https://w3id.org/dspace/2025/1/context.jsonld"], "@type": "CatalogRequestMessage"});
+    let res = app
+        .oneshot(post("/dsp/2025-1/catalog/request", &msg))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&to_bytes(res.into_body(), 1 << 20).await.unwrap()).unwrap();
+    assert_valid("catalog/catalog-schema.json", &body);
+    assert_eq!(body["dataset"].as_array().unwrap().len(), 2);
+    let weather = body["dataset"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["@id"] == "weather-stations")
+        .unwrap();
+    assert_eq!(weather["dct:title"], "Weather stations");
+}
+
+#[test]
+fn broken_definitions_stop_the_start() {
+    let mut datasets = tck_datasets();
+    datasets[0].has_policy.clear();
+    let err = ldsc_connector::router(&ldsc_connector::Config {
+        participant_id: "did:web:provider.example".into(),
+        public_url: "https://provider.example".into(),
+        datasets,
+    })
+    .unwrap_err();
+    assert!(err.to_string().contains("no offer"));
+}
+
+#[test]
+fn unreadable_or_malformed_files_are_errors() {
+    let missing = ldsc_connector::read_datasets(std::path::Path::new("/nonexistent/datasets.json"));
+    assert!(matches!(
+        missing,
+        Err(ldsc_connector::ConfigError::Read(..))
+    ));
+    let dir = std::env::temp_dir().join(format!("ldsc-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let bad = dir.join("bad.json");
+    std::fs::write(&bad, r#"[{"@id": "x", "@type": "Catalog"}]"#).unwrap();
+    let parsed = ldsc_connector::read_datasets(&bad);
+    assert!(matches!(
+        parsed,
+        Err(ldsc_connector::ConfigError::Parse(..))
+    ));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn config_from_variables() {
+    use std::collections::HashMap;
+    use std::ffi::OsString;
+    let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/datasets.json");
+    let vars = |pairs: &[(&str, &str)]| {
+        let map: HashMap<String, OsString> = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), OsString::from(v)))
+            .collect();
+        move |k: &str| map.get(k).cloned()
+    };
+
+    let defaults = ldsc_connector::Config::from_vars(vars(&[])).unwrap();
+    assert_eq!(defaults.participant_id, "did:web:localhost%3A8080");
+    assert_eq!(defaults.public_url, "http://localhost:8080");
+    assert!(defaults.datasets.is_empty());
+
+    let set = ldsc_connector::Config::from_vars(vars(&[
+        ("LDSC_PARTICIPANT_ID", "did:web:p.example"),
+        ("LDSC_PUBLIC_URL", "https://p.example"),
+        ("LDSC_DATASETS_FILE", file),
+    ]))
+    .unwrap();
+    assert_eq!(set.participant_id, "did:web:p.example");
+    assert_eq!(set.datasets.len(), 2);
+
+    let removed = ldsc_connector::Config::from_vars(vars(&[("LDSC_DATASETS", "a,b")])).unwrap_err();
+    assert!(removed.to_string().contains("LDSC_DATASETS_FILE"));
+
+    let missing =
+        ldsc_connector::Config::from_vars(vars(&[("LDSC_DATASETS_FILE", "/nonexistent.json")]))
+            .unwrap_err();
+    assert!(missing.to_string().starts_with("cannot read datasets file"));
 }

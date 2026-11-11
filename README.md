@@ -35,15 +35,32 @@ The DSP endpoints follow the HTTPS bindings of
 | `GET /dsp/2025-1/catalog/datasets/{id}` | Returns one dataset |
 | `GET /health` | Returns `ok` while the process runs |
 
-Configuration (environment variables): `LDSC_PARTICIPANT_ID` (default
-`did:web:localhost%3A8080`), `LDSC_PUBLIC_URL` (default
-`http://localhost:8080`), `LDSC_DATASETS` (comma-separated dataset ids,
-default `dataset-1`).
+Configuration (environment variables):
 
-Run the image:
+| Variable | Default | Meaning |
+|---|---|---|
+| `LDSC_BIND` | `0.0.0.0:8080` | Address to listen on |
+| `LDSC_PARTICIPANT_ID` | `did:web:localhost%3A8080` | Participant id (a DID) |
+| `LDSC_PUBLIC_URL` | `http://localhost:8080` | Public base URL; the DSP endpoint is this plus `/dsp/2025-1` |
+| `LDSC_DATASETS_FILE` | none (empty catalog) | JSON file with the datasets to offer |
+
+The datasets file is a JSON array of DSP 2025-1 `Dataset` objects, as the
+catalog serves them, without `@context`. Each dataset needs at least one
+offer (`hasPolicy`) and one distribution with a `format`. Leave
+`accessService` out: the connector sets it to its own data service. A file
+that breaks these rules stops the start with an error. Other properties,
+such as `dct:title` or `dcat:keyword`, are kept and served as written (the
+DSP context defines the `dct`, `dcat` and `odrl` prefixes); LDSC does not
+validate them yet. See
+[examples/datasets.json](examples/datasets.json).
+
+Run the image with the example datasets:
 
 ```sh
-docker run --rm -p 8080:8080 ghcr.io/brunopacheco1/ldsc-connector:0.1.0
+docker run --rm -p 8080:8080 \
+  -v "$PWD/examples/datasets.json:/datasets.json:ro" \
+  -e LDSC_DATASETS_FILE=/datasets.json \
+  ghcr.io/brunopacheco1/ldsc-connector:0.1.0
 ```
 
 Licensed under [Apache-2.0](LICENSE).
