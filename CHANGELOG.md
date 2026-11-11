@@ -12,6 +12,10 @@ versions may change behaviour and configuration.
 
 ## [Unreleased]
 
+### Changed
+- Roadmap: reaching OpenSSF Best Practices **passing** moves from 0.1 to
+  0.2.
+
 ## [0.1.0] - 2026-11-12
 
 ### Added

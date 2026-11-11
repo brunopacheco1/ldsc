@@ -22,7 +22,7 @@ Each item lists its exit criteria, so "done" is checkable.
 - Then ADR 0003: evaluate and decide how the system splits into
   components (modules and images).
 
-## 0.1 Repository foundations (no protocol code yet)
+## 0.1 Repository foundations (released 2026-11-12 as v0.1.0)
 
 Mirror the set-up already proven in
 [praecepta](https://github.com/brunopacheco1/praecepta).
@@ -73,7 +73,8 @@ Website:
   deployment order, live badges.
 
 OpenSSF:
-- Register at bestpractices.dev; reach **passing**.
+- Register at bestpractices.dev (done: project 16578). Reaching
+  **passing** moved to 0.2.
 - OpenSSF Baseline **level 1** (version 2026-08-28) self-assessment recorded
   in `docs/SECURITY-ASSURANCE.md`. Level 1 is the target for all of 0.x.
 
@@ -87,7 +88,11 @@ all checks green, Scorecard published.
   datasets defined in a config file.
 - DSP message validation against the DSP 2025-1 JSON schemas.
 - DSP TCK in CI (catalog tests must pass).
-- Exit: DSP TCK catalog tests green.
+- OpenSSF Best Practices: raise the score to 100% **passing**. Answer the
+  open criteria with evidence (interface docs, release notes, test
+  coverage, bug and enhancement responses, secure design knowledge).
+  Carried over from 0.1 (decided 2026-11-12).
+- Exit: DSP TCK catalog tests green; Best Practices badge at **passing**.
 
 ## 0.3 Contract negotiation
 
