@@ -68,7 +68,7 @@ One mono repo, one version. Each component is a **module** of the mono
 repo (a crate in the Cargo workspace) and can ship as its **own image**.
 
 **How the components are split is still open.** It will be evaluated and
-recorded in ADR 0003. The criteria: what each operator must run, what
+recorded in [ADR 0003](adr/0003-component-split.md) (proposed: three images, `ldsc-connector`, `ldsc-identity`, `ldsc-issuer`). The criteria: what each operator must run, what
 scales or fails on its own, network exposure, the number of images to
 deploy, and how EDC and Simpl-Open split the same roles. The table below is
 the **starting candidate**, not a decision.
