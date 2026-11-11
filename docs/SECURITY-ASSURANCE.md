@@ -52,7 +52,7 @@ dataspace participants over HTTPS.
 | Participant identity | Forged or replayed self-issued tokens | Algorithm allow-list, key relationship check, audience check, expiry with bounded leeway, `jti` replay cache |
 | Private keys | Keys leak from the internet-facing connector | Keys live only in `ldsc-identity` and `ldsc-issuer`, not in the connector (ADR 0003) |
 | Service availability | Crafted or oversized messages crash or exhaust a service | Typed parsing with no `unsafe`; request size limits *(planned, 0.8)*; fuzzing of parsers *(planned, 0.9)* |
-| Users' supply chain | A tampered release or dependency | Pinned CI actions; signed commits; Dependabot, dependency review, OSV and licence checks *(planned, 0.1)*; signed images with provenance *(planned, 0.1)* |
+| Users' supply chain | A tampered release or dependency | Pinned CI actions; signed commits; Dependabot, dependency review, OSV, cargo-deny (RustSec advisories, licence allowlist, crate sources) and ORT; signed images with provenance *(planned, 0.1)* |
 
 ## Trust boundaries
 
@@ -85,16 +85,16 @@ dataspace participants over HTTPS.
 | CWE-347, improper verification of a signature | `ring` only; algorithm allow-list; `alg: none` rejected |
 | CWE-294, replay | `jti` cache with expiry |
 | CWE-787 / CWE-416, memory safety | Rust with `unsafe` forbidden |
-| CWE-1104, unmaintained components | Few dependencies; Dependabot and OSV *(planned, 0.1)* |
+| CWE-1104, unmaintained components | Few dependencies; Dependabot, OSV, and cargo-deny failing on unmaintained or yanked crates |
 
 ## Evidence
 
 - **Tests:** unit tests per crate; DSP JSON Schema tests; the DSP TCK
   (metadata and catalog groups) in CI.
 - **Static analysis:** Clippy pedantic with warnings as errors; CodeQL and
-  SonarCloud *(planned, 0.1)*.
+  SonarQube Cloud quality gate on every pull request.
 - **Supply chain:** pinned workflow actions, least-privilege workflow
-  tokens, REUSE compliance; OpenSSF Scorecard *(planned, 0.1)*.
+  tokens, REUSE compliance; OpenSSF Scorecard.
 
 ## OpenSSF Baseline
 

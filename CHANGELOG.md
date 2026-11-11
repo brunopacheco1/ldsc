@@ -24,5 +24,9 @@ versions may change behaviour and configuration.
   security policy, security assurance case, releasing guide, issue forms
   and pull request template.
 
+- Supply-chain checks: Dependabot (Cargo, GitHub Actions), CodeQL (Rust,
+  Actions), OpenSSF Scorecard, dependency review, OSV-Scanner, cargo-deny
+  (`deny.toml`), ORT, and SonarQube Cloud with coverage.
+
 ### Removed
 - The Java on Quarkus native bake-off slice; its results stay in ADR 0002.

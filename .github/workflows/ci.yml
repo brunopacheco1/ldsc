@@ -61,3 +61,37 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: fsfe/reuse-action@676e2d560c9a403aa252096d99fcab3e1132b0f5 # v6.0.0
+
+  sonar:
+    name: SonarQube Cloud
+    runs-on: ubuntu-24.04
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # full history for blame data
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal -c clippy,llvm-tools-preview
+          rustup default "$RUST_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-llvm-cov
+      - name: Coverage (LCOV) and Clippy report (JSON)
+        run: |
+          cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
+          cargo clippy --workspace --all-targets --locked --message-format=json > clippy-report.json
+      # Mandatory once SONAR_TOKEN is set: the scan waits for the quality gate and fails this job
+      # if the gate fails. GitHub gives no secrets to pull requests from forks, so those are skipped.
+      - name: Scan and wait for the quality gate
+        if: ${{ env.SONAR_TOKEN != '' }}
+        uses: SonarSource/sonarqube-scan-action@e805d875275f728fac1885b413934be6d7c63f65 # v8.4.1
+        with:
+          args: >
+            -Dsonar.qualitygate.wait=true
+            -Dsonar.qualitygate.timeout=600
+      - name: SonarQube Cloud skipped (no token)
+        if: ${{ env.SONAR_TOKEN == '' }}
+        run: echo "::warning title=SonarQube Cloud not run::SONAR_TOKEN is not set (not configured yet, or a pull request from a fork)."

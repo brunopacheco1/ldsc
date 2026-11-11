@@ -1,0 +1,62 @@
+# SPDX-FileCopyrightText: LDSC contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Dependencies
+# GitHub reads Cargo.lock itself, so its dependency graph already holds the full
+# (transitive) tree; no submission job is needed, unlike Maven projects.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '23 5 * * 1' # new advisories appear without code changes
+
+# a newer push to the same pull request replaces the run in progress; pushes to main always finish
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    name: Dependency review
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: write # summary comment on failure
+    steps:
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          # block pull requests that add a vulnerable runtime dependency
+          fail-on-severity: moderate
+          fail-on-scopes: runtime
+          # licences are checked by cargo-deny below, against deny.toml
+          license-check: false
+          show-patched-versions: true
+          comment-summary-in-pr: on-failure
+
+  deny:
+    name: Licences, advisories and sources (cargo-deny)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check licenses bans sources advisories
+
+  vulnerabilities:
+    name: Known vulnerabilities (OSV)
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@32d3cd482bdadfb38b186c0ad1b031902d55d932 # v2.7.1
+    with:
+      scan-args: |-
+        -L Cargo.lock
+      # advisory: findings go to Security > Code scanning; cargo-deny blocks on RustSec advisories
+      fail-on-vuln: false
