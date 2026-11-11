@@ -138,8 +138,14 @@ all checks green, Scorecard published.
   membership credential; status list for revocation.
 - ODRL constraints that check credentials (for example "member of the
   dataspace").
+- Schema and vocabulary registry ([ADR 0005](adr/0005-schema-and-vocabulary-registry.md)):
+  the authority builds and signs a bundle of SHACL shapes and SKOS
+  vocabularies (for example HealthDCAT-AP); the connector fetches and
+  verifies it and checks its datasets before publishing. Starts with a
+  spike on the SHACL engine.
 - Exit: DCP TCK issuance tests green; a revoked credential blocks a
-  negotiation.
+  negotiation; a dataset that breaks the authority's shapes is not
+  published.
 
 ## 0.7 Gaia-X Trust Framework (Danube)
 
