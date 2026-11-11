@@ -19,6 +19,8 @@ versions may change behaviour and configuration.
   distribution, unique ids); a broken file stops the start.
 - Datasets keep metadata properties LDSC does not interpret (for example
   `dct:title`) and the catalog serves them; before, they were dropped.
+- [ADR 0005](docs/adr/0005-schema-and-vocabulary-registry.md) (proposed): schema and vocabulary registry run by the
+  dataspace authority, built in 0.6.
 
 ### Changed
 - The catalog and data service `@id`s are derived from `LDSC_PUBLIC_URL`
