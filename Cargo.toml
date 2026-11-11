@@ -15,7 +15,7 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 axum = "0.8"
-base64 = "0.22"
+base64 = "0.23"
 jsonschema = { version = "0.61", default-features = false }
 ring = "0.17"
 serde = { version = "1", features = ["derive"] }
