@@ -137,7 +137,37 @@ Risks of the Java fallback, to measure if we use it: native build time and
 memory in CI, reflection configuration for JSON and crypto libraries, and
 whether the image and memory targets above still hold.
 
-## 7. Consequences
+## 7. Bake-off results (2026-11-11)
+
+Run in a 4-core, 16 GB Linux container, Rust 1.97.0. Code: `crates/`,
+script: `scripts/measure.sh`.
+
+| Check | Target | Result |
+|---|---|---|
+| DSP TCK metadata and catalog (official image `eclipsedataspacetck/dsp-tck-runtime@sha256:45fff326…`, built from dsp-tck commit `dc06633`) | pass | **4 of 4 pass** (MET:01-01, CAT:01-01, CAT:01-02, CAT:01-03). The other 61 tests (negotiation, transfer) fail with 404, as expected: not built yet (0.3, 0.4). |
+| Responses against the official DSP 2025-1 JSON Schemas | valid | valid (`crates/ldsc/tests/dsp_catalog.rs`) |
+| DCP self-issued ID token, ES256, validation steps of DCP 1.0.1 | works | works, including replay, wrong `aud`, expiry, tampering, missing `capabilityInvocation`, `alg: none` |
+| Gaia-X style VC-JWT, PS256 (RSA-PSS) | works | works with `ring`; the `rsa` crate (RUSTSEC-2023-0071) is not needed |
+| Image size | < 30 MB | **3.0 MB** (static musl binary 2.0 MB on `scratch`, non-root) |
+| Idle memory | < 30 MB | **1.9 MB RSS** (1.3 MiB in Docker) |
+| Peak memory, 50 concurrent clients for 20 s | — | 3.1 MB RSS |
+| Startup to first healthy response | < 1 s | **14 ms** |
+| Catalog request latency, 50 concurrent clients | — | p50 1.5 ms, p99 3.4 ms, p99.9 6.0 ms; 31,500 req/s; 0 errors |
+| Clean release build (dependencies downloaded) | < 10 min in CI | 27 s locally |
+| fmt, clippy pedantic as errors, tests | pass | pass (15 tests) |
+
+Limits of this result:
+- The measured binary contains the catalog slice only; the DCP crate is
+  tested but not yet linked into it. Size and memory will grow with
+  PostgreSQL, TLS and DCP; the targets leave a wide margin.
+- Latency was measured over plain HTTP on localhost, without TLS or a
+  database.
+- The CI run of the same checks is pending (GitHub Actions minutes were
+  exhausted on 2026-11-11); this run was done locally.
+
+No kill criterion was hit. **Recommendation: accept Rust.**
+
+## 8. Consequences
 
 - One language and one Cargo workspace; each component is a module (crate)
   of the mono repo with the same version, and can ship as its own image.
