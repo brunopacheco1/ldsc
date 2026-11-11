@@ -32,6 +32,8 @@ versions may change behaviour and configuration.
   and a GitHub release with binaries and third-party notices.
 - OCI image labels (`org.opencontainers.image.*`) in the `Dockerfile`, and
   the same annotations on the multi-arch image index.
+- Project website in `site/`, published on GitHub Pages; check values are
+  read at build time, so the page loads nothing from other sites.
 
 ### Security
 - `base64` is built without its default `simd-unsafe` feature, and

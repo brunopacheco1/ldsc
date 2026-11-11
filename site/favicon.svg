@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- SPDX-FileCopyrightText: LDSC contributors -->
+  <!-- SPDX-License-Identifier: Apache-2.0 -->
+  <rect width="32" height="32" rx="7" fill="#0f5c8c"/>
+  <circle cx="10" cy="11" r="3.5" fill="#fff"/>
+  <circle cx="22" cy="11" r="3.5" fill="#fff"/>
+  <circle cx="16" cy="22" r="3.5" fill="#fff"/>
+  <path d="M10 11 L22 11 L16 22 Z" fill="none" stroke="#fff" stroke-width="1.6"/>
+</svg>

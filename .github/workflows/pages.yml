@@ -1,0 +1,105 @@
+# SPDX-FileCopyrightText: LDSC contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: Website
+# Publishes the project page (site/) on GitHub Pages. Runs when the page changes, after every
+# successful release, weekly (so the check values stay current) and on demand. The values are read
+# here, at build time, so visitors' browsers never contact third-party services.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - '.github/workflows/pages.yml'
+  pull_request:
+    paths:
+      - 'site/**'
+      - '.github/workflows/pages.yml'
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build the site
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the release tags
+      - name: Read the latest release and the check values
+        # a lookup that fails or is unknown shows "not available", never a guess
+        run: |
+          tag=$(git tag --list 'v*' --sort=-version:refname | head -n 1)
+          status="${tag:+latest release ${tag}}"
+          status="${status:-no release yet}"
+          scorecard="not available"
+          if card=$(curl -fsS --max-time 20 https://api.scorecard.dev/projects/github.com/brunopacheco1/ldsc); then
+            score=$(jq -r '.score // empty' <<< "$card")
+            [[ "$score" =~ ^[0-9]+(\.[0-9]+)?$ ]] && scorecard="${score} / 10"
+          fi
+          gate="not available"
+          if result=$(curl -fsS --max-time 20 "https://sonarcloud.io/api/qualitygates/project_status?projectKey=brunopacheco1_ldsc"); then
+            case "$(jq -r '.projectStatus.status // empty' <<< "$result")" in
+              OK) gate=passed ;;
+              ERROR) gate=failing ;;
+              *) ;;
+            esac
+          fi
+          reuse="not available"
+          if lint=$(curl -fsS --max-time 20 https://api.reuse.software/status/github.com/brunopacheco1/ldsc); then
+            case "$(jq -r '.status // empty' <<< "$lint")" in
+              compliant) reuse=compliant ;;
+              non-compliant) reuse=failing ;;
+              *) ;;
+            esac
+          fi
+          built=$(date -u +%Y-%m-%d)
+          # only plain characters reach the page
+          clean() { tr -cd 'A-Za-z0-9 ./_-' <<< "$1"; }
+          {
+            echo "STATUS=$(clean "$status")"
+            echo "SCORECARD=$(clean "$scorecard")"
+            echo "GATE=$(clean "$gate")"
+            echo "REUSE=$(clean "$reuse")"
+            echo "BUILT=$(clean "$built")"
+          } >> "$GITHUB_ENV"
+      - name: Assemble the site
+        run: |
+          mkdir -p _site
+          cp -R site/. _site/
+          sed -i -e "s|@STATUS@|${STATUS}|g" -e "s|@SCORECARD@|${SCORECARD}|g" -e "s|@GATE@|${GATE}|g" \
+            -e "s|@REUSE@|${REUSE}|g" -e "s|@BUILT@|${BUILT}|g" _site/index.html
+          if grep -n '@[A-Z]*@' _site/index.html; then
+            echo "::error::unfilled placeholder in index.html"; exit 1
+          fi
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: _site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write # publish the site
+      id-token: write # prove the deployment comes from this workflow
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
