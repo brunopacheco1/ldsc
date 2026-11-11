@@ -7,6 +7,7 @@
 //! the domain crates (`ldsc-dsp`, `ldsc-dcp`), see ADR 0004.
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::path::Path as FsPath;
 use std::sync::Arc;
 
@@ -72,22 +73,33 @@ impl Config {
     ///
     /// # Errors
     ///
+    /// See [`Config::from_vars`].
+    pub fn from_env() -> Result<Self, ConfigError> {
+        Self::from_vars(|k| std::env::var_os(k))
+    }
+
+    /// Like [`Config::from_env`], with the variables looked up by `var`.
+    ///
+    /// # Errors
+    ///
     /// The datasets file cannot be read or parsed, or the removed
     /// `LDSC_DATASETS` variable is set.
-    pub fn from_env() -> Result<Self, ConfigError> {
-        let var = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_owned());
-        if std::env::var_os("LDSC_DATASETS").is_some() {
+    pub fn from_vars(var: impl Fn(&str) -> Option<OsString>) -> Result<Self, ConfigError> {
+        let text = |k: &str, d: &str| {
+            var(k).map_or_else(|| d.to_owned(), |v| v.to_string_lossy().into_owned())
+        };
+        if var("LDSC_DATASETS").is_some() {
             return Err(ConfigError::Removed(
                 "LDSC_DATASETS was removed in 0.2; define datasets in a JSON file and set LDSC_DATASETS_FILE",
             ));
         }
-        let datasets = match std::env::var_os("LDSC_DATASETS_FILE") {
+        let datasets = match var("LDSC_DATASETS_FILE") {
             Some(path) => read_datasets(FsPath::new(&path))?,
             None => Vec::new(),
         };
         Ok(Self {
-            participant_id: var("LDSC_PARTICIPANT_ID", "did:web:localhost%3A8080"),
-            public_url: var("LDSC_PUBLIC_URL", "http://localhost:8080"),
+            participant_id: text("LDSC_PARTICIPANT_ID", "did:web:localhost%3A8080"),
+            public_url: text("LDSC_PUBLIC_URL", "http://localhost:8080"),
             datasets,
         })
     }

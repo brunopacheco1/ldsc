@@ -251,3 +251,39 @@ fn unreadable_or_malformed_files_are_errors() {
     ));
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn config_from_variables() {
+    use std::collections::HashMap;
+    use std::ffi::OsString;
+    let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/datasets.json");
+    let vars = |pairs: &[(&str, &str)]| {
+        let map: HashMap<String, OsString> = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), OsString::from(v)))
+            .collect();
+        move |k: &str| map.get(k).cloned()
+    };
+
+    let defaults = ldsc_connector::Config::from_vars(vars(&[])).unwrap();
+    assert_eq!(defaults.participant_id, "did:web:localhost%3A8080");
+    assert_eq!(defaults.public_url, "http://localhost:8080");
+    assert!(defaults.datasets.is_empty());
+
+    let set = ldsc_connector::Config::from_vars(vars(&[
+        ("LDSC_PARTICIPANT_ID", "did:web:p.example"),
+        ("LDSC_PUBLIC_URL", "https://p.example"),
+        ("LDSC_DATASETS_FILE", file),
+    ]))
+    .unwrap();
+    assert_eq!(set.participant_id, "did:web:p.example");
+    assert_eq!(set.datasets.len(), 2);
+
+    let removed = ldsc_connector::Config::from_vars(vars(&[("LDSC_DATASETS", "a,b")])).unwrap_err();
+    assert!(removed.to_string().contains("LDSC_DATASETS_FILE"));
+
+    let missing =
+        ldsc_connector::Config::from_vars(vars(&[("LDSC_DATASETS_FILE", "/nonexistent.json")]))
+            .unwrap_err();
+    assert!(missing.to_string().starts_with("cannot read datasets file"));
+}

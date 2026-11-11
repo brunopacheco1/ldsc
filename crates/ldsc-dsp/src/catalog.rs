@@ -245,7 +245,9 @@ mod tests {
             ),
         ];
         for (input, want) in cases {
-            assert_eq!(prepare_datasets(input, "svc").unwrap_err(), want);
+            let got = prepare_datasets(input, "svc").unwrap_err();
+            assert!(got.to_string().contains("dataset"), "{got}");
+            assert_eq!(got, want);
         }
     }
 
