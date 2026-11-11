@@ -162,8 +162,8 @@ Limits of this result:
   PostgreSQL, TLS and DCP; the targets leave a wide margin.
 - Latency was measured over plain HTTP on localhost, without TLS or a
   database.
-- The CI run of the same checks is pending (GitHub Actions minutes were
-  exhausted on 2026-11-11); this run was done locally.
+- The same checks also passed in GitHub Actions on 2026-11-11 (workflows
+  `CI` and `DSP TCK`, runs 43100510277 and 43100510287).
 
 No kill criterion was hit. **Recommendation: accept Rust.**
 
