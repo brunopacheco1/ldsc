@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: LDSC contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: ORT
+on:
+  push:
+    branches: [main]
+  pull_request:
+    # the scan is about dependencies and licences, so only manifests and ORT's own config matter
+    paths:
+      - '**/Cargo.toml'
+      - 'Cargo.lock'
+      - '.ort.yml'
+      - '.github/workflows/ort.yml'
+
+# a newer push to the same pull request replaces the run in progress; pushes to main always finish
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  ort:
+    name: OSS Review Toolkit
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run GitHub Action for ORT
+        uses: oss-review-toolkit/ort-ci-github-action@086d928d24ef1653dc0777296b312fda5faaaf52 # v1.2.0
+        with:
+          # the evaluator applies ORT's policy rules (copyleft and unclassified licences ...);
+          # excludes in .ort.yml keep it to what is shipped
+          fail-on: 'violations'
+          # PlainTextTemplate is the attribution (NOTICE) report
+          report-formats: 'CycloneDx,SpdxDocument,WebApp,PlainTextTemplate'
+          run: >
+            cache-dependencies,
+            labels,
+            analyzer,
+            evaluator,
+            reporter,
+            upload-results

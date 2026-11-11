@@ -58,7 +58,8 @@ CI (every action pinned to a commit SHA, `permissions: contents: read` by defaul
 - build and test; style check and linter as errors; coverage to Sonar.
 - `reuse lint`; CodeQL; OpenSSF Scorecard (published, README badge).
 - Dependency review on pull requests (fail on moderate or worse);
-  OSV-Scanner on the SBOM; licence allowlist check on the SBOM; ORT.
+  OSV-Scanner on `Cargo.lock`; licence allowlist, RustSec advisories and
+  crate sources with cargo-deny (`deny.toml`); ORT.
 - Container image: built on every PR, scanned, not pushed.
 
 Release (on signed tag):

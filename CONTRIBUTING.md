@@ -30,6 +30,7 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 reuse lint
+cargo deny check   # licences, advisories, crate sources (deny.toml)
 ```
 
 The DSP conformance tests (TCK) run in the `DSP TCK` workflow; see
@@ -54,8 +55,9 @@ The build enforces the style, so a pull request that breaks it fails:
    cites the spec section it implements.
 3. New files need an SPDX header (copy an existing one), or are listed in
    `REUSE.toml`. CI runs [`reuse lint`](https://reuse.software).
-4. New dependencies must have a licence compatible with Apache-2.0; say in
-   the pull request why the dependency is needed.
+4. New dependencies must have a licence on the allowlist in `deny.toml`
+   (compatible with Apache-2.0); say in the pull request why the
+   dependency is needed.
 5. Describe what changed and why, and add a line to `CHANGELOG.md` under
    *Unreleased*.
 6. Commits must be signed, and `main` only changes through pull requests
