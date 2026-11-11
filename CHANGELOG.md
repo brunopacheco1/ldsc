@@ -30,6 +30,12 @@ versions may change behaviour and configuration.
 - Release pipeline on signed `v*` tags: multi-arch (amd64, arm64) images
   on GHCR, signed with cosign, with SBOM and build provenance attestations,
   and a GitHub release with binaries and third-party notices.
+- OCI image labels (`org.opencontainers.image.*`) in the `Dockerfile`, and
+  the same annotations on the multi-arch image index.
+
+### Security
+- `base64` is built without its default `simd-unsafe` feature, and
+  `deny.toml` bans that feature.
 
 ### Removed
 - The Java on Quarkus native bake-off slice; its results stay in ADR 0002.

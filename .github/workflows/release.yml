@@ -140,6 +140,9 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: false
+          build-args: |
+            VERSION=${{ env.VERSION }}
+            REVISION=${{ github.sha }}
 
   publish:
     name: Publish images and release
@@ -191,6 +194,9 @@ jobs:
       - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
       # One image today. When ldsc-identity and ldsc-issuer exist, these steps become a matrix
       # over COMPONENTS, each with its own Dockerfile.
+      - name: Image creation time (the tagged commit's time, so rebuilds match)
+        id: created
+        run: echo "time=$(git log -1 --format=%cI)" >> "$GITHUB_OUTPUT"
       - name: Build and push ldsc-connector (amd64, arm64)
         id: image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -200,12 +206,20 @@ jobs:
           push: true
           provenance: false # provenance is attested below, signed by GitHub
           tags: ghcr.io/${{ github.repository_owner }}/ldsc-connector:${{ env.VERSION }}
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.version=${{ env.VERSION }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.licenses=Apache-2.0
-            org.opencontainers.image.title=ldsc-connector
+          # the OCI labels live in the Dockerfile; these fill in the per-release values
+          build-args: |
+            VERSION=${{ env.VERSION }}
+            REVISION=${{ github.sha }}
+            CREATED=${{ steps.created.outputs.time }}
+          # the same keys on the multi-arch index, which registries such as GHCR display
+          annotations: |
+            index:org.opencontainers.image.title=ldsc-connector
+            index:org.opencontainers.image.description=LDSC connector for the Dataspace Protocol (DSP 2025-1)
+            index:org.opencontainers.image.licenses=Apache-2.0
+            index:org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            index:org.opencontainers.image.version=${{ env.VERSION }}
+            index:org.opencontainers.image.revision=${{ github.sha }}
+            index:org.opencontainers.image.created=${{ steps.created.outputs.time }}
       - name: Sign the image (cosign, keyless)
         env:
           IMAGE: ghcr.io/${{ github.repository_owner }}/ldsc-connector@${{ steps.image.outputs.digest }}
