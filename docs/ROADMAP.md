@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: LDSC contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # Roadmap (draft)
 
 Status: **draft for review**. Releases are small and frequent. Each 0.x

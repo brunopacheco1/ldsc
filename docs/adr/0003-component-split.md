@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: LDSC contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
 
 # ADR 0003: Component split (modules and images)
 

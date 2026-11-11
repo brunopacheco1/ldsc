@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: LDSC contributors
+
+SPDX-License-Identifier: Apache-2.0
+-->
+
 # ADR 0002: Technology stack (spike)
 
 - Status: **Accepted** (2026-11-11). The maintainer first chose "Rust, after a
