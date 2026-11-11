@@ -1,0 +1,69 @@
+# SPDX-FileCopyrightText: LDSC contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Runs the Eclipse DSP TCK (built from source at a pinned tag) against LDSC.
+# Bake-off scope: metadata (MET) and catalog (CAT) tests must pass.
+# Negotiation and transfer tests are expected to fail until 0.3 and 0.4.
+name: DSP TCK
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RUST_TOOLCHAIN: "1.97.0"
+  DSP_TCK_REF: v1.0.2
+  DSP_TCK_COMMIT: ee22d21a2dae9ea387695fd96fc3cab405809a05
+
+jobs:
+  tck:
+    name: DSP TCK (metadata, catalog)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: eclipse-dataspacetck/dsp-tck
+          ref: ${{ env.DSP_TCK_COMMIT }}
+          path: dsp-tck
+          persist-credentials: false
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build TCK
+        working-directory: dsp-tck
+        run: ./gradlew -q shadowJar
+      - name: Start LDSC
+        env:
+          LDSC_BIND: 127.0.0.1:8080
+          LDSC_PARTICIPANT_ID: did:web:localhost%3A8080
+          LDSC_PUBLIC_URL: http://127.0.0.1:8080
+          LDSC_DATASETS: CAT0101,CAT0102
+        run: |
+          cargo build --locked -p ldsc
+          nohup target/debug/ldsc > ldsc.log 2>&1 &
+          for _ in $(seq 50); do curl -sf http://127.0.0.1:8080/health && break; sleep 0.2; done
+      - name: Run TCK
+        run: |
+          java -jar dsp-tck/dsp/dsp-tck/build/libs/dsp-tck-runtime.jar -config tck/dsp-tck.properties | tee tck.log
+      - name: Check metadata and catalog results
+        run: python3 scripts/tck_check.py tck.log
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dsp-tck-log
+          path: |
+            tck.log
+            ldsc.log
+          retention-days: 14

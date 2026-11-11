@@ -1,0 +1,95 @@
+# SPDX-FileCopyrightText: LDSC contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Technology-stack bake-off (ADR 0002): builds the same slice in Rust and in
+# Java on Quarkus native, runs the DSP TCK (metadata, catalog) against each,
+# and measures both with scripts/measure.sh on the same runner.
+name: Bake-off
+on:
+  pull_request:
+    paths:
+      - 'bakeoff/**'
+      - 'crates/**'
+      - 'scripts/measure.sh'
+      - '.github/workflows/bakeoff.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RUST_TOOLCHAIN: "1.97.0"
+  TCK_IMAGE: eclipsedataspacetck/dsp-tck-runtime@sha256:45fff32610750c20310c142289ceb8866c014be127f3ce76511c1cb9594fb145
+
+jobs:
+  bakeoff:
+    name: Rust vs Quarkus native
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust and oha
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal -t x86_64-unknown-linux-musl
+          rustup default "$RUST_TOOLCHAIN"
+          sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Install oha
+        run: cargo install oha --locked --version 1.16.0
+      - uses: graalvm/setup-graalvm@f70bc8032f90a104502824a54bcb94b6f01715bc # v1.6.8
+        with:
+          distribution: mandrel
+          java-version: "25"
+          cache: maven
+      - name: Build Rust (release, static musl)
+        run: |
+          start=$(date +%s)
+          cargo build --release --locked --target x86_64-unknown-linux-musl -p ldsc
+          echo "rust_release_build_s=$(( $(date +%s) - start ))" | tee -a results.txt
+          docker build -q -t ldsc-rust .
+          docker image inspect ldsc-rust --format 'rust_image_bytes={{.Size}}' | tee -a results.txt
+      - name: Build Quarkus (tests, then native)
+        working-directory: bakeoff/quarkus
+        run: |
+          mvn -B -ntp verify
+          start=$(date +%s)
+          mvn -B -ntp package -Pnative -DskipTests
+          echo "quarkus_native_build_s=$(( $(date +%s) - start ))" | tee -a ../../results.txt
+          ls -la target/*-runner
+          printf 'FROM scratch\n' > /dev/null
+          cat > Dockerfile.native <<'DOCKER'
+          FROM registry.access.redhat.com/ubi9/ubi-micro:latest
+          COPY target/ldsc-quarkus-0.0.1-SNAPSHOT-runner /ldsc
+          USER 1001
+          ENTRYPOINT ["/ldsc"]
+          DOCKER
+          docker build -q -f Dockerfile.native -t ldsc-quarkus . || echo "image build failed (base image not reachable)"
+          docker image inspect ldsc-quarkus --format 'quarkus_image_bytes={{.Size}}' | tee -a ../../results.txt || true
+      - name: Measure Rust
+        run: scripts/measure.sh target/x86_64-unknown-linux-musl/release/ldsc | sed 's/^/rust_/' | tee -a results.txt
+      - name: Measure Quarkus native
+        run: scripts/measure.sh bakeoff/quarkus/target/ldsc-quarkus-0.0.1-SNAPSHOT-runner | sed 's/^/quarkus_/' | tee -a results.txt
+      - name: DSP TCK against each
+        run: |
+          docker pull -q "$TCK_IMAGE"
+          for impl in rust quarkus; do
+            if [ "$impl" = rust ]; then bin=target/x86_64-unknown-linux-musl/release/ldsc; else bin=bakeoff/quarkus/target/ldsc-quarkus-0.0.1-SNAPSHOT-runner; fi
+            LDSC_BIND=127.0.0.1:8080 LDSC_HOST=127.0.0.1 LDSC_PORT=8080 LDSC_DATASETS=CAT0101,CAT0102 \
+              LDSC_PARTICIPANT_ID='did:web:localhost%3A8080' LDSC_PUBLIC_URL=http://127.0.0.1:8080 "$bin" & pid=$!
+            for _ in $(seq 50); do curl -sf http://127.0.0.1:8080/health >/dev/null && break; sleep 0.2; done
+            docker run --rm --network host --mount type=bind,source="$PWD/tck/dsp-tck.properties",target=/etc/tck/config.properties,readonly "$TCK_IMAGE" > "tck-$impl.log" 2>&1 || true
+            kill $pid
+            echo "== $impl" | tee -a results.txt
+            python3 scripts/tck_check.py "tck-$impl.log" | tee -a results.txt
+          done
+      - name: Summary
+        if: always()
+        run: cat results.txt >> "$GITHUB_STEP_SUMMARY"; cat results.txt
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bakeoff-results
+          path: |
+            results.txt
+            tck-*.log
+          retention-days: 30
