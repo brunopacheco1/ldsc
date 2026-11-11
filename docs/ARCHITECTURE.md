@@ -8,6 +8,54 @@ A small connector for the Luxembourg data space that speaks the Dataspace
 Protocol (DSP 2025-1) and the Decentralized Claims Protocol (DCP 1.0), with
 few components and a simple deployment order.
 
+## Architecture principles
+
+Each principle has a short reason and a check, so a pull request can be
+judged against it.
+
+1. **Standards first.** Implement DSP, DCP, Data Plane Signaling and the
+   Gaia-X Trust Framework as published; no private protocol extensions.
+   Where a spec is silent, follow Eclipse EDC's behaviour and record it in
+   an ADR. *Check:* every external endpoint cites its spec section; the
+   DSP and DCP TCKs run in CI.
+2. **Interoperability is tested, not assumed.** EDC and Simpl-Open are
+   the reference counterparts. *Check:* an interop test per protocol flow
+   runs in CI from 0.4.
+3. **Few components, one version.** One code base, one image, roles chosen
+   at start-up; a new deployable component needs an ADR. *Check:* the
+   component table above stays at four or fewer.
+4. **Small and predictable.** No garbage-collector pauses on the request
+   path, bounded memory, fast start. *Check:* the image size, memory,
+   startup and p99 latency targets in ADR 0002 are measured on every
+   release.
+5. **Strong types at every boundary.** Each message type is its own type;
+   invalid messages fail at parsing, not deep in the logic. Protocol state
+   machines use exhaustive enums. *Check:* no untyped JSON outside the
+   parsing layer.
+6. **Plain JSON, schema-checked.** Messages are processed as plain JSON
+   in compacted form, as both specs allow, and checked against the official
+   JSON Schemas. No JSON-LD processor on the request path. *Check:* schema
+   tests for every message type.
+7. **Secure by default.** Deny by default, least privilege, no secrets in
+   config files or images, an allow-list of signature algorithms (`ES256`,
+   `PS256`), non-root and read-only containers. *Check:* OpenSSF Baseline
+   level 1 and Scorecard in CI.
+8. **Stateless processes, state in PostgreSQL.** Any instance can serve
+   any request; restarts lose nothing. *Check:* tests restart the
+   connector in the middle of a negotiation.
+9. **Seams where specs are still moving.** Code that depends on a draft
+   spec (Data Plane Signaling) sits behind an interface shaped like that
+   spec, so it can be split out or updated without touching protocol code.
+10. **Configuration through the environment.** Twelve-factor style; one
+    optional file; sensible defaults for local use only. *Check:* the
+    Docker Compose demo needs no file edits.
+11. **Observable.** Structured JSON logs, metrics and traces
+    (OpenTelemetry), health and readiness endpoints. *Check:* every
+    protocol state change is logged with its process id.
+12. **Simple over clever.** Prefer the standard library and a few
+    well-maintained dependencies; each new dependency is justified in its
+    pull request and passes the licence allow-list.
+
 ## Components
 
 One code base, one version, one container image. The image starts in one
