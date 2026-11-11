@@ -9,7 +9,8 @@
 set -euo pipefail
 bin=${1:?binary}
 port=18080
-export LDSC_BIND=127.0.0.1:$port LDSC_DATASETS=CAT0101,CAT0102 RUST_LOG=warn
+# LDSC_BIND is read by the Rust build, LDSC_HOST/LDSC_PORT by the Quarkus build.
+export LDSC_BIND=127.0.0.1:$port LDSC_HOST=127.0.0.1 LDSC_PORT=$port LDSC_DATASETS=CAT0101,CAT0102 RUST_LOG=warn
 
 start=$(date +%s%N)
 "$bin" & pid=$!
