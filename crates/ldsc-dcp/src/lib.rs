@@ -389,12 +389,12 @@ pub fn validate_self_issued(
     jws.verify(&vm.public_key_jwk)?;
     // 5. nbf
     if let Some(nbf) = claims.nbf
-        && now + leeway < nbf
+        && now.saturating_add(leeway) < nbf
     {
         return Err(Error::Invalid("not yet valid"));
     }
     // 5. exp (numbered twice in the spec)
-    if now >= claims.exp + leeway {
+    if now >= claims.exp.saturating_add(leeway) {
         return Err(Error::Invalid("expired"));
     }
     // 6. jti not used before
@@ -487,6 +487,24 @@ mod tests {
         let mut tampered = t.clone();
         tampered.insert(tampered.find('.').unwrap() + 2, 'A');
         assert!(validate_self_issued(&tampered, &doc, BOB, 1_500, 0, &mut c).is_err());
+    }
+
+    #[test]
+    fn extreme_times_do_not_overflow() {
+        // found by the dcp_token_validate fuzz target: exp and nbf come from
+        // the token's issuer, so they can be any u64
+        let (key, doc, mut claims) = setup();
+        claims.exp = u64::MAX;
+        claims.nbf = Some(u64::MAX);
+        let t = key.sign(&format!("{ALICE}#key-1"), &claims).unwrap();
+        let mut c = JtiCache::default();
+        assert!(matches!(
+            validate_self_issued(&t, &doc, BOB, u64::MAX, 60, &mut c),
+            Err(Error::Invalid("expired"))
+        ));
+        claims.nbf = None;
+        let t = key.sign(&format!("{ALICE}#key-1"), &claims).unwrap();
+        assert!(validate_self_issued(&t, &doc, BOB, 1_500, 60, &mut c).is_ok());
     }
 
     #[test]

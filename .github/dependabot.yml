@@ -19,3 +19,14 @@ updates:
     groups:
       actions:
         patterns: ['*']
+  - package-ecosystem: docker
+    directory: /.clusterfuzzlite
+    schedule:
+      interval: weekly
+  - package-ecosystem: cargo
+    directory: /fuzz
+    schedule:
+      interval: weekly
+    groups:
+      fuzz:
+        patterns: ['*']

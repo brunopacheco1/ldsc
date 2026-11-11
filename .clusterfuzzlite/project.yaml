@@ -1,0 +1,6 @@
+# SPDX-FileCopyrightText: LDSC contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# https://google.github.io/clusterfuzzlite/build-integration/rust-lang/
+language: rust
