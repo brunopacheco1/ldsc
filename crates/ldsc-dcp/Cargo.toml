@@ -1,0 +1,18 @@
+[package]
+name = "ldsc-dcp"
+description = "Decentralized Claims Protocol 1.0: self-issued ID tokens and did:web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+base64.workspace = true
+ring.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

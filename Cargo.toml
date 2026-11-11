@@ -1,0 +1,38 @@
+[workspace]
+resolver = "3"
+members = ["crates/ldsc-dsp", "crates/ldsc-dcp", "crates/ldsc"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/brunopacheco1/ldsc"
+rust-version = "1.85"
+
+[workspace.dependencies]
+axum = "0.8"
+base64 = "0.22"
+jsonschema = { version = "0.61", default-features = false }
+ring = "0.17"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid = { version = "1", features = ["v4"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
