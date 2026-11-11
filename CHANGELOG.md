@@ -27,6 +27,9 @@ versions may change behaviour and configuration.
 - Supply-chain checks: Dependabot (Cargo, GitHub Actions), CodeQL (Rust,
   Actions), OpenSSF Scorecard, dependency review, OSV-Scanner, cargo-deny
   (`deny.toml`), ORT, and SonarQube Cloud with coverage.
+- Release pipeline on signed `v*` tags: multi-arch (amd64, arm64) images
+  on GHCR, signed with cosign, with SBOM and build provenance attestations,
+  and a GitHub release with binaries and third-party notices.
 
 ### Removed
 - The Java on Quarkus native bake-off slice; its results stay in ADR 0002.

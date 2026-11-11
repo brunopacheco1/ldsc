@@ -6,22 +6,26 @@ SPDX-License-Identifier: Apache-2.0
 
 # Releasing
 
-Status: the release workflow is added in 0.1. Until it lands, this page is
-the target process.
-
 All components share one version (mono repo). Pushing a signed tag `vX.Y.Z`
-runs `.github/workflows/release.yml`, which:
-1. checks the tag is annotated, signed by the maintainer, and listed in
-   `CHANGELOG.md`;
-2. builds and tests the workspace;
-3. builds one multi-arch image per component (`ldsc-connector` first, then
-   `ldsc-identity` and `ldsc-issuer`, [ADR 0003](adr/0003-component-split.md))
-   and pushes it to `ghcr.io/brunopacheco1/<component>:X.Y.Z`;
+runs [`.github/workflows/release.yml`](../.github/workflows/release.yml), which:
+1. checks the tag is annotated, signed by the maintainer (keys from
+   `github.com/<owner>.gpg`), equal to `version` in `Cargo.toml`, and
+   listed in `CHANGELOG.md`;
+2. tests the workspace and builds static musl binaries on native amd64 and
+   arm64 runners;
+3. builds one multi-arch image per component (`ldsc-connector` today;
+   `ldsc-identity` and `ldsc-issuer` join later,
+   [ADR 0003](adr/0003-component-split.md)) and pushes it to
+   `ghcr.io/brunopacheco1/<component>:X.Y.Z`;
 4. signs each image with cosign (keyless, the workflow's identity);
-5. attaches a CycloneDX SBOM and build provenance (GitHub artifact
-   attestations) to each image;
-6. creates a GitHub release with the changelog section and third-party
-   notices.
+5. attaches build provenance (SLSA v1) and a CycloneDX SBOM to each image
+   as GitHub attestations;
+6. creates a GitHub release with the changelog section, the binaries, the
+   SBOMs, the provenance bundle (`ldsc-X.Y.Z.intoto.jsonl`) and
+   `THIRD-PARTY-NOTICES.txt`.
+
+A pull request that changes the release workflow, the `Dockerfile` or the
+notices script runs the same build as a dry run: nothing is pushed or signed.
 
 ## One-time setup (owner)
 
@@ -29,7 +33,11 @@ runs `.github/workflows/release.yml`, which:
    tags matching `v*`. Optionally require yourself as a reviewer, so every
    release waits for a click.
 2. No signing secrets are needed: cosign keyless signing and attestations
-   use the workflow's OIDC token.
+   use the workflow's OIDC token. Images are pushed with the workflow's
+   `GITHUB_TOKEN`.
+3. After the first release, make the package public: **Packages →
+   ldsc-connector → Package settings → Change visibility → Public**, and
+   link it to this repository if GitHub did not.
 
 ## Releasing a version
 

@@ -3,4 +3,4 @@
 # SPDX-License-Identifier: Apache-2.0
 
 *
-!target/x86_64-unknown-linux-musl/release/ldsc-connector
+!dist/*/ldsc-connector
