@@ -154,6 +154,10 @@ all checks green, Scorecard published.
 - Threat model review, fuzzing on every parser (ClusterFuzzLite),
   benchmarks published.
 - OpenSSF Best Practices **silver**.
+- Dependency review with **cargo-vet**: every crate version in `Cargo.lock`
+  audited (own audits or imported sets, such as Mozilla's and Google's) or
+  explicitly exempted; CI fails on an unaudited change. Deferred from 0.1
+  (decided 2026-11-11) because it turns each dependency bump into review work.
 - Interoperability tests against Eclipse EDC and Simpl-Open (with Gaia-X).
 - API and config freeze, upgrade notes, documentation review.
 - Exit: Scorecard at least 8/10; no open high findings in Sonar or CodeQL.
