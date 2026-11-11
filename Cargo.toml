@@ -15,7 +15,8 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 axum = "0.8"
-base64 = "0.23"
+# no default features: the default "simd-unsafe" feature (0.23) runs unsafe SIMD code we do not need
+base64 = { version = "0.23", default-features = false, features = ["std"] }
 jsonschema = { version = "0.61", default-features = false }
 ring = "0.17"
 serde = { version = "1", features = ["derive"] }

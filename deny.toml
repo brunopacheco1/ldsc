@@ -46,3 +46,9 @@ allow-wildcard-paths = true
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+# Features we refuse, even if a dependency turns them back on.
+[[bans.features]]
+crate = "base64"
+# unsafe SIMD decoding (default in 0.23); LDSC only decodes short JWT segments
+deny = ["simd-unsafe"]

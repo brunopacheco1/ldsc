@@ -31,8 +31,8 @@ dataspace participants over HTTPS.
   valid `exp`/`iat`, and a `jti` not seen before (DCP 1.0.1).
 - **Small attack surface:** a static binary on an empty (`scratch`) image,
   running as a non-root user, with no shell.
-- **Authentic releases** *(planned, 0.1)*: images signed with cosign, with
-  an SBOM and build provenance.
+- **Authentic releases:** from 0.1.0, images are signed with cosign
+  (keyless) and carry an SBOM and SLSA build provenance as attestations.
 
 **Users cannot expect (out of scope in 0.x):**
 - Production readiness: LDSC is a prototype until 1.0.
@@ -52,7 +52,7 @@ dataspace participants over HTTPS.
 | Participant identity | Forged or replayed self-issued tokens | Algorithm allow-list, key relationship check, audience check, expiry with bounded leeway, `jti` replay cache |
 | Private keys | Keys leak from the internet-facing connector | Keys live only in `ldsc-identity` and `ldsc-issuer`, not in the connector (ADR 0003) |
 | Service availability | Crafted or oversized messages crash or exhaust a service | Typed parsing with no `unsafe`; request size limits *(planned, 0.8)*; fuzzing of parsers *(planned, 0.9)* |
-| Users' supply chain | A tampered release or dependency | Pinned CI actions; signed commits; Dependabot, dependency review, OSV, cargo-deny (RustSec advisories, licence allowlist, crate sources) and ORT; signed images with provenance *(planned, 0.1)* |
+| Users' supply chain | A tampered release or dependency | Pinned CI actions; signed commits; Dependabot, dependency review, OSV, cargo-deny (RustSec advisories, licence allowlist, crate sources) and ORT; signed images with SBOM and provenance attestations |
 
 ## Trust boundaries
 
