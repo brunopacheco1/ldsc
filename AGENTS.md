@@ -54,6 +54,10 @@ reuse lint
   field names; copy them from the spec or its JSON Schemas.
 - **Verify facts.** Do not state versions, library capabilities or spec
   rules from memory; check the source and link it in the pull request.
+- **Hexagonal architecture** ([ADR 0004](docs/adr/0004-hexagonal-architecture.md)):
+  protocol rules go in domain crates with no I/O; anything external is a
+  port (trait) with an adapter. Never import axum, sqlx or an HTTP client
+  in a domain crate.
 - **Types at boundaries.** New message types get a dedicated Rust type
   and a schema test. No `serde_json::Value` outside parsing code.
 - **No `unsafe`, no `unwrap()`** outside tests (enforced by lints).

@@ -54,7 +54,11 @@ judged against it.
 11. **Observable.** Structured JSON logs, metrics and traces
     (OpenTelemetry), health and readiness endpoints. *Check:* every
     protocol state change is logged with its process id.
-12. **Simple over clever.** Prefer the standard library and a few
+12. **Hexagonal architecture.** Pure domain crates, ports as traits,
+    adapters for HTTP, storage and DID resolution
+    ([ADR 0004](adr/0004-hexagonal-architecture.md)). *Check:* domain crates
+    have no I/O dependencies (`cargo tree` in CI).
+13. **Simple over clever.** Prefer the standard library and a few
     well-maintained dependencies; each new dependency is justified in its
     pull request and passes the licence allow-list.
 
