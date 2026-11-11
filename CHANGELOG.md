@@ -12,6 +12,8 @@ versions may change behaviour and configuration.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-12
+
 ### Added
 - Technology-stack spike (0.0): Rust accepted ([ADR 0002](docs/adr/0002-technology-stack.md)),
   three images ([ADR 0003](docs/adr/0003-component-split.md)), hexagonal
@@ -34,6 +36,9 @@ versions may change behaviour and configuration.
   the same annotations on the multi-arch image index.
 - Project website in `site/`, published on GitHub Pages; check values are
   read at build time, so the page loads nothing from other sites.
+- OpenSSF Scorecard and Best Practices badges in the README, the Best
+  Practices level on the website, and a README section on the HTTP
+  interface and configuration.
 
 ### Security
 - `base64` is built without its default `simd-unsafe` feature, and
