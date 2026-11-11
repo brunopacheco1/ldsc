@@ -67,18 +67,16 @@ judged against it.
 One mono repo, one version. Each component is a **module** of the mono
 repo (a crate in the Cargo workspace) and can ship as its **own image**.
 
-**How the components are split is still open.** It will be evaluated and
-recorded in [ADR 0003](adr/0003-component-split.md) (proposed: three images, `ldsc-connector`, `ldsc-identity`, `ldsc-issuer`). The criteria: what each operator must run, what
-scales or fails on its own, network exposure, the number of images to
-deploy, and how EDC and Simpl-Open split the same roles. The table below is
-the **starting candidate**, not a decision.
+**The split is decided in [ADR 0003](adr/0003-component-split.md):**
+three images, split by who runs them and which keys they hold. PostgreSQL
+is an external dependency, not an LDSC image.
 
-| # | Candidate component | Role | Mandatory? | Protocols |
+| # | Component (image) | Role | Mandatory? | Protocols |
 |---|---|---|---|---|
-| 1 | PostgreSQL | State of negotiations, transfers, credentials | Mandatory | — |
-| 2 | Identity | Holds the participant's DID, keys and credentials (including Gaia-X credentials from 0.7); answers presentation queries | Mandatory for each participant, unless an external DCP wallet is used | DCP (credential service) |
-| 3 | Connector | Control plane: catalog, contract negotiation, transfer; verifies DCP presentations. The data plane is its own module, linked into the connector for 0.x (see below) | Mandatory | DSP, DCP (verifier) |
-| 4 | Issuer | Issues and revokes credentials (for example membership) | Optional: one per dataspace, run by the dataspace authority | DCP (issuance) |
+| 1 | PostgreSQL (external, not built by LDSC) | State of negotiations, transfers, credentials | Mandatory | — |
+| 2 | `ldsc-identity` | Holds the participant's DID, keys and credentials (including Gaia-X credentials from 0.7); answers presentation queries | Mandatory for each participant, unless an external DCP wallet is used, or the participant uses Simpl-Open x509 only | DCP (credential service) |
+| 3 | `ldsc-connector` | Control plane: catalog, contract negotiation, transfer; verifies DCP presentations. The data plane is its own module, linked into the connector for 0.x (see below) | Mandatory | DSP, DCP (verifier) |
+| 4 | `ldsc-issuer` | Issues and revokes credentials (for example membership) | Optional: one per dataspace, run by the dataspace authority | DCP (issuance) |
 
 The website is a static site published by GitHub Pages; it is not deployed
 by participants.

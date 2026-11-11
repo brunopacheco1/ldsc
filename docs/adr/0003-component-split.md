@@ -1,7 +1,7 @@
 
 # ADR 0003: Component split (modules and images)
 
-- Status: **Proposed**
+- Status: **Accepted** (2026-11-11, by the maintainer)
 - Date: 2026-11-11
 
 ## Context
@@ -68,7 +68,7 @@ One `ldsc` binary; roles switched on by configuration.
 - Minus: one more image and a network hop now, for load we do not have.
   The signaling interface already keeps this option open.
 
-## Proposed decision
+## Decision
 
 **Option B.** Three images, added when their first feature ships:
 
@@ -95,7 +95,6 @@ development (add a compose file first, not a new image).
 - The spike binary `ldsc` is renamed `ldsc-connector` in 0.1.
 - Release pipeline builds, signs (cosign) and attests one image per binary
   crate, all with the workspace version.
-- ARCHITECTURE "Components" table changes from candidate to decided once
-  this ADR is accepted.
+- The ARCHITECTURE "Components" table records this split.
 - Interop tests (0.4, 0.5) run against EDC's split, so mismatches show
   early.
