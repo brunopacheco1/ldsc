@@ -1,6 +1,6 @@
 # Architecture (draft)
 
-Status: **draft for review**, depends on [ADR 0002](adr/0002-technology-stack.md).
+Status: **draft for review**. Language: Rust ([ADR 0002](adr/0002-technology-stack.md), accepted).
 
 ## Goal
 

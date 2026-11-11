@@ -6,12 +6,13 @@ changelog entry. Version numbers are shared by every component (mono repo).
 
 Each item lists its exit criteria, so "done" is checkable.
 
-## 0.0 Spike: choose the technology stack (now)
+## 0.0 Spike: choose the technology stack (done 2026-11-11)
 
 - Compare candidate languages: [ADR 0002](adr/0002-technology-stack.md).
 - Timeboxed bake-off (3 days): version endpoint + catalog request + DSP TCK
   catalog tests + DCP self-issued token, with measured footprint.
-- Exit: ADR 0002 accepted by the maintainer.
+- Exit: ADR 0002 accepted by the maintainer. Done: Rust accepted on
+  2026-11-11 after the side-by-side with Quarkus native.
 - Then ADR 0003: evaluate and decide how the system splits into
   components (modules and images).
 
@@ -156,6 +157,6 @@ all checks green, Scorecard published.
 - Interoperability targets: Eclipse EDC and Simpl-Open (a customised EDC
   with Gaia-X support). Gaia-X Trust Framework is in scope (0.7).
 - OpenSSF Baseline: level 1 for 0.x.
-- Language: Rust, after a 3-day bake-off; fallback Java on Quarkus native ([ADR 0002](adr/0002-technology-stack.md)).
+- Language: Rust, accepted after the bake-off against Java on Quarkus native, which stays the fallback ([ADR 0002](adr/0002-technology-stack.md)).
 - Data plane inside the connector, behind an interface that follows Data
   Plane Signaling (see ARCHITECTURE.md).

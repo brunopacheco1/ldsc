@@ -1,8 +1,8 @@
 # ADR 0002: Technology stack (spike)
 
-- Status: **Proposed**. On 2026-11-11 the maintainer chose "Rust, after a
-  3-day bake-off". The ADR is accepted, or changed to the Java fallback, once the bake-off
-  results (section 6) are recorded.
+- Status: **Accepted** (2026-11-11). The maintainer first chose "Rust, after a
+  3-day bake-off", asked for Java on Quarkus native to be measured too, and
+  accepted Rust after the side-by-side results (section 7).
 - Date: 2026-11-11
 - Spike owner: maintainers
 
@@ -81,7 +81,7 @@ Notes:
   framework that does not run on Quarkus. It stays as the interoperability
   reference, not the base.
 
-## 5. Proposed decision
+## 5. Decision
 
 **Rust**, with **Java on Quarkus native as the fallback** (the maintainer's
 choice, 2026-11-11, replacing Go). Java keeps the praecepta toolchain
@@ -208,5 +208,7 @@ better fit for the stated goals.
   of the mono repo with the same version, and can ship as its own image.
 - Contributors need Rust skills; we offset this with a CONTRIBUTING guide,
   strict lints and small modules.
-- If accepted, ADR 0003 will define the component split and ADR 0004 the
-  compliance toolchain.
+- ADR 0003 defines the component split. The compliance toolchain is set up
+  in release 0.1 (see ROADMAP).
+- Java on Quarkus native stays the recorded fallback. The `bakeoff/quarkus`
+  slice is kept until 0.1 for reference, then removed.
