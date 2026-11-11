@@ -19,7 +19,7 @@ Mirror the set-up already proven in
 [praecepta](https://github.com/brunopacheco1/praecepta).
 
 Community and licensing files:
-- `LICENSE` (Apache-2.0, to confirm), `LICENSES/`, `REUSE.toml`, SPDX headers, `reuse lint` in CI.
+- `LICENSE` (Apache-2.0), `LICENSES/`, `REUSE.toml`, SPDX headers, `reuse lint` in CI.
 - `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1), `CONTRIBUTING.md`,
   `GOVERNANCE.md`, `SECURITY.md` (private vulnerability reporting),
   `CHANGELOG.md` (Keep a Changelog), `CODEOWNERS`, issue forms, PR template.
@@ -65,7 +65,7 @@ Website:
 OpenSSF:
 - Register at bestpractices.dev; reach **passing**.
 - OpenSSF Baseline **level 1** (version 2026-08-28) self-assessment recorded
-  in `docs/SECURITY-ASSURANCE.md`.
+  in `docs/SECURITY-ASSURANCE.md`. Level 1 is the target for all of 0.x.
 
 Exit: a "hello" binary ships as a signed image through the full pipeline,
 all checks green, Scorecard published.
@@ -92,7 +92,8 @@ all checks green, Scorecard published.
 - Data plane in the same binary, behind a feature flag: HTTP pull with a
   short-lived token.
 - Exit: DSP TCK transfer tests green; end-to-end file transfer between two
-  instances in Docker Compose.
+  instances in Docker Compose; **interop test against EDC** (catalog,
+  negotiation, transfer with a static token) runs in CI.
 
 ## 0.5 DCP: identity and presentation
 
@@ -100,7 +101,11 @@ all checks green, Scorecard published.
   token, presentation query API, storage API.
 - Connector verifies the counter-party's credentials on every DSP request.
 - Exit: DCP TCK credential service tests green; DSP flows from 0.2 to 0.4
-  run with DCP authentication instead of a static token.
+  run with DCP authentication instead of a static token; the EDC interop
+  test runs with DCP against EDC's IdentityHub.
+- Spike: how to join a **Simpl-Open** dataspace. Simpl-Open uses EDC with
+  DCP outside its agent, but x509/mTLS and attribute-based access inside it.
+  Decide whether LDSC needs an x509/mTLS authentication profile.
 
 ## 0.6 DCP: issuance and credential-based policies
 
@@ -122,14 +127,18 @@ all checks green, Scorecard published.
 
 - Threat model review, fuzzing on every parser (ClusterFuzzLite),
   benchmarks published.
-- OpenSSF Best Practices **silver**, Baseline **level 2**.
-- Interoperability test against Eclipse EDC.
+- OpenSSF Best Practices **silver**.
+- Interoperability tests against Eclipse EDC and Simpl-Open.
 - Exit: Scorecard at least 8/10; no open high findings in Sonar or CodeQL.
 
 ## 0.9 Release candidate for 1.0
 
 - API and config freeze, upgrade notes, documentation review.
 
-## Open questions (to answer before 0.1)
+## Decisions taken (2026-11-11)
 
-See the pull request description.
+- Licence: Apache-2.0.
+- Interoperability targets: Eclipse EDC and Simpl-Open.
+- OpenSSF Baseline: level 1 for 0.x.
+- Language: Rust, after a 3-day bake-off; fallback Java on Quarkus native ([ADR 0002](adr/0002-technology-stack.md)).
+- Data plane inside the connector: open, explained in ARCHITECTURE.md.

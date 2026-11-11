@@ -31,10 +31,30 @@ by participants.
    the participant's identity.
 4. Connector: point it at the identity and the database.
 
-## Why the data plane is inside the connector
+## Data plane: inside the connector or separate? (open decision)
 
-DSP does not define how a control plane talks to a data plane. The Eclipse
-Data Plane Signaling specification is still incubating. Keeping the HTTP
-data plane in the connector (behind a switch) avoids a fourth service and
-an unstable interface. If an external data plane is needed later, we adopt
-Data Plane Signaling once it is released.
+**What each part does.** The control plane negotiates: catalog, contract,
+and the start and end of a transfer (DSP). The data plane moves the bytes,
+for example by serving a file over HTTP to the consumer, with a short-lived
+token that the control plane issued.
+
+**Option A: inside the connector (proposed for 0.x).** One process, one
+image, one deployment step. No internal API to secure or version. The cost:
+the data traffic and the protocol logic share CPU, memory and the network
+exposure; you cannot scale them apart; a bug in data handling can take down
+negotiation.
+
+**Option B: separate data plane service.** Scales and fails independently,
+can sit in another network zone near the data, and allows several data
+plane types (HTTP, S3, Kafka). The cost: a fourth component, and an
+internal control-to-data-plane API. DSP does not define that API. The
+Eclipse Data Plane Signaling spec does, but it is still incubating with no
+release. EDC (and so Simpl-Open) is moving to Data Plane Signaling, so
+building our own interface now risks rework.
+
+**Proposal.** Ship option A in 0.4, but code the data plane behind an
+internal interface shaped like Data Plane Signaling. When that spec is
+released, split it out as an optional component (option B) without
+changing the connector's protocol code. Interoperability with EDC and
+Simpl-Open is not affected either way: other connectors only see DSP and
+the data endpoint, never our internal split.

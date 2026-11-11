@@ -1,6 +1,8 @@
 # ADR 0002: Technology stack (spike)
 
-- Status: **Proposed** (waiting for the maintainer's decision)
+- Status: **Proposed**. On 2026-11-11 the maintainer chose "Rust, after a
+  3-day bake-off". The ADR is accepted, or changed to the Java fallback, once the bake-off
+  results (section 6) are recorded.
 - Date: 2026-11-11
 - Spike owner: maintainers
 
@@ -15,7 +17,7 @@ Practices, OpenSSF Baseline, Sonar and a style checker?
 
 | Topic | Fact | Source |
 |---|---|---|
-| Dataspace Protocol (DSP) | Released as Eclipse DSP 1.0.0 (spec label **2025-1**, an errata edition `2025-1-err1` is published). HTTPS binding, JSON-LD messages. | [Eclipse release 1.0.0](https://projects.eclipse.org/node/33507), [spec 2025-1-err1](https://eclipse-dataspace-protocol-base.github.io/DataspaceProtocol/2025-1-err1/), [Eclipse news, 2 Dec 2025](https://newsroom.eclipse.org/node/43194) |
+| Dataspace Protocol (DSP) | Released as Eclipse DSP 1.0.0 (spec label **2025-1**). The latest errata tag in the spec repository is `2025-1-err2`. HTTPS binding, JSON-LD messages. | [Eclipse release 1.0.0](https://projects.eclipse.org/node/33507), [spec 2025-1-err1](https://eclipse-dataspace-protocol-base.github.io/DataspaceProtocol/2025-1-err1/), [Eclipse news, 2 Dec 2025](https://newsroom.eclipse.org/node/43194) |
 | Decentralized Claims Protocol (DCP) | Eclipse DCP 1.0.0 released; current published text is **v1.0.1**. Covers self-issued ID tokens, presenting Verifiable Credentials, and credential issuance. | [DCP 1.0.0 release](https://projects.eclipse.org/node/33498), [spec v1.0.1](https://eclipse-dataspace-dcp.github.io/decentralized-claims-protocol/v1.0.1/) |
 | ISO status | Both are planned for ISO/IEC JTC1 PAS submission. Not ISO standards yet. | [Eclipse news](https://newsroom.eclipse.org/node/43194) |
 | Conformance kits | DSP TCK (supports DSP 2025-1) and DCP TCK exist. The DSP TCK runs as a Docker image and talks to the connector over HTTP, so it can test a connector in **any language**. | [protocol reference](https://dataspacebuilder.github.io/website/docs/reference/protocols), [dsp-tck](https://github.com/eclipse-dataspacetck/dsp-tck) |
@@ -24,6 +26,10 @@ Practices, OpenSSF Baseline, Sonar and a style checker?
 | OpenSSF Scorecard | 18 checks, language independent except Fuzzing and SAST detection. Names SonarCloud and CodeQL as SAST tools. | [scorecard.dev](https://scorecard.dev/) |
 | Sonar + Rust | SonarQube Cloud supports Rust; Clippy and coverage (LCOV/Cobertura) import need CI-based analysis. | [Sonar Rust docs](https://docs.sonarsource.com/sonarqube-cloud/advanced-setup/languages/rust) |
 | REUSE | Spec version 3.3, checked with the `reuse lint` tool. Language independent. | [REUSE 3.3](https://reuse.software/spec-3.3/) |
+| Plain JSON is allowed | Both specs say messages are defined by JSON Schema, and the JSON-LD context is designed so compacted messages validate against it. "This allows implementations to choose whether to process messages as plain JSON or as JSON-LD." | DSP `specifications/common/common.protocol.md` (tag `2025-1-err2`); DCP `specifications/base.protocol.md` (tag `v1.0.1`) |
+| Self-issued ID token | A JWT with `iss` = `sub` = participant DID, `aud` = verifier DID, `jti`, `exp`, `iat`. The signing key comes from the DID document and needs the `capabilityInvocation` relationship. No algorithm is mandated. | DCP `base.protocol.md` (tag `v1.0.1`) |
+| EDC | EDC 1.0.0-RC1 was announced in September 2026. Data Plane Signaling is being integrated. | [EDC blog](https://eclipse-edc.github.io/blog/2026/03/06/the-path-to-version-1-for-the-eclipse-dataspace-components/) |
+| Simpl-Open | Uses EDC connectors. Outside its "agent", identity is DCP with an IdentityHub. Inside the agent, connectors use x509 certificates from the governance authority over mTLS and attribute-based access control, not DCP. | [Simpl-Open Q&A](https://simpl-programme.ec.europa.eu/landing-page/simpl-open-qa) |
 | Existing open DSP connectors outside Java | Go: RUN-DSP (Apache-2.0, "pre-alpha", no DCP). Rust: Rainbow (DSP 2024-1, contracts still in progress, no DCP mentioned). Neither targets DSP 2025-1 + DCP today. | [run-dsp](https://pkg.go.dev/github.com/go-dataspace/run-dsp), [Rainbow](https://eunomiaupm.github.io/rainbow) |
 | Reference implementation | Eclipse EDC (Java) is the implementation the DSP TCK release was validated against. | [Eclipse release 1.0.0](https://projects.eclipse.org/node/33507) |
 
@@ -35,7 +41,7 @@ libraries (HTTP, JSON-LD, JOSE/JWT, crypto), not from an existing connector.
 
 1. **Rust** (axum + tokio, serde, sqlx)
 2. **Go** (net/http, encoding/json, pgx)
-3. **Java/Kotlin on the JVM** (Eclipse EDC, or Quarkus/Spring with GraalVM native image)
+3. **Java on Quarkus, compiled to a native image** (GraalVM/Mandrel); Eclipse EDC itself as a reference only
 4. **C# / .NET** (ASP.NET Core with Native AOT)
 
 ## 4. Comparison
@@ -44,15 +50,15 @@ Scores: ++ strong, + good, 0 neutral, - weak. Size and memory are
 estimates from common practice and **must be measured** in the bake-off
 (section 6) before the ADR is accepted.
 
-| Criterion | Rust | Go | JVM (EDC) | .NET AOT |
+| Criterion | Rust | Go | Java (Quarkus native) | .NET AOT |
 |---|---|---|---|---|
 | Strong typing, no null, exhaustive state machines (negotiation and transfer are state machines) | ++ (enums, `Option`, `match`) | + (nil exists, no sum types) | + (Java), ++ (Kotlin sealed) | + |
-| Predictable latency (no GC pauses) | ++ (no GC) | + (short GC pauses) | 0 (GC, warm-up) | + |
-| Low footprint (image, memory) | ++ (static binary, scratch/distroless) | ++ (static binary) | - (JVM; native image is complex with EDC) | + |
-| Startup time | ++ | ++ | - (JVM) / + (native) | + |
-| Simple to learn, fast builds, easy to contribute | - (steep, slow compile) | ++ | + | + |
+| Predictable latency (no GC pauses) | ++ (no GC) | + (short GC pauses) | + (GC, but no JIT warm-up in native) | + |
+| Low footprint (image, memory) | ++ (static binary, scratch/distroless) | ++ (static binary) | + (native image; larger than Rust/Go) | + |
+| Startup time | ++ | ++ | + (native) | + |
+| Simple to learn, fast builds, easy to contribute | - (steep, slow compile) | ++ | + (familiar; native builds are slow and need reflection config) | + |
 | JSON-LD, VC, JOSE libraries | + (`json-ld`, `ssi` pre-1.0, `josekit`) | + (`json-gold` partial JSON-LD 1.1, `go-jose`, `jwx`) | ++ (Titanium, EDC modules) | 0 |
-| Reuse of an existing DSP+DCP stack | 0 | 0 | ++ (EDC) | - |
+| Reuse of DSP+DCP code | 0 | 0 | + (EDC libraries and TCK are Java; EDC itself is not Quarkus) | - |
 | Sonar | + (CI-based, Clippy import) | ++ | ++ | ++ |
 | Style check | ++ (`rustfmt`, `clippy`) | ++ (`gofmt`, `golangci-lint`) | + (Checkstyle/Spotless) | + (`dotnet format`) |
 | Supply chain tooling (SBOM, audit, Scorecard) | ++ (`cargo-audit`, `cargo-deny`, `cargo-cyclonedx`) | ++ (`govulncheck`, built-in SBOM data) | + | + |
@@ -68,16 +74,18 @@ Notes:
 - CodeQL Rust: [GA announcement, 14 Oct 2025](https://github.blog/changelog/2025-10-14-codeql-scanning-rust-and-c-c-without-builds-is-now-generally-available).
 - The maintainer already runs a fully compliant Java project
   ([praecepta](https://github.com/brunopacheco1/praecepta)). Java reuses that
-  setup almost as is. The cost is footprint and GC, which are explicit goals
-  here, so Java is the fallback only if both Rust and Go fail.
-- JVM with EDC is the lowest-risk path to protocol conformance, but it works
-  against "small, fast, few components": EDC is a large, extension-based
-  framework. It stays as a reference to test interoperability against, not as
-  the base.
+  setup almost as is, which is why it is the fallback.
+- Eclipse EDC is the lowest-risk path to protocol conformance, but it works
+  against "small, fast, few components": it is a large, extension-based
+  framework that does not run on Quarkus. It stays as the interoperability
+  reference, not the base.
 
 ## 5. Proposed decision
 
-**Rust**, with **Go as the fallback**.
+**Rust**, with **Java on Quarkus native as the fallback** (the maintainer's
+choice, 2026-11-11, replacing Go). Java keeps the praecepta toolchain
+(Maven, Checkstyle, Jazzer, Sonar, CodeQL) and the Java DSP/DCP ecosystem;
+native compilation addresses startup time and memory.
 
 Why Rust:
 - It matches four of the five stated runtime goals best: strong types,
@@ -88,14 +96,14 @@ Why Rust:
   cargo-deny/audit, SBOM, cargo-fuzz).
 
 The main risk is delivery speed: Rust is harder to learn and slower to
-compile, and its VC/JSON-LD crates are pre-1.0. If the bake-off shows the
-JSON-LD/VC path is blocked or too slow to build, we switch to Go before
-0.2.0, when the switch is still cheap.
+compile, and its VC/JSON-LD crates are pre-1.0 (mitigated: both specs allow
+plain JSON). If the bake-off shows a blocker, we switch to Java on Quarkus
+native before 0.2.0, when the switch is still cheap.
 
 Proposed supporting stack (to confirm in the bake-off):
 - HTTP: axum on tokio; TLS via rustls
 - Data: PostgreSQL via sqlx (compile-time checked queries); SQLite for local dev only if it stays cheap
-- JSON-LD: treat DSP messages as **compacted JSON-LD with a fixed context**, validate against the DSP JSON schemas, and only run full JSON-LD expansion where the spec needs it (to verify against the spec text)
+- JSON-LD: process DSP and DCP messages as **plain JSON** (typed structs) and validate them against the official JSON Schemas, which both specs explicitly allow. No JSON-LD processor in the hot path. This removes the biggest Rust library risk (pre-1.0 JSON-LD/VC crates).
 - JOSE/JWT: josekit or jsonwebtoken; DIDs: did:web
 - Config: environment variables (12-factor), one TOML file optional
 - Container: static musl or distroless image, non-root, signed with cosign, SBOM attached
@@ -103,8 +111,9 @@ Proposed supporting stack (to confirm in the bake-off):
 
 ## 6. How we confirm it (timeboxed bake-off)
 
-Timebox: 3 working days. Build the same thin slice in Rust (and Go only if
-Rust hits a blocker):
+Timebox: 3 working days. Build the thin slice in Rust. Build the same slice
+in Java on Quarkus native only if Rust hits a blocker, or if you want the
+two measured side by side:
 
 1. `GET /.well-known/dspace-version` and the catalog request endpoint.
 2. Run the DSP TCK Docker image against it in CI (catalog tests only).
@@ -117,8 +126,12 @@ Acceptance criteria (proposed, adjust as you like):
 - TCK catalog tests pass.
 - Clean CI build under 10 minutes.
 
-Kill criteria for Rust: no workable JSON-LD/JOSE path within the timebox,
+Kill criteria for Rust: no workable JSON/JOSE path within the timebox,
 or build times that block a short release cycle.
+
+Risks of the Java fallback, to measure if we use it: native build time and
+memory in CI, reflection configuration for JSON and crypto libraries, and
+whether the image and memory targets above still hold.
 
 ## 7. Consequences
 
