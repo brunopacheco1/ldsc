@@ -19,3 +19,12 @@ excludes:
     - pattern: "build-dependencies"
       reason: "BUILD_DEPENDENCY_OF"
       comment: "Used at build time only; not distributed."
+license_choices:
+  # These crates offer a choice of licences; we take the permissive one LDSC itself uses.
+  repository_license_choices:
+    - given: "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
+      choice: "Apache-2.0"
+      comment: "Offered by the wasi crate family; same licence as LDSC."
+    - given: "MIT OR Apache-2.0 OR LGPL-2.1-or-later"
+      choice: "Apache-2.0"
+      comment: "Offered by r-efi; LDSC does not take the LGPL option."
