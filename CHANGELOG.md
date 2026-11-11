@@ -12,6 +12,10 @@ versions may change behaviour and configuration.
 
 ## [Unreleased]
 
+### Changed
+- Roadmap: 0.2 raises the OpenSSF scores: Best Practices to **passing**
+  (moved from 0.1) and Scorecard fuzzing and branch protection.
+
 ## [0.1.0] - 2026-11-12
 
 ### Added

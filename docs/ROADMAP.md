@@ -22,7 +22,7 @@ Each item lists its exit criteria, so "done" is checkable.
 - Then ADR 0003: evaluate and decide how the system splits into
   components (modules and images).
 
-## 0.1 Repository foundations (no protocol code yet)
+## 0.1 Repository foundations (released 2026-11-12 as v0.1.0)
 
 Mirror the set-up already proven in
 [praecepta](https://github.com/brunopacheco1/praecepta).
@@ -73,7 +73,8 @@ Website:
   deployment order, live badges.
 
 OpenSSF:
-- Register at bestpractices.dev; reach **passing**.
+- Register at bestpractices.dev (done: project 16578, 91% at release).
+  Reaching **passing** moved to 0.2.
 - OpenSSF Baseline **level 1** (version 2026-08-28) self-assessment recorded
   in `docs/SECURITY-ASSURANCE.md`. Level 1 is the target for all of 0.x.
 
@@ -87,7 +88,20 @@ all checks green, Scorecard published.
   datasets defined in a config file.
 - DSP message validation against the DSP 2025-1 JSON schemas.
 - DSP TCK in CI (catalog tests must pass).
-- Exit: DSP TCK catalog tests green.
+- Raise the OpenSSF scores (decided 2026-11-12):
+  - Best Practices from 91% to 100% **passing**: answer the open
+    criteria with evidence (release notes, test coverage, bug and
+    enhancement responses, secure design knowledge).
+  - Scorecard from 6.7/10 (2026-11-12). Checks we can move now:
+    CII-Best-Practices (2 to 5 at passing), Signed-Releases (v0.1.0 has
+    provenance; confirm on the next scan), Fuzzing (fuzz the DSP and DCP
+    parsers with cargo-fuzz, run by ClusterFuzzLite, which Scorecard
+    detects), Branch-Protection (0 although a ruleset exists; find out
+    why). Checks that only time or more people fix: Maintained (project
+    under 90 days old), Code-Review (needs a second maintainer),
+    Contributors.
+- Exit: DSP TCK catalog tests green; Best Practices badge at **passing**;
+  Scorecard fuzzing and branch protection no longer 0.
 
 ## 0.3 Contract negotiation
 
