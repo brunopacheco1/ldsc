@@ -73,8 +73,8 @@ Website:
   deployment order, live badges.
 
 OpenSSF:
-- Register at bestpractices.dev (done: project 16578). Reaching
-  **passing** moved to 0.2.
+- Register at bestpractices.dev (done: project 16578, 91% at release).
+  Reaching **passing** moved to 0.2.
 - OpenSSF Baseline **level 1** (version 2026-08-28) self-assessment recorded
   in `docs/SECURITY-ASSURANCE.md`. Level 1 is the target for all of 0.x.
 
@@ -88,11 +88,20 @@ all checks green, Scorecard published.
   datasets defined in a config file.
 - DSP message validation against the DSP 2025-1 JSON schemas.
 - DSP TCK in CI (catalog tests must pass).
-- OpenSSF Best Practices: raise the score to 100% **passing**. Answer the
-  open criteria with evidence (interface docs, release notes, test
-  coverage, bug and enhancement responses, secure design knowledge).
-  Carried over from 0.1 (decided 2026-11-12).
-- Exit: DSP TCK catalog tests green; Best Practices badge at **passing**.
+- Raise the OpenSSF scores (decided 2026-11-12):
+  - Best Practices from 91% to 100% **passing**: answer the open
+    criteria with evidence (release notes, test coverage, bug and
+    enhancement responses, secure design knowledge).
+  - Scorecard from 6.7/10 (2026-11-12). Checks we can move now:
+    CII-Best-Practices (2 to 5 at passing), Signed-Releases (v0.1.0 has
+    provenance; confirm on the next scan), Fuzzing (fuzz the DSP and DCP
+    parsers with cargo-fuzz, run by ClusterFuzzLite, which Scorecard
+    detects), Branch-Protection (0 although a ruleset exists; find out
+    why). Checks that only time or more people fix: Maintained (project
+    under 90 days old), Code-Review (needs a second maintainer),
+    Contributors.
+- Exit: DSP TCK catalog tests green; Best Practices badge at **passing**;
+  Scorecard fuzzing and branch protection no longer 0.
 
 ## 0.3 Contract negotiation
 
