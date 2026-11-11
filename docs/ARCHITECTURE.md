@@ -32,7 +32,11 @@ by participants.
    Compliance credential from a Gaia-X Digital Clearing House.
 4. Connector: point it at the identity and the database.
 
-## Data plane: inside the connector or separate? (open decision)
+## Data plane: inside the connector or separate?
+
+**Decided (maintainer, 2026-11-11): option A, inside the connector, behind
+an internal interface that follows Eclipse Data Plane Signaling.** The
+reasoning is kept below.
 
 **What each part does.** The control plane negotiates: catalog, contract,
 and the start and end of a transfer (DSP). The data plane moves the bytes,
@@ -53,8 +57,15 @@ Eclipse Data Plane Signaling spec does, but it is still incubating with no
 release. EDC (and so Simpl-Open) is moving to Data Plane Signaling, so
 building our own interface now risks rework.
 
-**Proposal.** Ship option A in 0.4, but code the data plane behind an
-internal interface shaped like Data Plane Signaling. When that spec is
+**Decision.** Ship option A in 0.4, with the data plane behind an internal
+interface that follows Eclipse Data Plane Signaling **v1.0-RC4** (tag of
+27 Aug 2026 in `eclipse-dataplane-signaling/dataplane-signaling`): the
+same data flow state machine, the same messages (`prepare`, `start`,
+`started`, `suspend`, `resume`, `terminate`, `completed`, `errored`) and
+the same `DataAddress` shape. In-process, these are function calls; the
+HTTP endpoints (`/dataflows/...` on the data plane, `/transfers/:id/dataflow/...`
+on the control plane) are added only when we split. We track the spec until
+its 1.0 release and record each update in the changelog. When that spec is
 released, split it out as an optional component (option B) without
 changing the connector's protocol code. Interoperability with EDC and
 Simpl-Open is not affected either way: other connectors only see DSP and

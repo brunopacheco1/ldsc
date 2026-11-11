@@ -90,7 +90,8 @@ all checks green, Scorecard published.
 
 - Transfer process state machines (provider and consumer).
 - Data plane in the same binary, behind a feature flag: HTTP pull with a
-  short-lived token.
+  short-lived token. Internal interface follows Eclipse Data Plane
+  Signaling v1.0-RC4, so the data plane can later be split out.
 - Exit: DSP TCK transfer tests green; end-to-end file transfer between two
   instances in Docker Compose; **interop test against EDC** (catalog,
   negotiation, transfer with a static token) runs in CI.
@@ -154,4 +155,5 @@ all checks green, Scorecard published.
   with Gaia-X support). Gaia-X Trust Framework is in scope (0.7).
 - OpenSSF Baseline: level 1 for 0.x.
 - Language: Rust, after a 3-day bake-off; fallback Java on Quarkus native ([ADR 0002](adr/0002-technology-stack.md)).
-- Data plane inside the connector: open, explained in ARCHITECTURE.md.
+- Data plane inside the connector, behind an interface that follows Data
+  Plane Signaling (see ARCHITECTURE.md).
