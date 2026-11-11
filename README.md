@@ -48,7 +48,10 @@ The datasets file is a JSON array of DSP 2025-1 `Dataset` objects, as the
 catalog serves them, without `@context`. Each dataset needs at least one
 offer (`hasPolicy`) and one distribution with a `format`. Leave
 `accessService` out: the connector sets it to its own data service. A file
-that breaks these rules stops the start with an error. See
+that breaks these rules stops the start with an error. Other properties,
+such as `dct:title` or `dcat:keyword`, are kept and served as written (the
+DSP context defines the `dct`, `dcat` and `odrl` prefixes); LDSC does not
+validate them yet. See
 [examples/datasets.json](examples/datasets.json).
 
 Run the image with the example datasets:

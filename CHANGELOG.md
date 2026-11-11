@@ -17,6 +17,8 @@ versions may change behaviour and configuration.
   `Dataset` objects, so each dataset has its own offers and distributions.
   Definitions are checked at start (at least one offer and one
   distribution, unique ids); a broken file stops the start.
+- Datasets keep metadata properties LDSC does not interpret (for example
+  `dct:title`) and the catalog serves them; before, they were dropped.
 
 ### Changed
 - The catalog and data service `@id`s are derived from `LDSC_PUBLIC_URL`

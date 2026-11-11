@@ -218,6 +218,13 @@ async fn example_datasets_file_is_valid() {
         serde_json::from_slice(&to_bytes(res.into_body(), 1 << 20).await.unwrap()).unwrap();
     assert_valid("catalog/catalog-schema.json", &body);
     assert_eq!(body["dataset"].as_array().unwrap().len(), 2);
+    let weather = body["dataset"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["@id"] == "weather-stations")
+        .unwrap();
+    assert_eq!(weather["dct:title"], "Weather stations");
 }
 
 #[test]

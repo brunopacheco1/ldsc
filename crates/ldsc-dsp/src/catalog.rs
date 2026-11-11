@@ -199,6 +199,7 @@ mod tests {
                 format: "HttpData-PULL".to_owned(),
                 access_service: String::new(),
             }],
+            metadata: crate::Metadata::default(),
         }
     }
 

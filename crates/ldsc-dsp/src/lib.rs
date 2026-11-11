@@ -256,6 +256,33 @@ pub struct Dataset {
     pub has_policy: Vec<Offer>,
     /// At least one distribution.
     pub distribution: Vec<Distribution>,
+    /// Any other metadata (for example `dct:title`, or the properties of a
+    /// DCAT-AP profile), kept and served as written.
+    #[serde(flatten)]
+    pub metadata: Metadata,
+}
+
+/// Metadata properties that LDSC does not interpret, keyed by their
+/// compacted JSON-LD term (for example `dct:title`). DSP messages are
+/// JSON-LD, so a dataset may carry any property; dropping unknown ones
+/// would silently lose the provider's metadata. The DSP 2025-1 context
+/// defines the `dct`, `dcat` and `odrl` prefixes.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Metadata(std::collections::BTreeMap<String, serde_json::Value>);
+
+impl Metadata {
+    /// The value of one property.
+    #[must_use]
+    pub fn get(&self, term: &str) -> Option<&serde_json::Value> {
+        self.0.get(term)
+    }
+
+    /// Whether there is no extra property.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
 }
 
 /// A DCAT catalog, the response to a catalog request.
@@ -327,6 +354,17 @@ mod tests {
     fn rejects_missing_context() {
         let raw = r#"{"@context":["https://example.org"],"@type":"CatalogRequestMessage"}"#;
         assert!(serde_json::from_str::<CatalogRequestMessage>(raw).is_err());
+    }
+
+    #[test]
+    fn dataset_keeps_unknown_metadata() {
+        let raw = r#"{"@id":"d","@type":"Dataset","dct:title":"Air quality",
+            "dcat:keyword":["air","EU"],"hasPolicy":[],"distribution":[]}"#;
+        let d: Dataset = serde_json::from_str(raw).unwrap();
+        assert_eq!(d.metadata.get("dct:title").unwrap(), "Air quality");
+        let back = serde_json::to_value(&d).unwrap();
+        assert_eq!(back["dcat:keyword"][1], "EU");
+        assert!(!d.metadata.is_empty());
     }
 
     #[test]
