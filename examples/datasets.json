@@ -1,0 +1,33 @@
+[
+  {
+    "@id": "weather-stations",
+    "@type": "Dataset",
+    "hasPolicy": [
+      {
+        "@id": "weather-stations:offer:use",
+        "@type": "Offer",
+        "permission": [{ "action": "use" }]
+      }
+    ],
+    "distribution": [{ "@type": "Distribution", "format": "HttpData-PULL" }]
+  },
+  {
+    "@id": "air-quality",
+    "@type": "Dataset",
+    "hasPolicy": [
+      {
+        "@id": "air-quality:offer:eu-only",
+        "@type": "Offer",
+        "permission": [
+          {
+            "action": "use",
+            "constraint": [
+              { "leftOperand": "spatial", "operator": "eq", "rightOperand": "EU" }
+            ]
+          }
+        ]
+      }
+    ],
+    "distribution": [{ "@type": "Distribution", "format": "HttpData-PULL" }]
+  }
+]

@@ -11,6 +11,9 @@ path = [
     "NOTICE",
     # test-only key material in binary form
     "crates/*/tests/fixtures/**",
+    # JSON has no comments
+    "examples/*.json",
+    "tck/*.json",
 ]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "LDSC contributors"

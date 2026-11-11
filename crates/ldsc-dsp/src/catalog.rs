@@ -29,6 +29,90 @@ pub enum Outcome<T> {
     NotFound(CatalogError),
 }
 
+/// Why a set of dataset definitions cannot be offered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DatasetDefinitionError {
+    /// A dataset has an empty `@id`.
+    EmptyId,
+    /// Two datasets share an `@id`.
+    DuplicateId(String),
+    /// A dataset has no offer; DSP 2025-1 requires at least one `hasPolicy`.
+    NoOffer(String),
+    /// A dataset has no distribution; DSP 2025-1 requires at least one.
+    NoDistribution(String),
+    /// A distribution has an empty `format`.
+    EmptyFormat(String),
+    /// A distribution names a data service this connector does not run.
+    UnknownAccessService {
+        /// The dataset.
+        dataset: String,
+        /// The `accessService` it names.
+        service: String,
+    },
+}
+
+impl std::fmt::Display for DatasetDefinitionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyId => write!(f, "a dataset has an empty @id"),
+            Self::DuplicateId(id) => write!(f, "dataset {id:?} is defined twice"),
+            Self::NoOffer(id) => write!(f, "dataset {id:?} has no offer (hasPolicy)"),
+            Self::NoDistribution(id) => write!(f, "dataset {id:?} has no distribution"),
+            Self::EmptyFormat(id) => write!(f, "dataset {id:?} has a distribution without format"),
+            Self::UnknownAccessService { dataset, service } => write!(
+                f,
+                "dataset {dataset:?} names accessService {service:?}; leave it out, the connector sets it"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DatasetDefinitionError {}
+
+/// Checks a provider's dataset definitions against the DSP 2025-1 rules
+/// for a dataset in a catalog (at least one offer and one distribution,
+/// each distribution with a format) and makes every distribution point to
+/// this connector's data service, `service_id`.
+///
+/// # Errors
+///
+/// The first definition that breaks a rule.
+pub fn prepare_datasets(
+    mut datasets: Vec<Dataset>,
+    service_id: &str,
+) -> Result<Vec<Dataset>, DatasetDefinitionError> {
+    let mut seen = std::collections::BTreeSet::new();
+    for d in &mut datasets {
+        if d.id.is_empty() {
+            return Err(DatasetDefinitionError::EmptyId);
+        }
+        if !seen.insert(d.id.clone()) {
+            return Err(DatasetDefinitionError::DuplicateId(d.id.clone()));
+        }
+        if d.has_policy.is_empty() {
+            return Err(DatasetDefinitionError::NoOffer(d.id.clone()));
+        }
+        if d.distribution.is_empty() {
+            return Err(DatasetDefinitionError::NoDistribution(d.id.clone()));
+        }
+        for dist in &mut d.distribution {
+            if dist.format.is_empty() {
+                return Err(DatasetDefinitionError::EmptyFormat(d.id.clone()));
+            }
+            if dist.access_service.is_empty() {
+                service_id.clone_into(&mut dist.access_service);
+            } else if dist.access_service != service_id {
+                return Err(DatasetDefinitionError::UnknownAccessService {
+                    dataset: d.id.clone(),
+                    service: dist.access_service.clone(),
+                });
+            }
+        }
+        d.context = None;
+    }
+    Ok(datasets)
+}
+
 /// The catalog service of one provider.
 #[derive(Debug, Clone)]
 pub struct CatalogService<S> {
@@ -87,5 +171,88 @@ impl<S: DatasetStore> CatalogService<S> {
             }
             None => Outcome::NotFound(CatalogError::new("404", "dataset not found")),
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::{DatasetType, Distribution, DistributionType, Offer, OfferType, Rule};
+
+    fn dataset(id: &str) -> Dataset {
+        Dataset {
+            context: None,
+            id: id.to_owned(),
+            kind: DatasetType,
+            has_policy: vec![Offer {
+                id: format!("{id}:offer"),
+                kind: OfferType,
+                permission: vec![Rule {
+                    action: "use".to_owned(),
+                    constraint: vec![],
+                }],
+                prohibition: vec![],
+            }],
+            distribution: vec![Distribution {
+                kind: DistributionType,
+                format: "HttpData-PULL".to_owned(),
+                access_service: String::new(),
+            }],
+        }
+    }
+
+    #[test]
+    fn fills_the_access_service() {
+        let out = prepare_datasets(vec![dataset("a")], "svc").unwrap();
+        assert_eq!(out[0].distribution[0].access_service, "svc");
+    }
+
+    #[test]
+    fn rejects_broken_definitions() {
+        let mut no_offer = dataset("a");
+        no_offer.has_policy.clear();
+        let mut no_dist = dataset("a");
+        no_dist.distribution.clear();
+        let mut no_format = dataset("a");
+        no_format.distribution[0].format.clear();
+        let mut other_service = dataset("a");
+        other_service.distribution[0].access_service = "elsewhere".to_owned();
+        let cases = [
+            (vec![dataset("")], DatasetDefinitionError::EmptyId),
+            (
+                vec![dataset("a"), dataset("a")],
+                DatasetDefinitionError::DuplicateId("a".to_owned()),
+            ),
+            (
+                vec![no_offer],
+                DatasetDefinitionError::NoOffer("a".to_owned()),
+            ),
+            (
+                vec![no_dist],
+                DatasetDefinitionError::NoDistribution("a".to_owned()),
+            ),
+            (
+                vec![no_format],
+                DatasetDefinitionError::EmptyFormat("a".to_owned()),
+            ),
+            (
+                vec![other_service],
+                DatasetDefinitionError::UnknownAccessService {
+                    dataset: "a".to_owned(),
+                    service: "elsewhere".to_owned(),
+                },
+            ),
+        ];
+        for (input, want) in cases {
+            assert_eq!(prepare_datasets(input, "svc").unwrap_err(), want);
+        }
+    }
+
+    #[test]
+    fn keeps_a_matching_access_service() {
+        let mut d = dataset("a");
+        d.distribution[0].access_service = "svc".to_owned();
+        assert!(prepare_datasets(vec![d], "svc").is_ok());
     }
 }

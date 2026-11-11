@@ -49,7 +49,7 @@ jobs:
           LDSC_BIND: 127.0.0.1:8080
           LDSC_PARTICIPANT_ID: did:web:localhost%3A8080
           LDSC_PUBLIC_URL: http://127.0.0.1:8080
-          LDSC_DATASETS: CAT0101,CAT0102
+          LDSC_DATASETS_FILE: tck/datasets.json
         run: |
           cargo build --locked -p ldsc-connector
           nohup target/debug/ldsc-connector > ldsc.log 2>&1 &

@@ -232,7 +232,10 @@ pub struct Distribution {
     pub kind: DistributionType,
     /// Transfer format, for example `HttpData-PULL`.
     pub format: String,
-    /// Identifier of the data service that serves it.
+    /// Identifier of the data service that serves it. In a provider's
+    /// dataset definitions it may be left out; the catalog service then
+    /// sets it to its own data service (see [`catalog::CatalogService`]).
+    #[serde(default)]
     pub access_service: String,
 }
 
