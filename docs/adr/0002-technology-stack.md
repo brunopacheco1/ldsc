@@ -165,7 +165,42 @@ Limits of this result:
 - The same checks also passed in GitHub Actions on 2026-11-11 (workflows
   `CI` and `DSP TCK`, runs 43100510277 and 43100510287).
 
-No kill criterion was hit. **Recommendation: accept Rust.**
+No kill criterion was hit.
+
+### Side by side with Java on Quarkus native (maintainer's request)
+
+The same slice was built in Java 21 on Quarkus 3.40.1, compiled with
+Mandrel 25.0.5 (`bakeoff/quarkus/`). Both ran on the same GitHub Actions
+runner (ubuntu-24.04), with the same script and the same TCK image
+([Bake-off run 43102075227](https://github.com/brunopacheco1/ldsc/actions/runs/43102075227)).
+Default settings on both sides, no tuning.
+
+| Measure | Rust | Quarkus native | Ratio |
+|---|---|---|---|
+| DSP TCK metadata + catalog | 4 / 4 pass | 4 / 4 pass | equal |
+| Schema, ES256 and PS256 tests | pass | pass | equal |
+| Executable size | 2.0 MB (static) | 55.2 MB (dynamic, needs glibc) | 27x |
+| Image size | 2.0 MB (`scratch`) | 78.2 MB (`ubi9/ubi-micro`) | 38x |
+| Startup to first healthy response | 8 ms | 20 ms | 2.5x |
+| Idle memory (RSS) | 1.8 MB | 54.1 MB | 30x |
+| Peak memory under load | 3.1 MB | 116.2 MB | 38x |
+| Throughput, 50 clients | 47,864 req/s | 28,459 req/s | 1.7x |
+| Latency p50 / p99 / p99.9 | 0.99 / 2.34 / 3.07 ms | 1.55 / 5.65 / 9.36 ms | 1.6x / 2.4x / 3.0x |
+| Release build (cached dependencies) | 22 s | 115 s (native image) | 5x |
+
+Notes on fairness:
+- The Quarkus image could be smaller with a static musl native build on
+  `scratch`, and its memory lower with a tuned max heap (`-Xmx`). Both
+  are extra configuration; Rust needed none.
+- The tail latency gap (p99.9) is what the garbage collector costs; it
+  matches the "predictable" goal less well.
+- Java keeps real advantages: the maintainer's existing toolchain and
+  skills, and the Java ecosystem around EDC.
+
+**Recommendation: accept Rust.** It is better on every measured runtime
+goal (footprint, startup, tail latency), builds faster, and passed the same
+conformance checks. Java on Quarkus native is a workable fallback, not a
+better fit for the stated goals.
 
 ## 8. Consequences
 
