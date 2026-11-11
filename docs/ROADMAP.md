@@ -116,29 +116,42 @@ all checks green, Scorecard published.
 - Exit: DCP TCK issuance tests green; a revoked credential blocks a
   negotiation.
 
-## 0.7 Operations
+## 0.7 Gaia-X Trust Framework (Danube)
+
+- The identity component obtains and stores the participant's Gaia-X
+  credentials (for example LegalPerson, registration number, terms and
+  conditions) and the Gaia-X Compliance credential from a Gaia-X Digital
+  Clearing House (GXDCH).
+- Credentials use Gaia-X's required format: VC Data Model 2.0, encoded as
+  VC-JWT (`typ: vc+jwt`), `kid` pointing to a did:web verification method.
+- The connector can require a valid Gaia-X Compliance credential in an
+  ODRL policy, and presents its own one over DCP.
+- Publish the catalog's datasets with Gaia-X-compatible DCAT descriptions.
+- Exit: a participant set up from scratch gets a Compliance credential
+  from a GXDCH (test environment) and negotiates with an EDC connector
+  under a policy that requires it.
+
+## 0.8 Operations
 
 - Health and readiness endpoints, structured logs, metrics (OpenTelemetry).
 - Docker Compose for a two-participant demo dataspace, documented
   deployment order.
 - Exit: a new user runs the demo from the website in under 15 minutes.
 
-## 0.8 Hardening
+## 0.9 Hardening and release candidate for 1.0
 
 - Threat model review, fuzzing on every parser (ClusterFuzzLite),
   benchmarks published.
 - OpenSSF Best Practices **silver**.
-- Interoperability tests against Eclipse EDC and Simpl-Open.
-- Exit: Scorecard at least 8/10; no open high findings in Sonar or CodeQL.
-
-## 0.9 Release candidate for 1.0
-
+- Interoperability tests against Eclipse EDC and Simpl-Open (with Gaia-X).
 - API and config freeze, upgrade notes, documentation review.
+- Exit: Scorecard at least 8/10; no open high findings in Sonar or CodeQL.
 
 ## Decisions taken (2026-11-11)
 
 - Licence: Apache-2.0.
-- Interoperability targets: Eclipse EDC and Simpl-Open.
+- Interoperability targets: Eclipse EDC and Simpl-Open (a customised EDC
+  with Gaia-X support). Gaia-X Trust Framework is in scope (0.7).
 - OpenSSF Baseline: level 1 for 0.x.
 - Language: Rust, after a 3-day bake-off; fallback Java on Quarkus native ([ADR 0002](adr/0002-technology-stack.md)).
 - Data plane inside the connector: open, explained in ARCHITECTURE.md.

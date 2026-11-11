@@ -16,7 +16,7 @@ of three roles, so operators run only what they need.
 | # | Component | Role | Mandatory? | Protocols |
 |---|---|---|---|---|
 | 1 | PostgreSQL | State of negotiations, transfers, credentials | Mandatory | — |
-| 2 | Identity (`ldsc identity`) | Holds the participant's DID, keys and credentials; answers presentation queries | Mandatory for each participant, unless an external DCP wallet is used | DCP (credential service) |
+| 2 | Identity (`ldsc identity`) | Holds the participant's DID, keys and credentials (including Gaia-X credentials from 0.7); answers presentation queries | Mandatory for each participant, unless an external DCP wallet is used | DCP (credential service) |
 | 3 | Connector (`ldsc connector`) | Control plane: catalog, contract negotiation, transfer; verifies DCP presentations. Includes the HTTP data plane, which can be switched off | Mandatory | DSP, DCP (verifier) |
 | 4 | Issuer (`ldsc issuer`) | Issues and revokes credentials (for example membership) | Optional: one per dataspace, run by the dataspace authority | DCP (issuance) |
 
@@ -28,7 +28,8 @@ by participants.
 1. PostgreSQL.
 2. Identity: publish the `did:web` document over HTTPS.
 3. Issuer (only the dataspace authority): issue a membership credential to
-   the participant's identity.
+   the participant's identity. For Gaia-X, the participant also obtains a
+   Compliance credential from a Gaia-X Digital Clearing House.
 4. Connector: point it at the identity and the database.
 
 ## Data plane: inside the connector or separate? (open decision)

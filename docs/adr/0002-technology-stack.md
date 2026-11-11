@@ -30,6 +30,7 @@ Practices, OpenSSF Baseline, Sonar and a style checker?
 | Self-issued ID token | A JWT with `iss` = `sub` = participant DID, `aud` = verifier DID, `jti`, `exp`, `iat`. The signing key comes from the DID document and needs the `capabilityInvocation` relationship. No algorithm is mandated. | DCP `base.protocol.md` (tag `v1.0.1`) |
 | EDC | EDC 1.0.0-RC1 was announced in September 2026. Data Plane Signaling is being integrated. | [EDC blog](https://eclipse-edc.github.io/blog/2026/03/06/the-path-to-version-1-for-the-eclipse-dataspace-components/) |
 | Simpl-Open | Uses EDC connectors. Outside its "agent", identity is DCP with an IdentityHub. Inside the agent, connectors use x509 certificates from the governance authority over mTLS and attribute-based access control, not DCP. | [Simpl-Open Q&A](https://simpl-programme.ec.europa.eu/landing-page/simpl-open-qa) |
+| Gaia-X Trust Framework (Danube, 3.0) | Gaia-X credentials use VC Data Model 2.0, encoded as VC-JWT (`typ: vc+jwt`, `cty: vc`), with `kid` as a did:web reference. The example signs with PS256 (RSA). Supported DID methods in Danube: did:web, did:key. Exchange protocols listed as supported: VC-API and OpenID; Eclipse DCP is listed but not marked as supported. | [Gaia-X credentials (ICAM 25.11)](https://docs.gaia-x.eu/technical-committee/identity-credential-access-management/25.11/gaia-x_credentials/), [formats and protocols (AD 25.11)](https://docs.gaia-x.eu/technical-committee/architecture-document/25.11/credential_formats_protocols/) |
 | Existing open DSP connectors outside Java | Go: RUN-DSP (Apache-2.0, "pre-alpha", no DCP). Rust: Rainbow (DSP 2024-1, contracts still in progress, no DCP mentioned). Neither targets DSP 2025-1 + DCP today. | [run-dsp](https://pkg.go.dev/github.com/go-dataspace/run-dsp), [Rainbow](https://eunomiaupm.github.io/rainbow) |
 | Reference implementation | Eclipse EDC (Java) is the implementation the DSP TCK release was validated against. | [Eclipse release 1.0.0](https://projects.eclipse.org/node/33507) |
 
@@ -118,7 +119,10 @@ two measured side by side:
 1. `GET /.well-known/dspace-version` and the catalog request endpoint.
 2. Run the DSP TCK Docker image against it in CI (catalog tests only).
 3. Sign and verify a DCP self-issued ID token (JWT) with a did:web key.
-4. Measure: image size, idle and loaded memory (RSS), startup time,
+4. Verify a Gaia-X style VC-JWT signed with **PS256 (RSA-PSS)**. This
+   checks the Rust RSA path, a known weak spot: the pure-Rust `rsa` crate
+   has a timing advisory (RUSTSEC-2023-0071), so we may need `aws-lc-rs`.
+5. Measure: image size, idle and loaded memory (RSS), startup time,
    p99 latency on the catalog endpoint, clean build time in CI.
 
 Acceptance criteria (proposed, adjust as you like):
