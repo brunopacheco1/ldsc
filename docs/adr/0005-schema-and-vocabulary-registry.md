@@ -20,6 +20,13 @@ before they publish them in the DSP catalog. They may also check the
 catalogs of other participants. (Requirement from the maintainer,
 2026-11-12.)
 
+The same applies to every DSP message, not only catalogs: for example,
+the authority may require that offers and agreements in a contract
+negotiation follow an ODRL profile (allowed constraints and operands),
+published as SHACL shapes. Participants check messages they receive
+before processing them, and messages they send before sending them.
+(Requirement from the maintainer, 2026-11-12, during 0.3.)
+
 ### Facts checked (2026-11-12)
 
 | Fact | Source |
@@ -90,6 +97,23 @@ example the EU Interoperability Test Bed SHACL validator, or Apache Jena.
 
 ## Decision (proposed)
 
+- Three ports, so each part can be replaced without touching the
+  protocol logic (ADR 0004):
+  - `MessageGuard` (in `ldsc-dsp`, since 0.3): every DSP message passes
+    through it at the HTTP edge, inbound before processing and outbound
+    before sending, with its `@type` and the raw JSON-LD. An inbound
+    rejection answers HTTP 400 with the protocol's error message and
+    changes no state; an outbound rejection is not sent, and the
+    negotiation or transfer is terminated with the reason logged. The
+    default adapter, `AllowAll`, accepts everything.
+  - `ShapeSource`: where shapes, vocabularies and JSON-LD contexts come
+    from. Adapters: a local folder (development and tests), the signed
+    bundle below, later a Gaia-X or Simpl-Open registry if one is
+    standardised.
+  - `ShapeValidator`: the SHACL engine (see "Validation engine").
+- JSON-LD contexts used for validation come from the `ShapeSource`
+  only; the validator never fetches a `@context` from the network, so a
+  counter-party cannot point it at a hostile context.
 - Distribution: **Option A**, a signed static bundle.
 - Validation: a `ShapeValidator` port. Option 1 (rudof) is the first
   adapter, if a spike at the start of 0.6 shows that it validates
@@ -101,9 +125,14 @@ example the EU Interoperability Test Bed SHACL validator, or Apache Jena.
     the profile's `dct:conformsTo`.
   - Checking other participants' catalogs is optional, and only produces
     warnings.
+  - The SHACL `MessageGuard` adapter checks negotiation and transfer
+    messages against the bundle's shapes for each message `@type`.
 
 ## Consequences
 
+- Validation adds latency per message. It is acceptable for catalog
+  and negotiation messages (few per contract), not on the data path,
+  which is not a DSP message exchange.
 - 0.2 to 0.5 keep dataset metadata as JSON-LD and don't interpret it.
   `ldsc_dsp::Metadata` already does this (0.2).
 - The catalog `@context` must accept extra entries (prefix definitions as
