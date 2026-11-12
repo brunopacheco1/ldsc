@@ -131,17 +131,19 @@ all checks green, Scorecard published.
   short-lived token. Internal interface follows Eclipse Data Plane
   Signaling v1.0-RC4, so the data plane can later be split out.
 - Exit: DSP TCK transfer tests green; end-to-end file transfer between two
-  instances in Docker Compose; **interop test against EDC** (catalog,
-  negotiation, transfer with a static token) runs in CI.
+  instances in Docker Compose. The EDC interop test moved to 0.5, so it
+  runs once with real identity (DCP) instead of EDC's mock (maintainer,
+  2026-11-12).
 
 ## 0.5 DCP: identity and presentation
 
 - Identity component: did:web document, key management, self-issued ID
   token, presentation query API, storage API.
 - Connector verifies the counter-party's credentials on every DSP request.
+- **First interop test against EDC**, in CI: catalog, negotiation and
+  transfer, with DCP against EDC's IdentityHub.
 - Exit: DCP TCK credential service tests green; DSP flows from 0.2 to 0.4
-  run with DCP authentication instead of a static token; the EDC interop
-  test runs with DCP against EDC's IdentityHub.
+  run with DCP authentication; the EDC interop test is green in CI.
 - Spike: how to join a **Simpl-Open** dataspace. Simpl-Open uses EDC with
   DCP outside its agent, but x509/mTLS and attribute-based access inside it.
   Decide whether Portitor needs an x509/mTLS authentication profile.
