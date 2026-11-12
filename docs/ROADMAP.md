@@ -81,7 +81,7 @@ OpenSSF:
 Exit: a "hello" binary ships as a signed image through the full pipeline,
 all checks green, Scorecard published.
 
-## 0.2 DSP basics: version and catalog
+## 0.2 DSP basics: version and catalog (released 2026-11-12 as v0.2.0)
 
 - `/.well-known/dspace-version` (version discovery).
 - Catalog protocol (provider side): catalog request, dataset request,
@@ -102,6 +102,10 @@ all checks green, Scorecard published.
     Contributors.
 - Exit: DSP TCK catalog tests green; Best Practices badge at **passing**;
   Scorecard fuzzing and branch protection no longer 0.
+- Result (2026-11-12): all met. Best Practices **passing** (100%).
+  Scorecard 6.7 to 7.9: Fuzzing 10, CII-Best-Practices 5,
+  Signed-Releases 10, Branch-Protection 5. Branch-Protection was 0
+  because the `main` ruleset targeted no branch; fixed.
 
 ## 0.3 Contract negotiation
 
