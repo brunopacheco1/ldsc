@@ -8,6 +8,7 @@ version = 1
 [[annotations]]
 path = [
     "Cargo.lock",
+    "fuzz/Cargo.lock",
     "NOTICE",
     # test-only key material in binary form
     "crates/*/tests/fixtures/**",

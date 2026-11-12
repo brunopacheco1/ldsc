@@ -22,6 +22,11 @@ versions may change behaviour and configuration.
 - [ADR 0005](docs/adr/0005-schema-and-vocabulary-registry.md) (proposed): schema and vocabulary registry run by the
   dataspace authority, built in 0.6.
 
+- Fuzzing with cargo-fuzz and ClusterFuzzLite: three targets for untrusted
+  input (DSP catalog messages and dataset definitions, DCP token parsing,
+  DCP token validation), five minutes on each pull request and 30 minutes
+  weekly.
+
 ### Changed
 - The catalog and data service `@id`s are derived from `LDSC_PUBLIC_URL`
   and stay the same across restarts (they were random UUIDs).
@@ -29,6 +34,13 @@ versions may change behaviour and configuration.
   while it is set, so a catalog never goes empty silently.
 - Roadmap: 0.2 raises the OpenSSF scores: Best Practices to **passing**
   (moved from 0.1) and Scorecard fuzzing and branch protection.
+
+### Fixed
+- DCP token validation added `leeway` to the token's `exp` and to the
+  current time without overflow checks. A token with `exp` near the u64
+  maximum panicked in debug builds; release builds wrapped around and
+  rejected the token, so no invalid token was accepted. Found by the new
+  fuzz target.
 
 ## [0.1.0] - 2026-11-12
 

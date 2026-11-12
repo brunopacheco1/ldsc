@@ -4,11 +4,19 @@
 
 # ORT repository configuration (https://oss-review-toolkit.org/ort/docs/configuration/ort-yml):
 # the policy judges what is shipped in the images, not tooling around it.
+analyzer:
+  # Do not analyze excluded projects and scopes at all. The fuzz workspace (fuzz/Cargo.toml)
+  # pulls the crates in by path; analyzing it next to the main workspace broke the
+  # dependency graph ("Key ... is missing in the map").
+  skip_excluded: true
 excludes:
   paths:
     - pattern: ".github/**"
       reason: "BUILD_TOOL_OF"
       comment: "CI workflows and their GitHub Actions; not distributed."
+    - pattern: "fuzz/**"
+      reason: "TEST_TOOL_OF"
+      comment: "Fuzz targets; not distributed."
     - pattern: "scripts/**"
       reason: "BUILD_TOOL_OF"
       comment: "Measurement and CI helper scripts; not distributed."
@@ -25,6 +33,3 @@ license_choices:
     - given: "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
       choice: "Apache-2.0"
       comment: "Offered by the wasi crate family; same licence as LDSC."
-    - given: "MIT OR Apache-2.0 OR LGPL-2.1-or-later"
-      choice: "Apache-2.0"
-      comment: "Offered by r-efi; LDSC does not take the LGPL option."
