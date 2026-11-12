@@ -12,6 +12,8 @@ versions may change behaviour and configuration.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-12
+
 ### Added
 - Datasets are read from a JSON file (`LDSC_DATASETS_FILE`) of DSP 2025-1
   `Dataset` objects, so each dataset has its own offers and distributions.
@@ -21,7 +23,6 @@ versions may change behaviour and configuration.
   `dct:title`) and the catalog serves them; before, they were dropped.
 - [ADR 0005](docs/adr/0005-schema-and-vocabulary-registry.md) (proposed): schema and vocabulary registry run by the
   dataspace authority, built in 0.6.
-
 - Fuzzing with cargo-fuzz and ClusterFuzzLite: three targets for untrusted
   input (DSP catalog messages and dataset definitions, DCP token parsing,
   DCP token validation), five minutes on each pull request and 30 minutes
