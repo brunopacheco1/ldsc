@@ -13,6 +13,11 @@
 //! it sends its first request, in state `REQUESTED` without a provider
 //! process id. The provider may answer with an offer or agreement before
 //! its acknowledgement reaches us, so the negotiation must already exist.
+//!
+//! As on the provider side, each message is saved as `pending` before it is
+//! sent, and a provider message that fits only the state our pending
+//! message leads to proves that message arrived (ADR 0007). Every write is
+//! a compare-and-update on `version`.
 
 use crate::{Context, Offer};
 
@@ -23,7 +28,7 @@ use super::{
     ContractNegotiationEventMessage, ContractNegotiationEventMessageType,
     ContractNegotiationTerminationMessage, ContractNegotiationTerminationMessageType,
     ContractOfferMessage, ContractRequestMessage, ContractRequestMessageType, NegotiationEvent,
-    NegotiationState, Role, Transition, next_state,
+    NegotiationState, Role, Transition, TransitionError, next_state,
 };
 
 /// One negotiation as the consumer keeps it.
@@ -43,6 +48,10 @@ pub struct ConsumerNegotiation {
     pub offer: Offer,
     /// The agreement, once received.
     pub agreement: Option<Agreement>,
+    /// Our message on its way to the provider, saved before it is sent.
+    pub pending: Option<Outgoing>,
+    /// Changes on every write; writes compare it (optimistic locking).
+    pub version: u64,
 }
 
 impl ConsumerNegotiation {
@@ -77,8 +86,9 @@ pub trait ConsumerStore {
     /// The consumer pid exists, or the store cannot be written.
     fn insert(&self, negotiation: &ConsumerNegotiation) -> Result<(), StoreError>;
 
-    /// Replaces the negotiation if its stored state is still `expected`;
-    /// returns whether it did (compare-and-update).
+    /// Replaces the negotiation only if its stored `version` is still
+    /// `expected`, atomically. Returns `false` when another write came
+    /// first.
     ///
     /// # Errors
     ///
@@ -86,8 +96,16 @@ pub trait ConsumerStore {
     fn replace_if(
         &self,
         negotiation: &ConsumerNegotiation,
-        expected: NegotiationState,
+        expected: u64,
     ) -> Result<bool, StoreError>;
+
+    /// Every negotiation with a pending message (to send again after a
+    /// restart).
+    ///
+    /// # Errors
+    ///
+    /// The store cannot be read.
+    fn pending(&self) -> Result<Vec<ConsumerNegotiation>, StoreError>;
 
     /// Up to `limit` negotiations whose consumer pid sorts after `after`
     /// (from the start if `None`), in consumer pid order.
@@ -143,7 +161,7 @@ impl ConsumerDecider for AcceptAndVerify {
 }
 
 /// A message for the provider.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outgoing {
     /// The negotiation it belongs to.
     pub consumer_pid: String,
@@ -153,6 +171,12 @@ pub struct Outgoing {
     pub body: serde_json::Value,
     /// The transition it causes once acknowledged.
     pub transition: Transition,
+    /// The state after that transition.
+    pub to: NegotiationState,
+    /// Where the provider reports its state for this negotiation (`GET`),
+    /// to check whether a message it refused had arrived before. Empty for
+    /// the first request (no provider pid yet).
+    pub status_url: String,
     /// The first request; its acknowledgement carries the provider pid.
     pub initial: bool,
 }
@@ -206,7 +230,7 @@ impl<S: ConsumerStore, D: ConsumerDecider, E: Environment> ConsumerService<S, D,
         }
         let state = next_state(None, Transition::Request, Role::Consumer)
             .map_err(|e| bad("", "", &e.to_string()))?;
-        let n = ConsumerNegotiation {
+        let mut n = ConsumerNegotiation {
             consumer_pid: self.env.new_id(),
             provider_pid: None,
             state,
@@ -214,8 +238,9 @@ impl<S: ConsumerStore, D: ConsumerDecider, E: Environment> ConsumerService<S, D,
             provider_id: provider_id.to_owned(),
             offer,
             agreement: None,
+            pending: None,
+            version: 0,
         };
-        self.store.insert(&n).map_err(Failure::Store)?;
         let msg = ContractRequestMessage {
             context: Context::default(),
             kind: ContractRequestMessageType,
@@ -229,8 +254,13 @@ impl<S: ConsumerStore, D: ConsumerDecider, E: Environment> ConsumerService<S, D,
             url: format!("{}/negotiations/request", n.provider_address),
             body: serde_json::to_value(&msg).unwrap_or_default(),
             transition: Transition::Request,
+            // the request created the state already
+            to: state,
+            status_url: String::new(),
             initial: true,
         };
+        n.pending = Some(out.clone());
+        self.store.insert(&n).map_err(Failure::Store)?;
         Ok((n, out))
     }
 
@@ -274,14 +304,13 @@ impl<S: ConsumerStore, D: ConsumerDecider, E: Environment> ConsumerService<S, D,
     ///
     /// Unknown negotiation, mismatched ids, invalid transition, or store
     /// failure.
-    pub fn offer(&self, consumer_pid: &str, msg: ContractOfferMessage) -> Handled {
-        let mut n = self.load(consumer_pid)?;
-        check_ids(&mut n, &msg.provider_pid, msg.consumer_pid.as_deref())?;
-        let from = n.state;
-        n.state = transit(&n, Transition::Offer)?;
-        n.offer = msg.offer;
-        self.save(&n, from)?;
-        Ok(self.respond(&n))
+    pub fn offer(&self, consumer_pid: &str, msg: &ContractOfferMessage) -> Handled {
+        self.handle(consumer_pid, |n| {
+            check_ids(n, &msg.provider_pid, msg.consumer_pid.as_deref())?;
+            receive(n, Transition::Offer)?;
+            n.offer = msg.offer.clone();
+            Ok(())
+        })
     }
 
     /// `POST <callback>/negotiations/:consumerPid/agreement`.
@@ -290,21 +319,20 @@ impl<S: ConsumerStore, D: ConsumerDecider, E: Environment> ConsumerService<S, D,
     ///
     /// Unknown negotiation, mismatched ids, invalid transition, or store
     /// failure.
-    pub fn agreement(&self, consumer_pid: &str, msg: ContractAgreementMessage) -> Handled {
-        let mut n = self.load(consumer_pid)?;
-        check_ids(&mut n, &msg.provider_pid, Some(&msg.consumer_pid))?;
-        if msg.agreement.target != n.dataset_id() {
-            return Err(bad(
-                &msg.provider_pid,
-                &n.consumer_pid,
-                "the agreement is for another dataset",
-            ));
-        }
-        let from = n.state;
-        n.state = transit(&n, Transition::Agree)?;
-        n.agreement = Some(msg.agreement);
-        self.save(&n, from)?;
-        Ok(self.respond(&n))
+    pub fn agreement(&self, consumer_pid: &str, msg: &ContractAgreementMessage) -> Handled {
+        self.handle(consumer_pid, |n| {
+            check_ids(n, &msg.provider_pid, Some(&msg.consumer_pid))?;
+            if msg.agreement.target != n.dataset_id() {
+                return Err(bad(
+                    &msg.provider_pid,
+                    &n.consumer_pid,
+                    "the agreement is for another dataset",
+                ));
+            }
+            receive(n, Transition::Agree)?;
+            n.agreement = Some(msg.agreement.clone());
+            Ok(())
+        })
     }
 
     /// `POST <callback>/negotiations/:consumerPid/events` (`FINALIZED`).
@@ -314,12 +342,10 @@ impl<S: ConsumerStore, D: ConsumerDecider, E: Environment> ConsumerService<S, D,
     /// Unknown negotiation, mismatched ids, invalid transition (including an
     /// `ACCEPTED` event, which only a consumer sends), or store failure.
     pub fn event(&self, consumer_pid: &str, msg: &ContractNegotiationEventMessage) -> Handled {
-        let mut n = self.load(consumer_pid)?;
-        check_ids(&mut n, &msg.provider_pid, Some(&msg.consumer_pid))?;
-        let from = n.state;
-        n.state = transit(&n, msg.transition())?;
-        self.save(&n, from)?;
-        Ok(self.respond(&n))
+        self.handle(consumer_pid, |n| {
+            check_ids(n, &msg.provider_pid, Some(&msg.consumer_pid))?;
+            receive(n, msg.transition())
+        })
     }
 
     /// `POST <callback>/negotiations/:consumerPid/termination`.
@@ -333,84 +359,154 @@ impl<S: ConsumerStore, D: ConsumerDecider, E: Environment> ConsumerService<S, D,
         consumer_pid: &str,
         msg: &ContractNegotiationTerminationMessage,
     ) -> Handled {
-        let mut n = self.load(consumer_pid)?;
-        check_ids(&mut n, &msg.provider_pid, Some(&msg.consumer_pid))?;
-        let from = n.state;
-        n.state = transit(&n, Transition::Terminate)?;
-        self.save(&n, from)?;
-        Ok((n.ack(), None))
+        self.handle(consumer_pid, |n| {
+            check_ids(n, &msg.provider_pid, Some(&msg.consumer_pid))?;
+            receive(n, Transition::Terminate)
+        })
     }
 
     /// Records that the provider acknowledged `sent` and returns what to
     /// send next, if anything. For the first request, `ack` is the
-    /// provider's `ContractNegotiation` answer, which carries its pid.
+    /// provider's `ContractNegotiation` answer, which carries its pid. A
+    /// message that is no longer pending (a provider message already proved
+    /// it arrived, or the negotiation moved on) changes nothing.
     ///
     /// # Errors
     ///
-    /// The answer to the first request has no provider pid, the
-    /// negotiation moved on in the meantime, or the store failed.
+    /// The answer to the first request has no provider pid, or the store
+    /// failed.
     pub fn delivered(
         &self,
         sent: &Outgoing,
         ack: Option<&serde_json::Value>,
     ) -> Result<Option<Outgoing>, Failure> {
-        let mut n = self.load(&sent.consumer_pid)?;
-        let from = n.state;
-        if sent.initial {
-            let pid = ack
-                .and_then(|a| serde_json::from_value::<ContractNegotiation>(a.clone()).ok())
-                .map(|a| a.provider_pid)
-                .filter(|p| !p.is_empty())
-                .ok_or_else(|| {
-                    bad(
-                        "",
-                        &n.consumer_pid,
-                        "the provider's answer has no providerPid",
-                    )
-                })?;
-            if n.provider_pid.is_some() {
-                // a provider message arrived first, set the pid and already
-                // triggered the next step
-                return Ok(None);
+        let saved = self.update(&sent.consumer_pid, |n| {
+            if n.pending.as_ref() != Some(sent) {
+                return Ok(Write::Skip);
             }
-            n.provider_pid = Some(pid);
-        } else {
-            n.state = next_state(Some(from), sent.transition, Role::Consumer)
-                .map_err(|e| bad("", &n.consumer_pid, &e.to_string()))?;
-        }
-        self.save(&n, from)?;
-        Ok(self.next(&n))
+            if sent.initial {
+                let pid = ack
+                    .and_then(|a| serde_json::from_value::<ContractNegotiation>(a.clone()).ok())
+                    .map(|a| a.provider_pid)
+                    .filter(|p| !p.is_empty())
+                    .ok_or_else(|| {
+                        bad(
+                            "",
+                            &n.consumer_pid,
+                            "the provider's answer has no providerPid",
+                        )
+                    })?;
+                n.provider_pid = Some(pid);
+            }
+            apply_sent(n, sent).map_err(|e| transition_failure(n, e))?;
+            Ok(Write::Settle)
+        })?;
+        Ok(saved.and_then(|n| n.pending))
     }
 
     /// The first request could not be delivered: the provider does not
-    /// know the negotiation, so it ends here without a message.
+    /// know the negotiation, so it ends here without a message. Changes
+    /// nothing once the provider has answered.
     ///
     /// # Errors
     ///
     /// Unknown negotiation or store failure.
     pub fn not_started(&self, consumer_pid: &str) -> Result<(), Failure> {
-        let mut n = self.load(consumer_pid)?;
-        let from = n.state;
-        n.state = NegotiationState::Terminated;
-        self.save(&n, from)
+        self.update(consumer_pid, |n| {
+            if !n.pending.as_ref().is_some_and(|p| p.initial) {
+                return Ok(Write::Skip);
+            }
+            n.state = NegotiationState::Terminated;
+            n.pending = None;
+            Ok(Write::AsIs)
+        })?;
+        Ok(())
     }
 
-    /// The consumer ends a negotiation on its own (for example when the
-    /// provider cannot be reached). Returns the message to send.
+    /// `sent` could not be delivered: the consumer ends the negotiation
+    /// with a termination saying `reason`, and returns it to send. Changes
+    /// nothing if `sent` is no longer pending (the provider's next message
+    /// proved it arrived), the negotiation has ended, or the provider has
+    /// not answered yet (see [`ConsumerService::not_started`]).
     ///
     /// # Errors
     ///
     /// Unknown negotiation or store failure.
-    pub fn abort(&self, consumer_pid: &str, reason: &str) -> Result<Option<Outgoing>, Failure> {
-        let n = self.load(consumer_pid)?;
-        if n.state.is_terminal() {
-            return Ok(None);
-        }
-        Ok(Self::termination(&n, reason))
+    pub fn abort(&self, sent: &Outgoing, reason: &str) -> Result<Option<Outgoing>, Failure> {
+        let saved = self.update(&sent.consumer_pid, |n| {
+            let Some(out) = (!n.state.is_terminal() && n.pending.as_ref() == Some(sent))
+                .then(|| Self::termination(n, reason))
+                .flatten()
+            else {
+                return Ok(Write::Skip);
+            };
+            n.pending = Some(out);
+            Ok(Write::AsIs)
+        })?;
+        Ok(saved.and_then(|n| n.pending))
     }
 
-    fn respond(&self, n: &ConsumerNegotiation) -> (ContractNegotiation, Option<Outgoing>) {
-        (n.ack(), self.next(n))
+    /// Negotiations with a message still to send, for example after a
+    /// restart.
+    ///
+    /// # Errors
+    ///
+    /// Store failure.
+    pub fn pending(&self) -> Result<Vec<Outgoing>, Failure> {
+        Ok(self
+            .store
+            .pending()
+            .map_err(Failure::Store)?
+            .into_iter()
+            .filter_map(|n| n.pending)
+            .collect())
+    }
+
+    /// Applies a provider's message with `receive`, then decides the next
+    /// message and saves it as pending with the new state.
+    fn handle(
+        &self,
+        consumer_pid: &str,
+        receive: impl Fn(&mut ConsumerNegotiation) -> Result<(), Failure>,
+    ) -> Handled {
+        let saved = self.update(consumer_pid, |n| {
+            receive(n)?;
+            Ok(Write::Settle)
+        })?;
+        let n = saved.ok_or_else(|| not_found(consumer_pid))?;
+        Ok((n.ack(), n.pending))
+    }
+
+    /// Reads a negotiation, changes it and writes it if its version is
+    /// unchanged; otherwise reads it again and repeats, a few times.
+    /// Returns what was written, or `None` for [`Write::Skip`].
+    fn update(
+        &self,
+        consumer_pid: &str,
+        change: impl Fn(&mut ConsumerNegotiation) -> Result<Write, Failure>,
+    ) -> Result<Option<ConsumerNegotiation>, Failure> {
+        for _ in 0..ATTEMPTS {
+            let mut n = self.load(consumer_pid)?;
+            match change(&mut n)? {
+                Write::Skip => return Ok(None),
+                Write::Settle => n.pending = self.next(&n),
+                Write::AsIs => {}
+            }
+            let expected = n.version;
+            n.version = expected.wrapping_add(1);
+            if self
+                .store
+                .replace_if(&n, expected)
+                .map_err(Failure::Store)?
+            {
+                return Ok(Some(n));
+            }
+        }
+        Err(bad(
+            "",
+            consumer_pid,
+            "the negotiation keeps changing concurrently; retry",
+        ))
     }
 
     fn next(&self, n: &ConsumerNegotiation) -> Option<Outgoing> {
@@ -482,18 +578,19 @@ impl<S: ConsumerStore, D: ConsumerDecider, E: Environment> ConsumerService<S, D,
             .map_err(Failure::Store)?
             .ok_or_else(|| not_found(consumer_pid))
     }
+}
 
-    fn save(&self, n: &ConsumerNegotiation, expected: NegotiationState) -> Result<(), Failure> {
-        if self.store.replace_if(n, expected).map_err(Failure::Store)? {
-            Ok(())
-        } else {
-            Err(bad(
-                n.provider_pid.as_deref().unwrap_or_default(),
-                &n.consumer_pid,
-                "the negotiation changed concurrently; retry",
-            ))
-        }
-    }
+/// How many times a write is tried when other writes keep coming first.
+const ATTEMPTS: usize = 3;
+
+/// What [`ConsumerService::update`] writes after a change.
+enum Write {
+    /// Nothing changed; write nothing.
+    Skip,
+    /// Decide the next message, then write.
+    Settle,
+    /// Write as changed.
+    AsIs,
 }
 
 fn outgoing<T: serde::Serialize>(
@@ -503,25 +600,73 @@ fn outgoing<T: serde::Serialize>(
     transition: Transition,
 ) -> Option<Outgoing> {
     let ppid = n.provider_pid.as_deref()?;
+    let status_url = format!("{}/negotiations/{ppid}", n.provider_address);
     Some(Outgoing {
         consumer_pid: n.consumer_pid.clone(),
-        url: format!("{}/negotiations/{ppid}/{path}", n.provider_address),
+        url: format!("{status_url}/{path}"),
         body: serde_json::to_value(msg).unwrap_or_default(),
         transition,
+        to: next_state(Some(n.state), transition, Role::Consumer).unwrap_or(n.state),
+        status_url,
         initial: false,
     })
 }
 
-/// Every message the consumer receives comes from the provider; one that
-/// only a consumer may send (`ACCEPTED`) is refused by the state machine.
-fn transit(n: &ConsumerNegotiation, t: Transition) -> Result<NegotiationState, Failure> {
-    next_state(Some(n.state), t, Role::Provider).map_err(|e| {
-        bad(
-            n.provider_pid.as_deref().unwrap_or_default(),
-            &n.consumer_pid,
-            &e.to_string(),
-        )
-    })
+/// Applies our acknowledged message `sent` to `n`. The first request
+/// changes no state: it created it.
+fn apply_sent(n: &mut ConsumerNegotiation, sent: &Outgoing) -> Result<(), TransitionError> {
+    if !sent.initial {
+        n.state = next_state(Some(n.state), sent.transition, Role::Consumer)?;
+    }
+    n.pending = None;
+    Ok(())
+}
+
+/// Applies a provider's message to `n`. Every message the consumer
+/// receives comes from the provider; one that only a consumer may send
+/// (`ACCEPTED`) is refused by the state machine. Any provider message
+/// proves our first request arrived. A message that does not fit the
+/// current state but fits the state our pending message leads to proves
+/// that message arrived, so both are applied.
+fn receive(n: &mut ConsumerNegotiation, t: Transition) -> Result<(), Failure> {
+    match n.pending.as_ref() {
+        Some(p) if p.initial => n.pending = None,
+        Some(p) if p.transition == Transition::Terminate && t != Transition::Terminate => {
+            return Err(bad(
+                n.provider_pid.as_deref().unwrap_or_default(),
+                &n.consumer_pid,
+                "the consumer is ending this negotiation",
+            ));
+        }
+        _ => {}
+    }
+    match next_state(Some(n.state), t, Role::Provider) {
+        Ok(s) => {
+            n.state = s;
+            Ok(())
+        }
+        Err(e) => {
+            if let Some(sent) = n.pending.clone() {
+                let mut proved = n.clone();
+                if apply_sent(&mut proved, &sent).is_ok()
+                    && let Ok(s) = next_state(Some(proved.state), t, Role::Provider)
+                {
+                    proved.state = s;
+                    *n = proved;
+                    return Ok(());
+                }
+            }
+            Err(transition_failure(n, e))
+        }
+    }
+}
+
+fn transition_failure(n: &ConsumerNegotiation, e: TransitionError) -> Failure {
+    bad(
+        n.provider_pid.as_deref().unwrap_or_default(),
+        &n.consumer_pid,
+        &e.to_string(),
+    )
 }
 
 /// The message must name this negotiation. The first provider message may

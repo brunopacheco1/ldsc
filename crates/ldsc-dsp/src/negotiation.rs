@@ -130,6 +130,36 @@ impl Transition {
             Self::Terminate => None,
         }
     }
+
+    /// A stable name, for storage.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Request => "request",
+            Self::Offer => "offer",
+            Self::Accept => "accept",
+            Self::Agree => "agree",
+            Self::Verify => "verify",
+            Self::Finalize => "finalize",
+            Self::Terminate => "terminate",
+        }
+    }
+
+    /// The transition with this [`Transition::name`].
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        [
+            Self::Request,
+            Self::Offer,
+            Self::Accept,
+            Self::Agree,
+            Self::Verify,
+            Self::Finalize,
+            Self::Terminate,
+        ]
+        .into_iter()
+        .find(|t| t.name() == name)
+    }
 }
 
 /// Why a message cannot move the negotiation.

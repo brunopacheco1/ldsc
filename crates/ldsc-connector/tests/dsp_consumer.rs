@@ -43,6 +43,10 @@ const SCHEMAS: &[(&str, &str)] = &[
         include_str!("../../ldsc-dsp/tests/schemas/contract-negotiation-event-message-schema.json"),
     ),
     (
+        "negotiation/contract-agreement-message-schema.json",
+        include_str!("../../ldsc-dsp/tests/schemas/contract-agreement-message-schema.json"),
+    ),
+    (
         "negotiation/contract-agreement-verification-message-schema.json",
         include_str!(
             "../../ldsc-dsp/tests/schemas/contract-agreement-verification-message-schema.json"
@@ -92,6 +96,7 @@ fn assert_valid(body: &Value) {
         "ContractNegotiationEventMessage" => {
             "negotiation/contract-negotiation-event-message-schema.json"
         }
+        "ContractAgreementMessage" => "negotiation/contract-agreement-message-schema.json",
         "ContractAgreementVerificationMessage" => {
             "negotiation/contract-agreement-verification-message-schema.json"
         }
@@ -321,7 +326,7 @@ async fn request_offer_accept_agree_verify_finalize() {
     assert_eq!(accepted["eventType"], "ACCEPTED");
 
     // the agreement may arrive before the acknowledgement of ACCEPTED is
-    // recorded; it waits for it
+    // recorded; it proves ACCEPTED arrived
     let (s, ack) = call(
         &c.app,
         post(
@@ -339,31 +344,27 @@ async fn request_offer_accept_agree_verify_finalize() {
         format!("{PROVIDER}/negotiations/{PPID}/agreement/verification")
     );
 
-    let mut finalized = Value::Null;
-    for _ in 0..500 {
-        let (s, ack) = call(
-            &c.app,
-            post(
-                &format!("{CALLBACK}/{cpid}/events"),
-                &event_msg(&cpid, "FINALIZED"),
-            ),
-        )
-        .await;
-        if s == StatusCode::OK {
-            finalized = ack;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(2)).await;
-    }
+    // likewise FINALIZED, whether or not the verification's
+    // acknowledgement is recorded yet
+    let (s, finalized) = call(
+        &c.app,
+        post(
+            &format!("{CALLBACK}/{cpid}/events"),
+            &event_msg(&cpid, "FINALIZED"),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{finalized}");
     assert_eq!(finalized["state"], "FINALIZED");
     assert_eq!(state(&c.app, &cpid).await, "FINALIZED");
     assert_eq!(c.provider.count(), 3);
 }
 
 /// A provider message that arrives while our message is still on its way
-/// waits for the acknowledgement instead of being refused.
+/// proves that ours arrived: it is accepted at once, without waiting
+/// (ADR 0007).
 #[tokio::test]
-async fn a_message_racing_our_acknowledgement_waits_for_it() {
+async fn a_message_racing_our_acknowledgement_proves_delivery() {
     let c = connector();
     let cpid = started(&c, "d1").await;
     *c.provider.hold.lock().unwrap() = Some("/events");
@@ -377,26 +378,151 @@ async fn a_message_racing_our_acknowledgement_waits_for_it() {
     .await;
     assert_eq!(s, StatusCode::OK);
     c.provider.sent(2).await; // ACCEPTED is held
-    let app = c.app.clone();
-    let agreement = tokio::spawn({
-        let cpid = cpid.clone();
-        async move {
-            call(
-                &app,
-                post(
-                    &format!("{CALLBACK}/{cpid}/agreement"),
-                    &agreement_msg(&cpid, "d1"),
-                ),
-            )
-            .await
-        }
-    });
-    tokio::time::sleep(Duration::from_millis(30)).await;
-    assert!(!agreement.is_finished());
-    c.provider.release.notify_waiters();
-    let (s, ack) = agreement.await.unwrap();
+    let (s, ack) = call(
+        &c.app,
+        post(
+            &format!("{CALLBACK}/{cpid}/agreement"),
+            &agreement_msg(&cpid, "d1"),
+        ),
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{ack}");
     assert_eq!(ack["state"], "AGREED");
+    c.provider.sent(3).await;
+    assert!(c.provider.get(2).0.ends_with("/agreement/verification"));
+    // the late acknowledgement of ACCEPTED changes nothing
+    c.provider.release.notify_waiters();
+    for _ in 0..500 {
+        if state(&c.app, &cpid).await == "VERIFIED" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    assert_eq!(state(&c.app, &cpid).await, "VERIFIED");
+    assert_eq!(c.provider.count(), 3);
+}
+
+/// Writes what a connector left behind when it stopped: a consumer
+/// negotiation waiting to send ACCEPTED and a provider negotiation
+/// waiting to send its agreement.
+fn leave_pending(path: &std::path::Path) {
+    use ldsc_connector::store::SqliteNegotiations;
+    use ldsc_dsp::negotiation::consumer::{self, ConsumerNegotiation, ConsumerStore};
+    use ldsc_dsp::negotiation::provider::{self, Negotiation, NegotiationStore};
+    use ldsc_dsp::negotiation::{NegotiationState, Transition};
+
+    let store = SqliteNegotiations::open(path).unwrap();
+    let accept = event_msg("c-1", "ACCEPTED");
+    ConsumerStore::insert(
+        &store,
+        &ConsumerNegotiation {
+            consumer_pid: "c-1".into(),
+            provider_pid: Some(PPID.into()),
+            state: NegotiationState::Offered,
+            provider_address: PROVIDER.into(),
+            provider_id: "did:web:p".into(),
+            offer: offer("d1"),
+            agreement: None,
+            pending: Some(consumer::Outgoing {
+                consumer_pid: "c-1".into(),
+                url: format!("{PROVIDER}/negotiations/{PPID}/events"),
+                body: accept,
+                transition: Transition::Accept,
+                to: NegotiationState::Accepted,
+                status_url: format!("{PROVIDER}/negotiations/{PPID}"),
+                initial: false,
+            }),
+            version: 3,
+        },
+    )
+    .unwrap();
+    let callback = "https://other.example/cb";
+    let agreement = agreement_msg("c-9", "d1");
+    NegotiationStore::insert(
+        &store,
+        &Negotiation {
+            provider_pid: "p-9".into(),
+            consumer_pid: "c-9".into(),
+            state: NegotiationState::Requested,
+            callback_address: callback.into(),
+            counter_party: "x".into(),
+            offer: offer("d1"),
+            agreement: None,
+            pending: Some(provider::Outgoing {
+                provider_pid: "p-9".into(),
+                url: format!("{callback}/negotiations/c-9/agreement"),
+                body: agreement,
+                transition: Transition::Agree,
+                to: NegotiationState::Agreed,
+                status_url: format!("{callback}/negotiations/c-9"),
+            }),
+            version: 1,
+        },
+    )
+    .unwrap();
+}
+
+/// Messages saved but not acknowledged before a stop are sent again at
+/// start, as consumer and as provider.
+#[tokio::test]
+async fn pending_messages_are_sent_after_a_restart() {
+    use ldsc_connector::store::SqliteNegotiations;
+    use ldsc_dsp::negotiation::NegotiationState;
+    use ldsc_dsp::negotiation::provider::NegotiationStore;
+
+    let dir = std::env::temp_dir().join(format!("ldsc-resume-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("ldsc.db");
+    let _ = std::fs::remove_file(&path);
+    leave_pending(&path);
+
+    let provider = Arc::new(FakeProvider::default());
+    let mut ports = Ports::new(Arc::clone(&provider) as Arc<dyn Sender>);
+    let store = Arc::new(SqliteNegotiations::open(&path).unwrap());
+    ports.store = ldsc_connector::negotiation::AnyStore(Arc::clone(&store) as _);
+    ports.consumer_store = ldsc_connector::consumer::AnyConsumerStore(Arc::clone(&store) as _);
+    let config = Config {
+        participant_id: "did:web:consumer.example".into(),
+        public_url: "https://consumer.example/".into(),
+        datasets: Vec::new(),
+        allow_http_callbacks: false,
+        db_file: path.clone(),
+    };
+    let (app, negotiator) = ldsc_connector::build(&config, ports).unwrap();
+    assert_eq!(negotiator.resume().unwrap(), 2);
+    provider.sent(2).await;
+    let mut urls: Vec<String> = (0..2).map(|i| provider.get(i).0).collect();
+    urls.sort();
+    assert!(urls[0].ends_with("/negotiations/c-9/agreement"), "{urls:?}");
+    assert!(
+        urls[1].ends_with(&format!("/negotiations/{PPID}/events")),
+        "{urls:?}"
+    );
+    for _ in 0..500 {
+        if state(&app, "c-1").await == "ACCEPTED" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    assert_eq!(state(&app, "c-1").await, "ACCEPTED");
+    for _ in 0..500 {
+        if NegotiationStore::get(&*store, "p-9")
+            .unwrap()
+            .unwrap()
+            .state
+            == NegotiationState::Agreed
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    let p9 = NegotiationStore::get(&*store, "p-9").unwrap().unwrap();
+    assert_eq!((p9.state, p9.pending), (NegotiationState::Agreed, None));
+    assert_eq!(negotiator.resume().unwrap(), 0, "nothing left to send");
+    drop(app);
+    drop(negotiator);
+    drop(store);
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 /// Invalid provider messages get a `ContractNegotiationError` and leave

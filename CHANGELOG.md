@@ -29,6 +29,13 @@ versions may change behaviour and configuration.
   acceptance, verification and termination to the provider with retries.
   Consumer negotiations are kept in the same SQLite file (schema version 2;
   migrated at start).
+- Each outgoing negotiation message is saved before it is sent (an
+  outbox), on both sides, and sent again after a restart. A partner's
+  message that arrives before its acknowledgement of ours is recorded is
+  taken as proof that ours arrived, and accepted at once; this replaces
+  the 3 second wait. A failed send first asks the partner for its state
+  before terminating. Writes compare a version number. SQLite schema
+  version 3; migrated at start. See ADR 0007.
 - Management API on its own port (`LDSC_MANAGEMENT_BIND`, default
   `127.0.0.1:8081`), off unless `LDSC_MANAGEMENT_API_KEY_FILE` is set:
   start a negotiation as consumer, read one, list them. Every call needs
