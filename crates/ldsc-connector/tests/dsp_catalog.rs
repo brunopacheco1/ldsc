@@ -328,3 +328,36 @@ fn config_from_variables() {
             .unwrap_err();
     assert!(missing.to_string().starts_with("cannot read datasets file"));
 }
+
+/// Every operation in docs/api/openapi.json is routed: the router answers
+/// neither 405 nor its own empty 404.
+#[tokio::test]
+async fn openapi_paths_are_served() {
+    let raw = include_str!("../../../docs/api/openapi.json");
+    let spec: Value = serde_json::from_str(raw).unwrap();
+    let app = app();
+    let mut count = 0;
+    for (path, ops) in spec["paths"].as_object().unwrap() {
+        let uri = path
+            .replace("{id}", "CAT0101")
+            .replace("{providerPid}", "urn:uuid:x");
+        for method in ops.as_object().unwrap().keys() {
+            let req = Request::builder()
+                .method(method.to_uppercase().as_str())
+                .uri(&uri)
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap();
+            let res = app.clone().oneshot(req).await.unwrap();
+            let status = res.status();
+            let bytes = to_bytes(res.into_body(), 1 << 20).await.unwrap();
+            assert_ne!(status, StatusCode::METHOD_NOT_ALLOWED, "{method} {path}");
+            assert!(
+                status != StatusCode::NOT_FOUND || !bytes.is_empty(),
+                "{method} {path} is not routed"
+            );
+            count += 1;
+        }
+    }
+    assert_eq!(count, 10);
+}

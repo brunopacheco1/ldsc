@@ -34,6 +34,11 @@ versions may change behaviour and configuration.
 - The container image now carries the CA certificate bundle (Mozilla's,
   as packaged by Debian, MPL-2.0) so the connector can verify `https`
   callback addresses.
+- Docs: `docs/DEPLOYING.md` (runbook for operators), `docs/TESTING.md`
+  (how to test, for contributors) and `docs/api/openapi.json` (OpenAPI 3.1
+  description of the HTTP interface, using the official DSP JSON Schemas).
+- The connector stops cleanly on SIGTERM (`docker stop`, Kubernetes); it
+  used to wait to be killed.
 - The DSP TCK now runs the 15 provider negotiation tests (CN:01 to CN:03),
   with a test-only `tck` build feature that scripts provider decisions.
 

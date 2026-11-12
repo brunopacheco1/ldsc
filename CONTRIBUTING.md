@@ -33,8 +33,8 @@ reuse lint
 cargo deny check   # licences, advisories, crate sources (deny.toml)
 ```
 
-The DSP conformance tests (TCK) run in the `DSP TCK` workflow; see
-`tck/` for the configuration.
+How to test, including the DSP conformance tests (TCK), fuzzing and
+manual tests: [docs/TESTING.md](docs/TESTING.md).
 
 ## Code style
 

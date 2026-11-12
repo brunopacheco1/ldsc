@@ -18,6 +18,8 @@ Website: <https://brunopacheco1.github.io/ldsc/> (objectives, minimum functional
 
 - What it is and how it is built: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - Plan: [docs/ROADMAP.md](docs/ROADMAP.md); decisions: [docs/adr/](docs/adr/)
+- Deploying and operating: [docs/DEPLOYING.md](docs/DEPLOYING.md); testing: [docs/TESTING.md](docs/TESTING.md)
+- HTTP interface: [docs/api/openapi.json](docs/api/openapi.json) (OpenAPI 3.1)
 - Security: [SECURITY.md](SECURITY.md), [docs/SECURITY-ASSURANCE.md](docs/SECURITY-ASSURANCE.md)
 - Contributing: [CONTRIBUTING.md](CONTRIBUTING.md), [GOVERNANCE.md](GOVERNANCE.md),
   [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
