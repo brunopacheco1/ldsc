@@ -149,8 +149,10 @@ all checks green, Scorecard published.
 - Schema and vocabulary registry ([ADR 0005](adr/0005-schema-and-vocabulary-registry.md)):
   the authority builds and signs a bundle of SHACL shapes and SKOS
   vocabularies (for example HealthDCAT-AP); the connector fetches and
-  verifies it and checks its datasets before publishing. Starts with a
-  spike on the SHACL engine.
+  verifies it. The connector's own datasets file (dataset metadata and
+  offer policies) is checked against the shapes at start, like every DSP
+  message in and out, before anything is published (maintainer,
+  2026-11-12). Starts with a spike on the SHACL engine.
 - Exit: DCP TCK issuance tests green; a revoked credential blocks a
   negotiation; a dataset that breaks the authority's shapes is not
   published.
