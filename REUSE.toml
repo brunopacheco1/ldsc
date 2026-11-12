@@ -18,6 +18,8 @@ path = [
     "docs/api/*.json",
     # Bruno API client collection (.bru and bruno.json have no comment syntax we rely on)
     "_http/**",
+    # VS Code configuration (JSON with comments)
+    ".vscode/*.json",
 ]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "Portitor contributors"
