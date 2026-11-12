@@ -21,6 +21,7 @@ project checks every change. All commands run from the repository root.
 | Licence headers | `reuse lint` | every PR (`REUSE compliance`) |
 | DSP conformance (TCK) | see [below](#dsp-conformance-tck) | every PR (`DSP TCK`) |
 | Fuzzing | see [below](#fuzzing) | every PR (short), weekly (long) |
+| Two connectors agree a contract | `scripts/demo.sh` | every PR (`CI`) |
 | Image builds and starts | `docker build` then a health check | every PR (`CI`) |
 | Static analysis | CodeQL, OpenSSF Scorecard, ORT | every PR or on `main` |
 
@@ -174,8 +175,9 @@ class H(BaseHTTPRequestHandler):
 HTTPServer(("127.0.0.1", 9000), H).serve_forever()' &
 ```
 
-Then request an offer from the catalog (take `@id` and the dataset id from
-the catalog response):
+Then request an offer from the catalog. Copy the offer's terms unchanged
+from the catalog response, or the provider terminates (ADR 0009); this one
+is the `weather-stations` offer of the example file:
 
 ```sh
 curl -s -X POST localhost:8080/dsp/2025-1/negotiations/request \
@@ -183,7 +185,8 @@ curl -s -X POST localhost:8080/dsp/2025-1/negotiations/request \
   "@context": ["https://w3id.org/dspace/2025/1/context.jsonld"],
   "@type": "ContractRequestMessage",
   "consumerPid": "urn:uuid:my-test-1",
-  "offer": {"@id": "<offer id>", "@type": "Offer", "target": "<dataset id>"},
+  "offer": {"@id": "weather-stations:offer:use", "@type": "Offer",
+            "target": "weather-stations", "permission": [{"action": "use"}]},
   "callbackAddress": "http://127.0.0.1:9000"}'
 ```
 
@@ -195,7 +198,13 @@ provider sends the `FINALIZED` event. `GET
 
 ### Two connectors
 
-One connector as provider, one as consumer, both on your machine:
+`scripts/demo.sh` does all of this in one go and checks the result: it
+starts a provider and a consumer, copies the `air-quality` offer from the
+catalog, negotiates it to `FINALIZED`, and checks that the same offer id
+without its constraint is `TERMINATED`. CI runs it on every pull request.
+It needs `curl`, `jq` and `openssl`.
+
+By hand, one connector as provider, one as consumer, both on your machine:
 
 ```sh
 cargo build -p portitor-connector

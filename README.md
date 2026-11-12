@@ -158,6 +158,9 @@ DSP context defines the `dct`, `dcat` and `odrl` prefixes); Portitor does not
 validate them yet. See
 [examples/datasets.json](examples/datasets.json).
 
+To see two connectors agree a contract on your machine, run
+`scripts/demo.sh` (needs Rust, `curl`, `jq` and `openssl`).
+
 Run the image with the example datasets:
 
 ```sh
@@ -165,7 +168,7 @@ docker run --rm -p 8080:8080 \
   -v "$PWD/examples/datasets.json:/datasets.json:ro" \
   -e PORTITOR_DATASETS_FILE=/datasets.json \
   -v portitor-data:/data \
-  ghcr.io/brunopacheco1/portitor-connector:0.2.0
+  ghcr.io/brunopacheco1/portitor-connector:0.3.0
 ```
 
 Licensed under [Apache-2.0](LICENSE).
