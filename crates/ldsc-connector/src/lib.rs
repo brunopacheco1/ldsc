@@ -26,6 +26,12 @@ use ldsc_dsp::{
 };
 use serde::Serialize;
 
+pub mod negotiation;
+#[cfg(feature = "tck")]
+pub mod tck;
+
+pub use negotiation::{HttpSender, Ports};
+
 /// Path prefix of the DSP 2025-1 endpoints.
 pub const DSP_PATH: &str = "/dsp/2025-1";
 
@@ -38,6 +44,10 @@ pub struct Config {
     pub public_url: String,
     /// Datasets offered in the catalog, as DSP 2025-1 `Dataset` objects.
     pub datasets: Vec<Dataset>,
+    /// Allow `http://` callback addresses (development and the TCK only;
+    /// the consumer chooses the address, so this widens what the connector
+    /// can be made to call).
+    pub allow_http_callbacks: bool,
 }
 
 /// Why the configuration could not be read.
@@ -67,7 +77,8 @@ impl std::fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 impl Config {
-    /// Reads `LDSC_PARTICIPANT_ID`, `LDSC_PUBLIC_URL` and, when set,
+    /// Reads `LDSC_PARTICIPANT_ID`, `LDSC_PUBLIC_URL`,
+    /// `LDSC_ALLOW_HTTP_CALLBACKS` (`true` to allow) and, when set,
     /// `LDSC_DATASETS_FILE` from the environment. Without a datasets file
     /// the catalog is empty.
     ///
@@ -101,6 +112,8 @@ impl Config {
             participant_id: text("LDSC_PARTICIPANT_ID", "did:web:localhost%3A8080"),
             public_url: text("LDSC_PUBLIC_URL", "http://localhost:8080"),
             datasets,
+            allow_http_callbacks: var("LDSC_ALLOW_HTTP_CALLBACKS")
+                .is_some_and(|v| v.eq_ignore_ascii_case("true")),
         })
     }
 }
@@ -141,7 +154,8 @@ struct AppState {
     versions: VersionResponse,
 }
 
-/// Builds the HTTP router (the HTTPS binding adapter).
+/// Builds the HTTP router (the HTTPS binding adapter), with the
+/// negotiation endpoints on `ports`.
 ///
 /// The data service `@id` is the DSP endpoint URL and the catalog `@id` is
 /// that URL plus `/catalog`, so both stay the same across restarts.
@@ -149,12 +163,19 @@ struct AppState {
 /// # Errors
 ///
 /// A dataset definition breaks a DSP rule (see [`prepare_datasets`]).
-pub fn router(config: &Config) -> Result<Router, DatasetDefinitionError> {
+pub fn router(config: &Config, ports: Ports) -> Result<Router, DatasetDefinitionError> {
     let endpoint_url = format!("{}{DSP_PATH}", config.public_url.trim_end_matches('/'));
     let service_id = endpoint_url.clone();
     let datasets = prepare_datasets(config.datasets.clone(), &service_id)?;
+    let datasets = InMemoryDatasets::new(datasets);
+    let provider = Arc::new(negotiation::Provider::new(
+        ports,
+        datasets.clone(),
+        config.participant_id.clone(),
+        config.allow_http_callbacks,
+    ));
     let catalog = CatalogService::new(
-        InMemoryDatasets::new(datasets),
+        datasets,
         format!("{endpoint_url}/catalog"),
         config.participant_id.clone(),
         service_id.clone(),
@@ -178,7 +199,29 @@ pub fn router(config: &Config) -> Result<Router, DatasetDefinitionError> {
         )
         .route(&format!("{DSP_PATH}/catalog/datasets/{{id}}"), get(dataset))
         .route("/health", get(|| async { "ok" }))
-        .with_state(Arc::new(AppState { catalog, versions })))
+        .with_state(Arc::new(AppState { catalog, versions }))
+        .merge(negotiation_routes(provider)))
+}
+
+fn negotiation_routes(provider: Arc<negotiation::Provider>) -> Router {
+    let n = format!("{DSP_PATH}/negotiations");
+    Router::new()
+        .route(&format!("{n}/request"), post(negotiation::request_new))
+        .route(&format!("{n}/{{pid}}"), get(negotiation::get))
+        .route(
+            &format!("{n}/{{pid}}/request"),
+            post(negotiation::request_counter),
+        )
+        .route(&format!("{n}/{{pid}}/events"), post(negotiation::event))
+        .route(
+            &format!("{n}/{{pid}}/agreement/verification"),
+            post(negotiation::verify),
+        )
+        .route(
+            &format!("{n}/{{pid}}/termination"),
+            post(negotiation::terminate),
+        )
+        .with_state(provider)
 }
 
 async fn version(State(s): State<Arc<AppState>>) -> Json<VersionResponse> {

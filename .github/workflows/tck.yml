@@ -3,8 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Runs the Eclipse DSP TCK (built from source at a pinned tag) against LDSC.
-# Bake-off scope: metadata (MET) and catalog (CAT) tests must pass.
-# Negotiation and transfer tests are expected to fail until 0.3 and 0.4.
+# Must pass: metadata (MET), catalog (CAT) and provider negotiation (CN).
+# Consumer negotiation (CN_C) is expected to fail until the consumer side
+# lands in 0.3, and transfer (TP) until 0.4. The connector is built with the
+# test-only `tck` feature, which scripts provider decisions per dataset.
 name: DSP TCK
 on:
   push:
@@ -50,14 +52,15 @@ jobs:
           LDSC_PARTICIPANT_ID: did:web:localhost%3A8080
           LDSC_PUBLIC_URL: http://127.0.0.1:8080
           LDSC_DATASETS_FILE: tck/datasets.json
+          LDSC_ALLOW_HTTP_CALLBACKS: "true"
         run: |
-          cargo build --locked -p ldsc-connector
+          cargo build --locked -p ldsc-connector --features tck
           nohup target/debug/ldsc-connector > ldsc.log 2>&1 &
           for _ in $(seq 50); do curl -sf http://127.0.0.1:8080/health && break; sleep 0.2; done
       - name: Run TCK
         run: |
           java -jar dsp-tck/dsp/dsp-tck/build/libs/dsp-tck-runtime.jar -config tck/dsp-tck.properties | tee tck.log
-      - name: Check metadata and catalog results
+      - name: Check required results
         run: python3 scripts/tck_check.py tck.log
       - if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

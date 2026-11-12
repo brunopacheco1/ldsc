@@ -18,11 +18,19 @@ axum = "0.8"
 # no default features: the default "simd-unsafe" feature (0.23) runs unsafe SIMD code we do not need
 base64 = { version = "0.23", default-features = false, features = ["std"] }
 jsonschema = { version = "0.61", default-features = false }
+# HTTP client for DSP callbacks, on the hyper stack axum already uses. TLS is rustls with
+# the ring provider (already used for JOSE) and the system's CA certificates; no aws-lc-rs,
+# no bundled root store, no proxy support (which would pull base64's unsafe SIMD).
+http-body-util = "0.1"
+hyper = { version = "1", default-features = false, features = ["client", "http1"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "tls12", "ring", "native-tokio", "logging"] }
+hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "http1", "tokio"] }
 ring = "0.17"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 

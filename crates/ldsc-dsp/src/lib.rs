@@ -47,6 +47,7 @@ macro_rules! type_tag {
 }
 
 pub mod catalog;
+pub mod guard;
 pub mod negotiation;
 
 type_tag!(

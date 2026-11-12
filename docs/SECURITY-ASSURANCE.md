@@ -40,6 +40,11 @@ dataspace participants over HTTPS.
   TLS-terminating proxy.
 - Persistence and multi-instance safety *(planned, 0.3+)*: state is in
   memory today.
+- Authentication of DSP callers *(planned, 0.5, DCP)*: until then any
+  party that reaches the endpoints can negotiate a contract.
+- Protection against server-side request forgery through the
+  consumer-chosen `callbackAddress` beyond the `https://`-only rule:
+  internal addresses are not blocked yet.
 - Protection from a participant that is legitimately authorised: policies
   decide what a partner may do; writing them correctly is the operator's
   job.
@@ -51,6 +56,8 @@ dataspace participants over HTTPS.
 | Datasets and transfers | A party that is not authorised reads data or starts a transfer | DCP verification of every request *(planned, 0.5)*; ODRL policy checks *(planned, 0.3)* |
 | Participant identity | Forged or replayed self-issued tokens | Algorithm allow-list, key relationship check, audience check, expiry with bounded leeway, `jti` replay cache |
 | Private keys | Keys leak from the internet-facing connector | Keys live only in `ldsc-identity` and `ldsc-issuer`, not in the connector (ADR 0003) |
+| Internal services | A consumer gives a `callbackAddress` that points at an internal service, so the connector calls it (SSRF) | Only `https://` URLs with a host, unless the operator allows `http://`; the response body is never read; a 10 s timeout; blocking internal addresses *(planned)* |
+| Negotiation state | A consumer drives a negotiation out of order, or two messages race | The DSP state machine as a pure function in the domain; every change is a compare-and-update on the previous state |
 | Service availability | Crafted or oversized messages crash or exhaust a service | Typed parsing with no `unsafe`; request size limits *(planned, 0.8)*; fuzzing of parsers *(planned, 0.9)* |
 | Users' supply chain | A tampered release or dependency | Pinned CI actions; signed commits; Dependabot, dependency review, OSV, cargo-deny (RustSec advisories, licence allowlist, crate sources) and ORT; signed images with SBOM and provenance attestations |
 

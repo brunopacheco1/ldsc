@@ -78,12 +78,29 @@ fn tck_datasets() -> Vec<ldsc_dsp::Dataset> {
     ldsc_connector::read_datasets(std::path::Path::new(path)).unwrap()
 }
 
+/// The catalog tests never send anything.
+struct NoSender;
+
+impl ldsc_connector::negotiation::Sender for NoSender {
+    fn post<'a>(&'a self, _: &'a str, _: &'a Value) -> ldsc_connector::negotiation::SendFuture<'a> {
+        Box::pin(async { Err("not in this test".to_owned()) })
+    }
+}
+
+fn ports() -> ldsc_connector::Ports {
+    ldsc_connector::Ports::new(std::sync::Arc::new(NoSender))
+}
+
 fn app() -> axum::Router {
-    ldsc_connector::router(&ldsc_connector::Config {
-        participant_id: "did:web:provider.example".into(),
-        public_url: "https://provider.example".into(),
-        datasets: tck_datasets(),
-    })
+    ldsc_connector::router(
+        &ldsc_connector::Config {
+            participant_id: "did:web:provider.example".into(),
+            public_url: "https://provider.example".into(),
+            datasets: tck_datasets(),
+            allow_http_callbacks: false,
+        },
+        ports(),
+    )
     .unwrap()
 }
 
@@ -202,11 +219,15 @@ async fn ids_are_stable_and_distributions_point_to_the_service() {
 async fn example_datasets_file_is_valid() {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/datasets.json");
     let datasets = ldsc_connector::read_datasets(std::path::Path::new(path)).unwrap();
-    let app = ldsc_connector::router(&ldsc_connector::Config {
-        participant_id: "did:web:provider.example".into(),
-        public_url: "https://provider.example/".into(),
-        datasets,
-    })
+    let app = ldsc_connector::router(
+        &ldsc_connector::Config {
+            participant_id: "did:web:provider.example".into(),
+            public_url: "https://provider.example/".into(),
+            datasets,
+            allow_http_callbacks: false,
+        },
+        ports(),
+    )
     .unwrap();
     let msg = json!({"@context": ["https://w3id.org/dspace/2025/1/context.jsonld"], "@type": "CatalogRequestMessage"});
     let res = app
@@ -231,11 +252,15 @@ async fn example_datasets_file_is_valid() {
 fn broken_definitions_stop_the_start() {
     let mut datasets = tck_datasets();
     datasets[0].has_policy.clear();
-    let err = ldsc_connector::router(&ldsc_connector::Config {
-        participant_id: "did:web:provider.example".into(),
-        public_url: "https://provider.example".into(),
-        datasets,
-    })
+    let err = ldsc_connector::router(
+        &ldsc_connector::Config {
+            participant_id: "did:web:provider.example".into(),
+            public_url: "https://provider.example".into(),
+            datasets,
+            allow_http_callbacks: false,
+        },
+        ports(),
+    )
     .unwrap_err();
     assert!(err.to_string().contains("no offer"));
 }

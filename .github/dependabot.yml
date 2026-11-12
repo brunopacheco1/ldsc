@@ -20,6 +20,11 @@ updates:
       actions:
         patterns: ['*']
   - package-ecosystem: docker
+    # the CA certificate stage of the release image
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
     directory: /.clusterfuzzlite
     schedule:
       interval: weekly

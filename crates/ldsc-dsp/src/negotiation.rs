@@ -10,6 +10,8 @@
 //! the provider (checking a consumer's message) and the consumer (checking a
 //! provider's message).
 
+pub mod provider;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{Context, Offer, Rule};
@@ -60,8 +62,8 @@ type_tag!(
     "Agreement"
 );
 
-/// The states of a contract negotiation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// The states of a contract negotiation, in protocol order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum NegotiationState {
     /// The consumer requested an agreement based on an offer.

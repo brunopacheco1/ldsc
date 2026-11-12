@@ -15,6 +15,12 @@ publish = false
 [dependencies]
 axum.workspace = true
 ldsc-dsp = { path = "../ldsc-dsp" }
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-rustls.workspace = true
+hyper-util.workspace = true
+ring.workspace = true
+rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
@@ -25,6 +31,11 @@ tracing-subscriber.workspace = true
 jsonschema.workspace = true
 tower = { version = "0.5", features = ["util"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[features]
+# Scripted provider and consumer behaviour for the DSP TCK. Test builds only;
+# the release image is built without it.
+tck = []
 
 [lints]
 workspace = true
