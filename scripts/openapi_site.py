@@ -10,6 +10,7 @@ repository) and <out>/api/index.html, a plain list of the endpoints that
 loads nothing from other sites.
 
 Usage: openapi_site.py docs/api/openapi.json crates/ldsc-dsp/tests/schemas _site
+All paths must lie inside the working directory (the repository root).
 """
 import html
 import json
@@ -86,14 +87,26 @@ def page(spec):
 """
 
 
-def main(spec_path, schema_dir, out_dir):
-    spec = json.loads(Path(spec_path).read_text(encoding="utf-8"))
+def inside_workdir(path: str) -> Path:
+    """The path resolved inside the working directory; refuses anything else."""
+    root = Path.cwd().resolve()
+    resolved = (root / path).resolve()
+    if not resolved.is_relative_to(root):
+        raise ValueError(f"refusing {path}: not inside the working directory")
+    return resolved
+
+
+def main(spec_arg, schema_arg, out_arg):
+    spec_path = inside_workdir(spec_arg)
+    schema_dir = inside_workdir(schema_arg)
+    out_dir = inside_workdir(out_arg)
+    spec = json.loads(spec_path.read_text(encoding="utf-8"))
     used = set()
     published = rewrite(spec, used)
-    api = Path(out_dir) / "api"
+    api = out_dir / "api"
     (api / "schemas").mkdir(parents=True, exist_ok=True)
     for name in sorted(used):
-        shutil.copyfile(Path(schema_dir) / name, api / "schemas" / name)
+        shutil.copyfile(schema_dir / name, api / "schemas" / name)
     (api / "openapi.json").write_text(json.dumps(published, indent=2) + "\n", encoding="utf-8")
     (api / "index.html").write_text(page(spec), encoding="utf-8")
     print(f"published {len(used)} schemas and {sum(len(o) for o in spec['paths'].values())} operations")
