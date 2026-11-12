@@ -1,0 +1,35 @@
+meta {
+  name: 4. Termination (consumer ends it)
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{dsp}}/negotiations/{{providerPid}}/termination
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "@context": ["https://w3id.org/dspace/2025/1/context.jsonld"],
+    "@type": "ContractNegotiationTerminationMessage",
+    "providerPid": "{{providerPid}}",
+    "consumerPid": "{{consumerPid}}",
+    "code": "99",
+    "reason": ["Ended from Bruno"]
+  }
+}
+
+assert {
+  res.status: lt 300
+}
+
+docs {
+  DSP 2025-1 Contract Negotiation, HTTPS binding: POST /negotiations/:providerPid/termination.
+  Use instead of step 3 to test the TERMINATED path.
+}
