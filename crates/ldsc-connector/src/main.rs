@@ -27,7 +27,12 @@ async fn main() -> ExitCode {
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let config = ldsc_connector::Config::from_env()?;
-    let app = ldsc_connector::router(&config)?;
+    let sender = ldsc_connector::HttpSender::new(config.allow_http_callbacks)?;
+    if config.allow_http_callbacks {
+        tracing::warn!("http callback addresses allowed (LDSC_ALLOW_HTTP_CALLBACKS)");
+    }
+    let ports = ldsc_connector::Ports::new(std::sync::Arc::new(sender));
+    let app = ldsc_connector::router(&config, ports)?;
     let bind = std::env::var("LDSC_BIND").unwrap_or_else(|_| "0.0.0.0:8080".to_owned());
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     tracing::info!(%bind, datasets = config.datasets.len(), "ldsc-connector listening");

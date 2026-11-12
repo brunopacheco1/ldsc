@@ -19,6 +19,17 @@ versions may change behaviour and configuration.
   the specification, and fuzzed (`dsp_negotiation`).
 - ODRL logical constraints (`and`, `or`, `xone`, `andSequence`), duties
   and profiles in policies, so agreements from other connectors parse.
+- Provider side of contract negotiation: the DSP 2025-1 negotiation
+  endpoints, a default policy that agrees to catalog offers, and delivery of
+  offers, agreements, finalization and termination to the consumer's
+  callback with retries. Negotiations are kept in memory for now.
+- `MessageGuard` port: every inbound and outbound negotiation message goes
+  through it, so a dataspace can add its own rules, for example SHACL shapes
+  (ADR 0005). The default allows everything.
+- `LDSC_ALLOW_HTTP_CALLBACKS`: allow `http://` callback addresses
+  (development and tests only; `https://` only by default).
+- The DSP TCK now runs the 15 provider negotiation tests (CN:01 to CN:03),
+  with a test-only `tck` build feature that scripts provider decisions.
 
 ### Changed
 - A dataset definition whose offer has a `target` is refused at start;

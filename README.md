@@ -33,6 +33,12 @@ The DSP endpoints follow the HTTPS bindings of
 | `GET /.well-known/dspace-version` | DSP versions this connector supports |
 | `POST /dsp/2025-1/catalog/request` | Returns the catalog for a `CatalogRequestMessage` |
 | `GET /dsp/2025-1/catalog/datasets/{id}` | Returns one dataset |
+| `POST /dsp/2025-1/negotiations/request` | Starts a contract negotiation (provider side) |
+| `GET /dsp/2025-1/negotiations/{providerPid}` | Returns the state of a negotiation |
+| `POST /dsp/2025-1/negotiations/{providerPid}/request` | Counter-offer from the consumer |
+| `POST /dsp/2025-1/negotiations/{providerPid}/events` | Consumer accepts an offer |
+| `POST /dsp/2025-1/negotiations/{providerPid}/agreement/verification` | Consumer verifies the agreement |
+| `POST /dsp/2025-1/negotiations/{providerPid}/termination` | Consumer ends a negotiation |
 | `GET /health` | Returns `ok` while the process runs |
 
 Configuration (environment variables):
@@ -43,6 +49,29 @@ Configuration (environment variables):
 | `LDSC_PARTICIPANT_ID` | `did:web:localhost%3A8080` | Participant id (a DID) |
 | `LDSC_PUBLIC_URL` | `http://localhost:8080` | Public base URL; the DSP endpoint is this plus `/dsp/2025-1` |
 | `LDSC_DATASETS_FILE` | none (empty catalog) | JSON file with the datasets to offer |
+| `LDSC_ALLOW_HTTP_CALLBACKS` | `false` | `true` lets consumers give `http://` callback addresses; development and tests only |
+
+As provider, the connector agrees to any request for an offer in its
+catalog, then finalizes once the consumer verifies. It sends its messages
+to the consumer's `callbackAddress` and retries 3 times; if the consumer
+cannot be reached, it terminates the negotiation.
+
+Known gaps in this version:
+- **No caller authentication until 0.5 (DCP).** Anyone who can reach the
+  DSP endpoints can negotiate, and agreements name the consumer as
+  `urn:ldsc:unauthenticated`. Do not expose the connector to untrusted
+  networks.
+- **Negotiations are kept in memory** and lost on restart (a SQLite file
+  store follows in 0.3).
+- **The image has no CA certificates.** To reach `https://` callbacks, mount
+  the host's bundle, for example
+  `-v /etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro`.
+  Without it the connector starts and serves its catalog, but every
+  negotiation ends in termination because the consumer cannot be reached
+  (the log says why).
+- The callback address is chosen by the consumer. Only `https://` is
+  allowed by default, but internal addresses are not blocked yet; put the
+  connector where it cannot reach services it should not call.
 
 The datasets file is a JSON array of DSP 2025-1 `Dataset` objects, as the
 catalog serves them, without `@context`. Each dataset needs at least one
