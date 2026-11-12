@@ -60,7 +60,7 @@ Run the image with the example datasets:
 docker run --rm -p 8080:8080 \
   -v "$PWD/examples/datasets.json:/datasets.json:ro" \
   -e LDSC_DATASETS_FILE=/datasets.json \
-  ghcr.io/brunopacheco1/ldsc-connector:0.1.0
+  ghcr.io/brunopacheco1/ldsc-connector:0.2.0
 ```
 
 Licensed under [Apache-2.0](LICENSE).
