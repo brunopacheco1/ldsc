@@ -36,7 +36,8 @@ versions may change behaviour and configuration.
   callback addresses.
 - Docs: `docs/DEPLOYING.md` (runbook for operators), `docs/TESTING.md`
   (how to test, for contributors) and `docs/api/openapi.json` (OpenAPI 3.1
-  description of the HTTP interface, using the official DSP JSON Schemas).
+  description of the HTTP interface, using the official DSP JSON Schemas),
+  also published on the website (`/api/`).
 - The connector stops cleanly on SIGTERM (`docker stop`, Kubernetes); it
   used to wait to be killed.
 - The DSP TCK now runs the 15 provider negotiation tests (CN:01 to CN:03),
