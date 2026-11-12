@@ -52,6 +52,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "dsp_transfer"
+path = "fuzz_targets/dsp_transfer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "odrl_policy"
 path = "fuzz_targets/odrl_policy.rs"
 test = false

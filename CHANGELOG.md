@@ -13,6 +13,11 @@ versions may change behaviour and configuration.
 ## [Unreleased]
 
 ### Added
+- Transfer process (DSP 2025-1) in `portitor-dsp`: the five message types,
+  `DataAddress`, the acknowledgement and error types, and the state
+  machine as a pure function. Checked against every transfer example and
+  JSON Schema of the specification, and fuzzed (`dsp_transfer`). Not yet
+  served by the connector.
 - VS Code debugging: shared `.vscode/launch.json` (CodeLLDB) for the connector
   and every test target, tasks, and recommended extensions. See
   [TESTING.md](docs/TESTING.md#debugging-in-vs-code).

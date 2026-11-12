@@ -50,6 +50,7 @@ pub mod catalog;
 pub mod guard;
 pub mod negotiation;
 pub mod policy;
+pub mod transfer;
 
 type_tag!(
     /// `@type: CatalogRequestMessage`
