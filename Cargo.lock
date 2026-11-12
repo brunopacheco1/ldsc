@@ -773,7 +773,7 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "portitor-connector"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "axum",
  "http-body-util",
@@ -796,7 +796,7 @@ dependencies = [
 
 [[package]]
 name = "portitor-dcp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64",
  "ring",
@@ -807,7 +807,7 @@ dependencies = [
 
 [[package]]
 name = "portitor-dsp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "jsonschema",
  "serde",

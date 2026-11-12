@@ -12,8 +12,10 @@ versions may change behaviour and configuration.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-12
+
 ### Added
-- Contract negotiation (DSP 2025-1) in `ldsc-dsp`: the six message types,
+- Contract negotiation (DSP 2025-1) in `portitor-dsp`: the six message types,
   the acknowledgement and error types, and the state machine as a pure
   function. Checked against every negotiation example and JSON Schema of
   the specification, and fuzzed (`dsp_negotiation`).
@@ -43,18 +45,18 @@ versions may change behaviour and configuration.
   the 3 second wait. A failed send first asks the partner for its state
   before terminating. Writes compare a version number. SQLite schema
   version 3; migrated at start. See ADR 0007.
-- Management API on its own port (`LDSC_MANAGEMENT_BIND`, default
-  `127.0.0.1:8081`), off unless `LDSC_MANAGEMENT_API_KEY_FILE` is set:
+- Management API on its own port (`PORTITOR_MANAGEMENT_BIND`, default
+  `127.0.0.1:8081`), off unless `PORTITOR_MANAGEMENT_API_KEY_FILE` is set:
   start a negotiation as consumer, read one, list them. Every call needs
   the API key as a bearer token. Its OpenAPI description is generated from
   the code (utoipa) and served at `/v1/openapi.json`.
-- Negotiations are kept in a SQLite file (`LDSC_DB_FILE`, default
-  `ldsc.db`; `/data/ldsc.db` in the image, mount a volume there). See
+- Negotiations are kept in a SQLite file (`PORTITOR_DB_FILE`, default
+  `portitor.db`; `/data/portitor.db` in the image, mount a volume there). See
   ADR 0006.
 - `MessageGuard` port: every inbound and outbound negotiation message goes
   through it, so a dataspace can add its own rules, for example SHACL shapes
   (ADR 0005). The default allows everything.
-- `LDSC_ALLOW_HTTP_CALLBACKS`: allow `http://` callback addresses
+- `PORTITOR_ALLOW_HTTP_CALLBACKS`: allow `http://` callback addresses
   (development and tests only; `https://` only by default).
 - The container image now carries the CA certificate bundle (Mozilla's,
   as packaged by Debian, MPL-2.0) so the connector can verify `https`
@@ -73,6 +75,8 @@ versions may change behaviour and configuration.
   tests: metadata, catalog, provider-side negotiation and the management
   API, with environments for one connector and for two (see
   `docs/TESTING.md`).
+- `scripts/demo.sh`: two connectors on one machine agree a contract and
+  refuse changed terms. CI runs it on every pull request.
 
 ### Changed
 - **The project is renamed from LDSC to Portitor** ([ADR 0008](docs/adr/0008-project-name.md)).
@@ -82,9 +86,6 @@ versions may change behaviour and configuration.
   - Binary and crates: `portitor-connector`, `portitor-dsp`, `portitor-dcp`.
   - Environment variables: `PORTITOR_*` instead of `LDSC_*`
     (for example `PORTITOR_DB_FILE`, `PORTITOR_PUBLIC_URL`).
-  - Default database file: `/data/portitor.db` (was `/data/ldsc.db`). To
-    keep existing negotiations, rename `ldsc.db*` to `portitor.db*` while the
-    container is stopped, or set `PORTITOR_DB_FILE=/data/ldsc.db`.
   - Repository and website move to `brunopacheco1/portitor`.
 - Minimum Rust version 1.89 (was 1.85), needed by `rusqlite`.
 - A dataset definition whose offer has a `target` is refused at start;

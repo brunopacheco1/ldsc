@@ -6,7 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # ADR 0009: Minimal ODRL policies
 
-- Status: **Proposed**
+- Status: **Accepted** (decided by the maintainer, 2026-11-12)
 - Date: 2026-11-12
 - Scope: release 0.3, roadmap item "Minimal ODRL policy support: permit
   all, and one constraint type".

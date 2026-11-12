@@ -50,6 +50,8 @@ jobs:
           start=$(date +%s)
           cargo build --release --locked --target x86_64-unknown-linux-musl -p portitor-connector
           echo "release build seconds (with cache): $(( $(date +%s) - start ))" >> "$GITHUB_STEP_SUMMARY"
+      - name: Two connectors agree a contract (0.3 exit check)
+        run: scripts/demo.sh target/x86_64-unknown-linux-musl/release/portitor-connector
       - name: Build image
         run: |
           mkdir -p dist/amd64 && cp target/x86_64-unknown-linux-musl/release/portitor-connector dist/amd64/

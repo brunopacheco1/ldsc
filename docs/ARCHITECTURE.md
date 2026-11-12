@@ -10,7 +10,7 @@ Status: **draft for review**. Language: Rust ([ADR 0002](adr/0002-technology-sta
 
 ## Goal
 
-A small connector for the Luxembourg data space that speaks the Dataspace
+A small and fast connector that speaks the Dataspace
 Protocol (DSP 2025-1) and the Decentralized Claims Protocol (DCP 1.0), with
 few components and a simple deployment order.
 
