@@ -40,6 +40,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     ports.store = ldsc_connector::negotiation::AnyStore(Arc::clone(&store) as _);
     ports.consumer_store = ldsc_connector::consumer::AnyConsumerStore(store);
     let (app, negotiator) = ldsc_connector::build(&config, ports)?;
+    // messages saved but not acknowledged before the last stop
+    match negotiator.resume() {
+        Ok(0) => {}
+        Ok(count) => tracing::info!(count, "sending pending negotiation messages again"),
+        Err(failure) => return Err(format!("cannot read pending messages: {failure:?}").into()),
+    }
     let bind = std::env::var("LDSC_BIND").unwrap_or_else(|_| "0.0.0.0:8080".to_owned());
     let listener = tokio::net::TcpListener::bind(&bind).await?;
 

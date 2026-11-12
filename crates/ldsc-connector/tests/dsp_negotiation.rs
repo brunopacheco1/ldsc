@@ -17,16 +17,22 @@ use ldsc_connector::{Config, Ports};
 use ldsc_dsp::guard::{Direction, MessageGuard, Rejection};
 use ldsc_dsp::negotiation::provider::{Decider, Decision, Negotiation};
 use serde_json::{Value, json};
+use tokio::sync::Notify;
 use tower::ServiceExt as _;
 
 const BASE: &str = "/dsp/2025-1/negotiations";
 const CALLBACK: &str = "https://consumer.example/cb";
 
-/// Records every POST; answers with `Ok` unless `fail` is set.
+/// Records every POST; answers with `Ok` unless `fail` is set. Holds
+/// POSTs whose URL ends with `hold` until `release`. Answers a GET of the
+/// consumer's state with `reported`, if set.
 #[derive(Default)]
 struct FakeSender {
     sent: Mutex<Vec<(String, Value)>>,
     fail: bool,
+    hold: Option<&'static str>,
+    release: Notify,
+    reported: Option<&'static str>,
 }
 
 impl Sender for FakeSender {
@@ -35,13 +41,29 @@ impl Sender for FakeSender {
             .lock()
             .unwrap()
             .push((url.to_owned(), body.clone()));
-        let fail = self.fail;
         Box::pin(async move {
-            if fail {
+            if self.hold.is_some_and(|h| url.ends_with(h)) {
+                self.release.notified().await;
+            }
+            if self.fail {
                 Err("unreachable".to_owned())
             } else {
                 Ok(Value::Null)
             }
+        })
+    }
+
+    fn get<'a>(&'a self, url: &'a str) -> SendFuture<'a> {
+        Box::pin(async move {
+            assert_eq!(url, format!("{CALLBACK}/negotiations/urn:uuid:consumer-1"));
+            let state = self.reported.ok_or("no answer")?;
+            Ok(json!({
+                "@context": ["https://w3id.org/dspace/2025/1/context.jsonld"],
+                "@type": "ContractNegotiation",
+                "providerPid": "ignored",
+                "consumerPid": "urn:uuid:consumer-1",
+                "state": state
+            }))
         })
     }
 }
@@ -388,6 +410,59 @@ async fn unreachable_consumer_ends_in_termination() {
         "ContractNegotiationTerminationMessage"
     );
     state(&app, &pid, "TERMINATED").await;
+}
+
+/// The consumer's verification arrives while its acknowledgement of our
+/// agreement is still on its way: it proves the agreement arrived, so it
+/// is accepted at once (ADR 0007).
+#[tokio::test]
+async fn a_reply_racing_our_acknowledgement_proves_delivery() {
+    let sender = Arc::new(FakeSender {
+        hold: Some("/agreement"),
+        ..FakeSender::default()
+    });
+    let app = app(ports(&sender));
+    let pid = start(&app).await;
+    sent(&sender, 1).await; // the agreement is held
+    let verify = with(
+        ids(&pid),
+        &json!({"@type": "ContractAgreementVerificationMessage"}),
+    );
+    let (s, ack) = call(
+        &app,
+        post(&format!("{BASE}/{pid}/agreement/verification"), &verify),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{ack}");
+    assert_eq!(ack["state"], "VERIFIED");
+    sent(&sender, 2).await;
+    assert_eq!(sender.get(1).1["eventType"], "FINALIZED");
+    state(&app, &pid, "FINALIZED").await;
+    // the late acknowledgement of the agreement changes nothing
+    sender.release.notify_waiters();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    state(&app, &pid, "FINALIZED").await;
+    assert_eq!(sender.count(), 2);
+}
+
+/// The consumer took the agreement but its answer was lost: its state says
+/// so, and the negotiation goes on instead of being terminated.
+#[tokio::test]
+async fn a_lost_answer_is_checked_with_the_consumer() {
+    let sender = Arc::new(FakeSender {
+        fail: true,
+        reported: Some("AGREED"),
+        ..FakeSender::default()
+    });
+    let app = app(ports(&sender));
+    let pid = start(&app).await;
+    state(&app, &pid, "AGREED").await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(
+        sender.count(),
+        2,
+        "two tries of the agreement, no termination"
+    );
 }
 
 #[tokio::test]

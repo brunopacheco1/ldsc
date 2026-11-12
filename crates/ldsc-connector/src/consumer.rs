@@ -13,7 +13,6 @@
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
 
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
@@ -29,14 +28,13 @@ use ldsc_dsp::negotiation::provider::{Failure, StoreError};
 use ldsc_dsp::negotiation::{
     ContractAgreementMessage, ContractNegotiation, ContractNegotiationError,
     ContractNegotiationEventMessage, ContractNegotiationTerminationMessage, ContractOfferMessage,
-    NegotiationState, Transition,
+    Transition,
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use tokio::sync::watch;
 
 use crate::negotiation::{
-    Ports, Retry, Sender, SystemEnvironment, bad_request, callback_allowed, failed, send,
+    Ports, Retry, Sender, SystemEnvironment, arrived, bad_request, callback_allowed, failed, send,
 };
 
 /// Adapter: consumer negotiations kept in memory (lost on restart).
@@ -64,14 +62,10 @@ impl ConsumerStore for InMemoryConsumerNegotiations {
         Ok(())
     }
 
-    fn replace_if(
-        &self,
-        n: &ConsumerNegotiation,
-        expected: NegotiationState,
-    ) -> Result<bool, StoreError> {
+    fn replace_if(&self, n: &ConsumerNegotiation, expected: u64) -> Result<bool, StoreError> {
         let mut map = self.map();
         match map.get(&n.consumer_pid) {
-            Some(old) if old.state == expected => {
+            Some(old) if old.version == expected => {
                 map.insert(n.consumer_pid.clone(), n.clone());
                 Ok(true)
             }
@@ -93,6 +87,15 @@ impl ConsumerStore for InMemoryConsumerNegotiations {
         };
         Ok(range.take(limit).map(|(_, n)| n.clone()).collect())
     }
+
+    fn pending(&self) -> Result<Vec<ConsumerNegotiation>, StoreError> {
+        Ok(self
+            .map()
+            .values()
+            .filter(|n| n.pending.is_some())
+            .cloned()
+            .collect())
+    }
 }
 
 /// Any [`ConsumerStore`], chosen at start.
@@ -106,11 +109,7 @@ impl ConsumerStore for AnyConsumerStore {
     fn insert(&self, n: &ConsumerNegotiation) -> Result<(), StoreError> {
         self.0.insert(n)
     }
-    fn replace_if(
-        &self,
-        n: &ConsumerNegotiation,
-        expected: NegotiationState,
-    ) -> Result<bool, StoreError> {
+    fn replace_if(&self, n: &ConsumerNegotiation, expected: u64) -> Result<bool, StoreError> {
         self.0.replace_if(n, expected)
     }
     fn list(
@@ -119,6 +118,9 @@ impl ConsumerStore for AnyConsumerStore {
         limit: usize,
     ) -> Result<Vec<ConsumerNegotiation>, StoreError> {
         self.0.list(after, limit)
+    }
+    fn pending(&self) -> Result<Vec<ConsumerNegotiation>, StoreError> {
+        self.0.pending()
     }
 }
 
@@ -144,54 +146,6 @@ impl std::fmt::Debug for AnyConsumerDecider {
     }
 }
 
-/// How long a provider message that does not fit the current state waits
-/// for our own message in flight to be acknowledged (see [`InFlight`]).
-const IN_FLIGHT_WAIT: Duration = Duration::from_secs(3);
-
-/// The negotiations that have a message on its way to the provider.
-///
-/// DSP changes the state when the provider acknowledges our message. A fast
-/// provider may send its next message (for example the agreement after our
-/// `ACCEPTED` event) before we have recorded that acknowledgement. Such a
-/// message does not fit the stored state yet; it waits here until our
-/// message is recorded, then it is checked again.
-#[derive(Debug, Default)]
-struct InFlight(Mutex<BTreeMap<String, (usize, watch::Sender<()>)>>);
-
-impl InFlight {
-    fn map(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, (usize, watch::Sender<()>)>> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    fn begin(&self, consumer_pid: &str) {
-        self.map()
-            .entry(consumer_pid.to_owned())
-            .or_insert_with(|| (0, watch::channel(()).0))
-            .0 += 1;
-    }
-
-    fn end(&self, consumer_pid: &str) {
-        let mut map = self.map();
-        if let Some(entry) = map.get_mut(consumer_pid) {
-            entry.0 = entry.0.saturating_sub(1);
-            if entry.0 == 0 {
-                // dropping the sender wakes every waiter
-                map.remove(consumer_pid);
-            }
-        }
-    }
-
-    /// Waits until no message of this negotiation is in flight, at most
-    /// `max`. Returns whether there was one to wait for.
-    async fn wait(&self, consumer_pid: &str, max: Duration) -> bool {
-        let Some(mut rx) = self.map().get(consumer_pid).map(|e| e.1.subscribe()) else {
-            return false;
-        };
-        let _ = tokio::time::timeout(max, async { while rx.changed().await.is_ok() {} }).await;
-        true
-    }
-}
-
 /// The acknowledgement for the provider and, possibly, our next message.
 type Answer = (ContractNegotiation, Option<Outgoing>);
 
@@ -204,7 +158,6 @@ pub(crate) struct Consumer {
     guard: Arc<dyn MessageGuard + Send + Sync>,
     retry: Retry,
     allow_http: bool,
-    in_flight: InFlight,
 }
 
 impl Consumer {
@@ -220,7 +173,6 @@ impl Consumer {
             guard: Arc::clone(&ports.guard),
             retry: ports.retry,
             allow_http,
-            in_flight: InFlight::default(),
         }
     }
 
@@ -252,9 +204,23 @@ impl Consumer {
             .service
             .start(provider_address, provider_id, offer)
             .map_err(Box::new)?;
-        self.in_flight.begin(&out.consumer_pid);
         tokio::spawn(Arc::clone(self).deliver(out));
         Ok(n)
+    }
+
+    /// Sends every message saved as pending, for example after a
+    /// restart. Returns how many.
+    ///
+    /// # Errors
+    ///
+    /// The store failed.
+    pub(crate) fn resume(self: &Arc<Self>) -> Result<usize, Box<Failure>> {
+        let pending = self.service.pending().map_err(Box::new)?;
+        let count = pending.len();
+        for out in pending {
+            tokio::spawn(Arc::clone(self).deliver(out));
+        }
+        Ok(count)
     }
 
     pub(crate) fn negotiation(
@@ -299,46 +265,27 @@ impl Consumer {
         serde_json::from_value(value).map_err(|e| invalid(&provider_pid, &e.to_string()))
     }
 
-    /// Runs `handle`; if the message does not fit the state while a message
-    /// of ours is in flight, waits for that one and runs it once more.
-    async fn handle(
-        self: &Arc<Self>,
-        consumer_pid: &str,
-        handle: impl Fn(&Service) -> Result<Answer, Box<Failure>>,
-    ) -> Response {
-        let mut handled = handle(&self.service);
-        if matches!(&handled, Err(f) if matches!(**f, Failure::BadRequest(_)))
-            && self.in_flight.wait(consumer_pid, IN_FLIGHT_WAIT).await
-        {
-            handled = handle(&self.service);
-        }
+    /// Answers the provider and starts sending our next message, if any.
+    /// A provider message that arrives before our acknowledged message is
+    /// recorded needs no waiting: the domain takes it as proof that ours
+    /// arrived (ADR 0007).
+    fn answer(self: &Arc<Self>, handled: Result<Answer, Failure>) -> Response {
         match handled {
             Ok((ack, next)) => {
                 if let Some(out) = next {
-                    self.in_flight.begin(&out.consumer_pid);
                     tokio::spawn(Arc::clone(self).deliver(out));
                 }
                 Json(ack).into_response()
             }
-            Err(failure) => failed(*failure),
+            Err(failure) => failed(failure),
         }
     }
 
     /// Sends `out` and whatever follows from it, until the consumer waits
-    /// for the provider or the negotiation ends. The caller has marked
-    /// `out` as in flight.
+    /// for the provider or the negotiation ends.
     async fn deliver(self: Arc<Self>, mut out: Outgoing) {
-        loop {
-            let cpid = out.consumer_pid.clone();
-            let next = self.step(&out).await;
-            if let Some(n) = &next {
-                self.in_flight.begin(&n.consumer_pid);
-            }
-            self.in_flight.end(&cpid);
-            match next {
-                Some(n) => out = n,
-                None => return,
-            }
+        while let Some(next) = self.step(&out).await {
+            out = next;
         }
     }
 
@@ -348,6 +295,13 @@ impl Consumer {
         let sent = send(&*self.sender, &*self.guard, self.retry, &out.url, &out.body).await;
         let next = match sent {
             Ok(answer) => self.service.delivered(out, Some(&answer)),
+            // the provider refused or did not answer, but may have received
+            // it before (a lost answer, or a resend after a restart): its
+            // state says
+            Err(error) if arrived(&*self.sender, &out.status_url, out.to).await => {
+                tracing::info!(%pid, %error, "message had arrived before");
+                self.service.delivered(out, None)
+            }
             Err(error) if out.initial => {
                 tracing::warn!(%pid, %error, "provider not reachable; negotiation not started");
                 self.service.not_started(pid).map(|()| None)
@@ -359,7 +313,7 @@ impl Consumer {
             }
             Err(error) => {
                 tracing::warn!(%pid, %error, "provider not reachable; terminating");
-                self.service.abort(pid, "the provider could not be reached")
+                self.service.abort(out, "the provider could not be reached")
             }
         };
         match next {
@@ -394,8 +348,7 @@ pub(crate) async fn offer(
         Ok(m) => m,
         Err(e) => return bad_request(*e),
     };
-    c.handle(&cpid, |s| s.offer(&cpid, msg.clone()).map_err(Box::new))
-        .await
+    c.answer(c.service.offer(&cpid, &msg))
 }
 
 /// `POST <callback>/negotiations/{consumerPid}/agreement`.
@@ -408,8 +361,7 @@ pub(crate) async fn agreement(
         Ok(m) => m,
         Err(e) => return bad_request(*e),
     };
-    c.handle(&cpid, |s| s.agreement(&cpid, msg.clone()).map_err(Box::new))
-        .await
+    c.answer(c.service.agreement(&cpid, &msg))
 }
 
 /// `POST <callback>/negotiations/{consumerPid}/events`.
@@ -423,8 +375,7 @@ pub(crate) async fn event(
             Ok(m) => m,
             Err(e) => return bad_request(*e),
         };
-    c.handle(&cpid, |s| s.event(&cpid, &msg).map_err(Box::new))
-        .await
+    c.answer(c.service.event(&cpid, &msg))
 }
 
 /// `POST <callback>/negotiations/{consumerPid}/termination`.
@@ -438,14 +389,14 @@ pub(crate) async fn terminate(
             Ok(m) => m,
             Err(e) => return bad_request(*e),
         };
-    c.handle(&cpid, |s| s.terminate(&cpid, &msg).map_err(Box::new))
-        .await
+    c.answer(c.service.terminate(&cpid, &msg))
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use ldsc_dsp::negotiation::NegotiationState;
 
     fn negotiation(state: NegotiationState) -> ConsumerNegotiation {
         ConsumerNegotiation {
@@ -459,6 +410,8 @@ mod tests {
             )
             .unwrap(),
             agreement: None,
+            pending: None,
+            version: 0,
         }
     }
 
@@ -469,20 +422,15 @@ mod tests {
         assert!(store.get("c").unwrap().is_none());
         store.insert(&n).unwrap();
         assert!(store.insert(&n).is_err());
-        let offered = negotiation(NegotiationState::Offered);
-        assert!(
-            !store
-                .replace_if(&offered, NegotiationState::Accepted)
-                .unwrap()
-        );
-        assert!(
-            store
-                .replace_if(&offered, NegotiationState::Requested)
-                .unwrap()
-        );
+        let mut offered = negotiation(NegotiationState::Offered);
+        offered.version = 1;
+        assert!(!store.replace_if(&offered, 1).unwrap());
+        assert!(store.replace_if(&offered, 0).unwrap());
+        assert!(!store.replace_if(&offered, 0).unwrap());
+        assert!(store.pending().unwrap().is_empty());
         let mut other = offered;
         other.consumer_pid = "d".into();
-        assert!(!store.replace_if(&other, NegotiationState::Offered).unwrap());
+        assert!(!store.replace_if(&other, 1).unwrap());
         store.insert(&other).unwrap();
         let all = store.list(None, 10).unwrap();
         assert_eq!(all.len(), 2);
@@ -490,33 +438,5 @@ mod tests {
         assert!(store.list(Some("d"), 10).unwrap().is_empty());
         assert_eq!(store.list(None, 1).unwrap().len(), 1);
         assert_eq!(format!("{store:?}"), "AnyConsumerStore");
-    }
-
-    #[tokio::test]
-    async fn in_flight_wakes_waiters_when_the_last_message_ends() {
-        let f = Arc::new(InFlight::default());
-        assert!(!f.wait("c", Duration::from_secs(5)).await);
-        f.begin("c");
-        f.begin("c");
-        let waiter = {
-            let f = Arc::clone(&f);
-            tokio::spawn(async move { f.wait("c", Duration::from_secs(5)).await })
-        };
-        tokio::task::yield_now().await;
-        f.end("c");
-        assert!(!waiter.is_finished());
-        f.end("c");
-        assert!(waiter.await.unwrap());
-        assert!(f.map().is_empty());
-        f.end("c"); // no entry: nothing happens
-    }
-
-    #[tokio::test]
-    async fn in_flight_wait_is_bounded() {
-        let f = InFlight::default();
-        f.begin("c");
-        let started = std::time::Instant::now();
-        assert!(f.wait("c", Duration::from_millis(20)).await);
-        assert!(started.elapsed() < Duration::from_secs(2));
     }
 }

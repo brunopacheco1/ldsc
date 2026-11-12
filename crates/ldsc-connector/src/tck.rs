@@ -168,6 +168,8 @@ mod tests {
             )
             .unwrap(),
             agreement: None,
+            pending: None,
+            version: 0,
         }
     }
 
@@ -216,6 +218,8 @@ mod tests {
             )
             .unwrap(),
             agreement: None,
+            pending: None,
+            version: 0,
         };
         let cases = [
             ("ACNC0101", Offered, Accept),

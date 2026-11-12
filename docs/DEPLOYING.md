@@ -158,7 +158,9 @@ start with an error.
 
 | Log message (level) | Meaning | What to do |
 |---|---|---|
-| `consumer not reachable; terminating` or `provider not reachable; terminating` (WARN) | A message to a partner failed after 4 tries (0.5 s, 1 s, 2 s apart); the negotiation is terminated | Check the partner's address, DNS, TLS trust and your egress rules |
+| `consumer not reachable; terminating` or `provider not reachable; terminating` (WARN) | A message to a partner failed after 4 tries (0.5 s, 1 s, 2 s apart) and the partner's state does not show it arrived; the negotiation is terminated | Check the partner's address, DNS, TLS trust and your egress rules |
+| `message had arrived before` (INFO) | A send failed, but the partner's state shows it had received the message (a lost answer, or a resend after a restart); the negotiation goes on | Nothing |
+| `sending pending negotiation messages again` (INFO, at start) | Messages saved but not acknowledged before the last stop are being sent | Nothing |
 | `provider not reachable; negotiation not started` (WARN) | The first request of a negotiation we started as consumer failed after 4 tries; it ends without a message, as the provider never knew it | Same as above |
 | `termination not acknowledged` (WARN) | The partner did not take a termination; DSP allows this, the negotiation is terminated anyway | Nothing, unless it repeats for one partner |
 | `no CA certificates: https callbacks will fail` (WARN, at start) | The CA bundle was not found (for example `SSL_CERT_DIR` points to an empty folder) | Fix the mount or the variable |
@@ -194,9 +196,9 @@ Rollback: an older version refuses a database that a newer version
 migrated (`database schema version N is newer than this LDSC`). Restore
 the backup from step 2, then start the older image.
 
-Messages the connector was sending when it stopped are not sent again
-after a restart; those negotiations wait in their last state. Upgrade
-when few negotiations are running.
+Messages the connector was sending when it stopped are saved and sent
+again at start (ADR 0007), so an upgrade does not leave negotiations
+waiting. A partner may receive such a message twice; that is handled.
 
 ## Known limits
 
@@ -207,5 +209,4 @@ In this version (see also [SECURITY-ASSURANCE.md](SECURITY-ASSURANCE.md)):
 - Internal callback addresses are not blocked.
 - The provider agrees to every request for an offer in its catalog; offer
   constraints (for example a date limit) are not checked yet.
-- Messages in flight at shutdown are not resumed.
 - No metrics endpoint yet.

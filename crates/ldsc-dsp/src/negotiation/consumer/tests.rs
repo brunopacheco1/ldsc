@@ -11,8 +11,10 @@ use serde_json::json;
 
 use super::*;
 
+/// `.1`: how many writes lose the version check as if another write came
+/// first.
 #[derive(Default)]
-struct Store(RefCell<BTreeMap<String, ConsumerNegotiation>>);
+struct Store(RefCell<BTreeMap<String, ConsumerNegotiation>>, Cell<u32>);
 
 impl ConsumerStore for &Store {
     fn get(&self, cpid: &str) -> Result<Option<ConsumerNegotiation>, StoreError> {
@@ -24,14 +26,17 @@ impl ConsumerStore for &Store {
             .insert(n.consumer_pid.clone(), n.clone());
         Ok(())
     }
-    fn replace_if(
-        &self,
-        n: &ConsumerNegotiation,
-        expected: NegotiationState,
-    ) -> Result<bool, StoreError> {
+    fn replace_if(&self, n: &ConsumerNegotiation, expected: u64) -> Result<bool, StoreError> {
         let mut map = self.0.borrow_mut();
+        if self.1.get() > 0 {
+            self.1.set(self.1.get() - 1);
+            if let Some(old) = map.get_mut(&n.consumer_pid) {
+                old.version += 1;
+            }
+            return Ok(false);
+        }
         match map.get(&n.consumer_pid) {
-            Some(old) if old.state == expected => {
+            Some(old) if old.version == expected => {
                 map.insert(n.consumer_pid.clone(), n.clone());
                 Ok(true)
             }
@@ -48,6 +53,15 @@ impl ConsumerStore for &Store {
             .values()
             .filter(|n| after.is_none_or(|a| n.consumer_pid.as_str() > a))
             .take(limit)
+            .cloned()
+            .collect())
+    }
+    fn pending(&self) -> Result<Vec<ConsumerNegotiation>, StoreError> {
+        Ok(self
+            .0
+            .borrow()
+            .values()
+            .filter(|n| n.pending.is_some())
             .cloned()
             .collect())
     }
@@ -157,7 +171,7 @@ fn request_offer_accept_agree_verify_finalize() {
     assert_eq!(svc.delivered(&req, Some(&ack("p1", &cpid))).unwrap(), None);
     assert_eq!(svc.get(&cpid).unwrap().provider_pid, "p1");
 
-    let (a, accept) = svc.offer(&cpid, offer_msg("p1", &cpid)).unwrap();
+    let (a, accept) = svc.offer(&cpid, &offer_msg("p1", &cpid)).unwrap();
     assert_eq!(a.state, NegotiationState::Offered);
     let accept = accept.unwrap();
     assert_eq!(
@@ -168,7 +182,7 @@ fn request_offer_accept_agree_verify_finalize() {
     assert_eq!(svc.delivered(&accept, None).unwrap(), None);
     assert_eq!(state(&store, &cpid), NegotiationState::Accepted);
 
-    let (a, verify) = svc.agreement(&cpid, agreement_msg("p1", &cpid)).unwrap();
+    let (a, verify) = svc.agreement(&cpid, &agreement_msg("p1", &cpid)).unwrap();
     assert_eq!(a.state, NegotiationState::Agreed);
     let verify = verify.unwrap();
     assert!(
@@ -194,7 +208,7 @@ fn provider_message_before_the_acknowledgement() {
     let svc = ConsumerService::new(&store, AcceptAndVerify, Env::default(), CB.to_owned());
     let (n, req) = svc.start(PROVIDER, "did:web:p", offer()).unwrap();
     let cpid = n.consumer_pid;
-    let (_, accept) = svc.offer(&cpid, offer_msg("p1", &cpid)).unwrap();
+    let (_, accept) = svc.offer(&cpid, &offer_msg("p1", &cpid)).unwrap();
     assert!(
         accept.is_some(),
         "the offer sets the provider pid and is accepted"
@@ -222,7 +236,7 @@ fn counter_offer_and_terminations() {
         .unwrap()
         .unwrap();
     assert!(first.url.ends_with("/negotiations/p1/request"));
-    let (_, counter) = svc.offer(&cpid, offer_msg("p1", &cpid)).unwrap();
+    let (_, counter) = svc.offer(&cpid, &offer_msg("p1", &cpid)).unwrap();
     let counter = counter.unwrap();
     assert_eq!(counter.body["providerPid"], "p1");
     assert!(counter.body.get("callbackAddress").is_none());
@@ -239,7 +253,7 @@ fn counter_offer_and_terminations() {
         ),
         "400"
     );
-    assert_eq!(svc.abort(&cpid, "x").unwrap(), None);
+    assert_eq!(svc.abort(&counter, "x").unwrap(), None);
 }
 
 #[test]
@@ -254,7 +268,7 @@ fn consumer_terminates_and_aborts() {
     let (n, req) = svc.start(PROVIDER, "did:web:p", offer()).unwrap();
     let cpid = n.consumer_pid;
     // no provider pid yet: nothing can be sent
-    assert_eq!(svc.abort(&cpid, "x").unwrap(), None);
+    assert_eq!(svc.abort(&req, "x").unwrap(), None);
     let term = svc
         .delivered(&req, Some(&ack("p1", &cpid)))
         .unwrap()
@@ -290,41 +304,41 @@ fn invalid_provider_messages_are_refused() {
     assert_eq!(status(e), "400");
     // another provider's pid, or another negotiation's consumer pid
     assert_eq!(
-        status(svc.offer(&cpid, offer_msg("p2", &cpid)).unwrap_err()),
+        status(svc.offer(&cpid, &offer_msg("p2", &cpid)).unwrap_err()),
         "400"
     );
     assert_eq!(
-        status(svc.offer(&cpid, offer_msg("p1", "other")).unwrap_err()),
+        status(svc.offer(&cpid, &offer_msg("p1", "other")).unwrap_err()),
         "400"
     );
     assert_eq!(
         status(
-            svc.offer("unknown", offer_msg("p1", "unknown"))
+            svc.offer("unknown", &offer_msg("p1", "unknown"))
                 .unwrap_err()
         ),
         "404"
     );
     assert_eq!(status(svc.get("unknown").unwrap_err()), "404");
 
-    svc.offer(&cpid, offer_msg("p1", &cpid)).unwrap();
+    svc.offer(&cpid, &offer_msg("p1", &cpid)).unwrap();
     // agreement while OFFERED (the consumer has not accepted)
     assert_eq!(
         status(
-            svc.agreement(&cpid, agreement_msg("p1", &cpid))
+            svc.agreement(&cpid, &agreement_msg("p1", &cpid))
                 .unwrap_err()
         ),
         "400"
     );
     // a second offer while OFFERED
     assert_eq!(
-        status(svc.offer(&cpid, offer_msg("p1", &cpid)).unwrap_err()),
+        status(svc.offer(&cpid, &offer_msg("p1", &cpid)).unwrap_err()),
         "400"
     );
     assert_eq!(state(&store, &cpid), NegotiationState::Offered);
     // an agreement for another dataset
     let mut other = agreement_msg("p1", &cpid);
     other.agreement.target = "d2".into();
-    assert_eq!(status(svc.agreement(&cpid, other).unwrap_err()), "400");
+    assert_eq!(status(svc.agreement(&cpid, &other).unwrap_err()), "400");
 }
 
 #[test]
@@ -349,7 +363,7 @@ fn bad_starts() {
     assert_eq!(state(&store, &n.consumer_pid), NegotiationState::Terminated);
     // the provider's message without a provider pid
     let e = svc
-        .offer(&n.consumer_pid, offer_msg("", &n.consumer_pid))
+        .offer(&n.consumer_pid, &offer_msg("", &n.consumer_pid))
         .unwrap_err();
     assert_eq!(status(e), "400");
 }
@@ -371,4 +385,95 @@ fn reads_and_pages() {
     assert_eq!(rest.len(), 1, "a limit of 0 still returns one");
     assert_eq!(rest[0].consumer_pid, pids[2]);
     assert_eq!(svc.list(None, 10_000).unwrap().len(), 3);
+}
+
+/// The provider agrees before our acknowledged acceptance is recorded,
+/// and finalizes before our acknowledged verification is: each message
+/// proves our pending one arrived.
+#[test]
+fn a_reply_proves_the_pending_message_arrived() {
+    let store = Store::default();
+    let svc = ConsumerService::new(&store, AcceptAndVerify, Env::default(), CB.to_owned());
+    let (n, req) = svc.start(PROVIDER, "did:web:p", offer()).unwrap();
+    let cpid = n.consumer_pid;
+    assert_eq!(svc.pending().unwrap(), vec![req.clone()]);
+    assert_eq!(
+        (req.to, req.status_url.as_str()),
+        (NegotiationState::Requested, "")
+    );
+    svc.delivered(&req, Some(&ack("p1", &cpid))).unwrap();
+    assert!(svc.pending().unwrap().is_empty());
+
+    let (_, accept) = svc.offer(&cpid, &offer_msg("p1", &cpid)).unwrap();
+    let accept = accept.unwrap();
+    assert_eq!(accept.to, NegotiationState::Accepted);
+    assert_eq!(
+        accept.status_url,
+        "https://provider.example/dsp/2025-1/negotiations/p1"
+    );
+    let (a, verify) = svc.agreement(&cpid, &agreement_msg("p1", &cpid)).unwrap();
+    assert_eq!(a.state, NegotiationState::Agreed);
+    let verify = verify.unwrap();
+    assert_eq!(svc.delivered(&accept, None).unwrap(), None);
+    assert_eq!(svc.abort(&accept, "timed out").unwrap(), None);
+    assert_eq!(state(&store, &cpid), NegotiationState::Agreed);
+
+    let (a, next) = svc
+        .event(&cpid, &event_msg("p1", &cpid, "FINALIZED"))
+        .unwrap();
+    assert_eq!((a.state, next), (NegotiationState::Finalized, None));
+    assert_eq!(svc.delivered(&verify, None).unwrap(), None);
+    assert_eq!(state(&store, &cpid), NegotiationState::Finalized);
+    assert!(svc.pending().unwrap().is_empty());
+}
+
+#[test]
+fn not_started_only_before_the_provider_answers() {
+    let store = Store::default();
+    let svc = ConsumerService::new(
+        &store,
+        Fixed(ConsumerDecision::Wait),
+        Env::default(),
+        CB.to_owned(),
+    );
+    let (n, _) = svc.start(PROVIDER, "did:web:p", offer()).unwrap();
+    let cpid = n.consumer_pid;
+    // the request timed out, but the provider had received it
+    svc.offer(&cpid, &offer_msg("p1", &cpid)).unwrap();
+    svc.not_started(&cpid).unwrap();
+    assert_eq!(state(&store, &cpid), NegotiationState::Offered);
+}
+
+#[test]
+fn abort_blocks_other_steps_and_retries_lost_writes() {
+    let store = Store::default();
+    let svc = ConsumerService::new(&store, AcceptAndVerify, Env::default(), CB.to_owned());
+    let (n, req) = svc.start(PROVIDER, "did:web:p", offer()).unwrap();
+    let cpid = n.consumer_pid;
+    // two other writes come first: the third try succeeds
+    store.1.set(2);
+    svc.delivered(&req, Some(&ack("p1", &cpid))).unwrap();
+    assert_eq!(store.0.borrow()[&cpid].provider_pid.as_deref(), Some("p1"));
+
+    let (_, accept) = svc.offer(&cpid, &offer_msg("p1", &cpid)).unwrap();
+    let term = svc
+        .abort(&accept.unwrap(), "provider unreachable")
+        .unwrap()
+        .unwrap();
+    assert_eq!(term.to, NegotiationState::Terminated);
+    assert_eq!(svc.pending().unwrap(), vec![term.clone()]);
+    let e = svc
+        .agreement(&cpid, &agreement_msg("p1", &cpid))
+        .unwrap_err();
+    assert_eq!(status(e), "400");
+    // the provider's own termination crosses ours
+    let (a, _) = svc.terminate(&cpid, &termination_msg("p1", &cpid)).unwrap();
+    assert_eq!(a.state, NegotiationState::Terminated);
+    assert_eq!(svc.delivered(&term, None).unwrap(), None);
+
+    // other writes keep coming first: give up
+    let (n, _) = svc.start(PROVIDER, "did:web:p", offer()).unwrap();
+    store.1.set(3);
+    assert_eq!(status(svc.not_started(&n.consumer_pid).unwrap_err()), "400");
+    assert_eq!(state(&store, &n.consumer_pid), NegotiationState::Requested);
 }

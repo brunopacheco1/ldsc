@@ -39,6 +39,8 @@ service, so a single participant or a demo needs nothing but the image.
 - The binary grows by the SQLite library (about 1 MB).
 - Messages being sent when the process stops are not sent again after a
   restart; the negotiation waits in its last state. An outbox that
-  resumes them is a follow-up.
+  resumes them is a follow-up. (Addressed by
+  [ADR 0007](0007-outbox-and-proof-of-delivery.md), which also replaces
+  the compare on the previous state with a compare on a version number.)
 - `rusqlite` 0.42 needs Rust 1.89, so the minimum Rust version moves from
   1.85 to 1.89.

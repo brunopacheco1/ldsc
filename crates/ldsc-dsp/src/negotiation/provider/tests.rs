@@ -10,8 +10,14 @@ use std::collections::BTreeMap;
 use super::*;
 use crate::{Dataset, DatasetType, Distribution, DistributionType, OfferType, Rule};
 
+/// `.1`: every write fails; `.2`: how many writes lose the version check
+/// as if another write came first.
 #[derive(Default)]
-struct Store(RefCell<BTreeMap<String, Negotiation>>, Cell<bool>);
+struct Store(
+    RefCell<BTreeMap<String, Negotiation>>,
+    Cell<bool>,
+    Cell<u32>,
+);
 
 impl NegotiationStore for &Store {
     fn get(&self, pid: &str) -> Result<Option<Negotiation>, StoreError> {
@@ -23,18 +29,34 @@ impl NegotiationStore for &Store {
             .insert(n.provider_pid.clone(), n.clone());
         Ok(())
     }
-    fn replace_if(&self, n: &Negotiation, expected: NegotiationState) -> Result<bool, StoreError> {
+    fn replace_if(&self, n: &Negotiation, expected: u64) -> Result<bool, StoreError> {
         if self.1.get() {
             return Err(StoreError("disk full".to_owned()));
         }
         let mut map = self.0.borrow_mut();
+        if self.2.get() > 0 {
+            self.2.set(self.2.get() - 1);
+            if let Some(old) = map.get_mut(&n.provider_pid) {
+                old.version += 1;
+            }
+            return Ok(false);
+        }
         match map.get(&n.provider_pid) {
-            Some(old) if old.state == expected => {
+            Some(old) if old.version == expected => {
                 map.insert(n.provider_pid.clone(), n.clone());
                 Ok(true)
             }
             _ => Ok(false),
         }
+    }
+    fn pending(&self) -> Result<Vec<Negotiation>, StoreError> {
+        Ok(self
+            .0
+            .borrow()
+            .values()
+            .filter(|n| n.pending.is_some())
+            .cloned()
+            .collect())
     }
 }
 
@@ -243,8 +265,9 @@ fn counter_offer_and_provider_termination() {
     // nothing more after a terminal state
     let err = p.terminate(&pid, &termination(&pid), "c").unwrap_err();
     assert!(reason(&err).contains("terminal"), "{err:?}");
-    let err = p.delivered(&out).unwrap_err();
-    assert!(matches!(err, Failure::BadRequest(_)));
+    // a second acknowledgement of the same message changes nothing
+    assert_eq!(p.delivered(&out).unwrap(), None);
+    assert!(p.pending().unwrap().is_empty());
 }
 
 #[test]
@@ -270,7 +293,8 @@ fn consumer_counter_offer_and_termination() {
 #[test]
 fn refuses_bad_requests() {
     let store = Store::default();
-    let p = service(&store, AgreeToCatalogOffers);
+    // waits: nothing is pending, so nothing can prove a later state
+    let p = service(&store, Script(BTreeMap::new()));
 
     let mut no_cb = request(None);
     no_cb.callback_address = None;
@@ -316,12 +340,16 @@ fn concurrent_change_and_store_failure() {
     let (ack, out) = p.request(None, request(None), "c").unwrap();
     let pid = ack.provider_pid.clone();
     let out = out.unwrap();
-    // the consumer terminates while the agreement is on its way
+    // the consumer terminates while the agreement is on its way; the
+    // late acknowledgement of the agreement then changes nothing
     p.terminate(&pid, &termination(&pid), "c").unwrap();
-    assert!(p.delivered(&out).is_err());
-    assert_eq!(store.0.borrow()[&pid].state, NegotiationState::Terminated);
+    assert_eq!(p.delivered(&out).unwrap(), None);
+    let n = store.0.borrow()[&pid].clone();
+    assert_eq!(n.state, NegotiationState::Terminated);
+    assert_eq!((n.agreement, n.pending), (None, None));
 
-    let (ack, _) = p.request(None, request(None), "c").unwrap();
+    let (ack, agree) = p.request(None, request(None), "c").unwrap();
+    let agree = agree.unwrap();
     store.1.set(true);
     let err = p
         .terminate(&ack.provider_pid, &termination(&ack.provider_pid), "c")
@@ -329,23 +357,100 @@ fn concurrent_change_and_store_failure() {
     assert!(matches!(err, Failure::Store(_)));
     assert!(reason(&err).contains("disk full"));
 
-    // abort builds a termination for a known negotiation only
+    // abort saves a termination as pending, for a live negotiation only
     store.1.set(false);
-    let out = p.abort(&ack.provider_pid, "consumer unreachable").unwrap();
+    let out = p.abort(&agree, "consumer unreachable").unwrap().unwrap();
     assert_eq!(out.transition, Transition::Terminate);
+    assert_eq!(out.to, NegotiationState::Terminated);
     assert_eq!(out.body["reason"][0], "consumer unreachable");
-    assert!(matches!(p.abort("nope", "x"), Err(Failure::NotFound(_))));
+    assert_eq!(p.pending().unwrap(), vec![out.clone()]);
+    // the consumer cannot move on while the provider is ending it
+    let err = p
+        .verify(&ack.provider_pid, &verification(&ack.provider_pid), "c")
+        .unwrap_err();
+    assert!(reason(&err).contains("ending"), "{err:?}");
+    p.delivered(&out).unwrap();
+    assert_eq!(p.abort(&out, "again").unwrap(), None);
+    let unknown = Outgoing {
+        provider_pid: "nope".to_owned(),
+        ..out
+    };
+    assert!(matches!(p.abort(&unknown, "x"), Err(Failure::NotFound(_))));
 }
 
 #[test]
-fn optimistic_lock_detects_lost_update() {
+fn a_lost_write_is_read_and_tried_again() {
     let store = Store::default();
     let p = service(&store, AgreeToCatalogOffers);
-    let (ack, _) = p.request(None, request(None), "c").unwrap();
+    let (ack, out) = p.request(None, request(None), "c").unwrap();
     let pid = ack.provider_pid;
-    let mut stale = store.0.borrow()[&pid].clone();
-    stale.state = NegotiationState::Offered;
-    // stored state is REQUESTED, so an update expecting OFFERED must fail
-    let err = p.save(&stale, NegotiationState::Offered).unwrap_err();
-    assert!(reason(&err).contains("concurrently"));
+    let out = out.unwrap();
+    assert_eq!(store.0.borrow()[&pid].version, 0);
+    // two other writes come first: the third try succeeds
+    store.2.set(2);
+    assert_eq!(p.delivered(&out).unwrap(), None);
+    let n = store.0.borrow()[&pid].clone();
+    assert_eq!((n.state, n.version), (NegotiationState::Agreed, 3));
+    // other writes keep coming first: give up, change nothing
+    store.2.set(3);
+    let err = p.verify(&pid, &verification(&pid), "c").unwrap_err();
+    assert!(reason(&err).contains("concurrently"), "{err:?}");
+    assert_eq!(store.0.borrow()[&pid].state, NegotiationState::Agreed);
+}
+
+/// The consumer verifies before its acknowledgement of the agreement has
+/// been recorded: the verification proves the agreement arrived.
+#[test]
+fn a_reply_proves_the_pending_message_arrived() {
+    let store = Store::default();
+    let p = service(&store, AgreeToCatalogOffers);
+    let (ack, agree) = p.request(None, request(None), "c").unwrap();
+    let pid = ack.provider_pid;
+    let agree = agree.unwrap();
+    assert_eq!(agree.to, NegotiationState::Agreed);
+    assert_eq!(
+        agree.status_url,
+        "https://consumer.example/cb/negotiations/c1"
+    );
+    assert_eq!(p.pending().unwrap(), vec![agree.clone()]);
+
+    let (ack, finalize) = p.verify(&pid, &verification(&pid), "c").unwrap();
+    assert_eq!(ack.state, NegotiationState::Verified);
+    let n = store.0.borrow()[&pid].clone();
+    assert_eq!(
+        n.agreement.unwrap().id,
+        agree.body["agreement"]["@id"].as_str().unwrap()
+    );
+    assert_eq!(n.pending, finalize.clone());
+    // the late acknowledgement, or a late failure, changes nothing
+    assert_eq!(p.delivered(&agree).unwrap(), None);
+    assert_eq!(p.abort(&agree, "timed out").unwrap(), None);
+    assert_eq!(store.0.borrow()[&pid].state, NegotiationState::Verified);
+    p.delivered(&finalize.unwrap()).unwrap();
+    assert_eq!(store.0.borrow()[&pid].state, NegotiationState::Finalized);
+}
+
+/// The same with the provider's offer and the consumer's acceptance; a
+/// message that fits neither state is refused and changes nothing.
+#[test]
+fn proof_of_delivery_for_an_offer() {
+    let store = Store::default();
+    let script = Script(BTreeMap::from([(
+        NegotiationState::Requested,
+        Decision::Offer,
+    )]));
+    let p = service(&store, script);
+    let (ack, out) = p.request(None, request(None), "c").unwrap();
+    let pid = ack.provider_pid;
+    assert_eq!(out.unwrap().to, NegotiationState::Offered);
+    let err = p.verify(&pid, &verification(&pid), "c").unwrap_err();
+    assert!(reason(&err).contains("not allowed"), "{err:?}");
+    let before = store.0.borrow()[&pid].clone();
+    assert_eq!(before.state, NegotiationState::Requested);
+    let (ack, out) = p
+        .event(&pid, &event(&pid, NegotiationEvent::Accepted), "c")
+        .unwrap();
+    assert_eq!(ack.state, NegotiationState::Accepted);
+    assert_eq!(out, None);
+    assert!(p.pending().unwrap().is_empty());
 }

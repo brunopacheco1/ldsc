@@ -166,10 +166,14 @@ struct AppState {
     versions: VersionResponse,
 }
 
-/// Starts contract negotiations as consumer. Must be used inside the Tokio
-/// runtime: the messages are sent in the background.
+/// Starts contract negotiations as consumer, and resends messages saved
+/// before a restart. Must be used inside the Tokio runtime: the messages
+/// are sent in the background.
 #[derive(Clone)]
-pub struct Negotiator(Arc<consumer::Consumer>);
+pub struct Negotiator {
+    consumer: Arc<consumer::Consumer>,
+    provider: Arc<negotiation::Provider>,
+}
 
 impl std::fmt::Debug for Negotiator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -194,7 +198,7 @@ impl Negotiator {
         provider_id: &str,
         offer: ldsc_dsp::Offer,
     ) -> Result<ldsc_dsp::negotiation::consumer::ConsumerNegotiation, Box<Failure>> {
-        self.0.start(provider_address, provider_id, offer)
+        self.consumer.start(provider_address, provider_id, offer)
     }
 
     /// The negotiation with this consumer pid.
@@ -206,7 +210,7 @@ impl Negotiator {
         &self,
         consumer_pid: &str,
     ) -> Result<ldsc_dsp::negotiation::consumer::ConsumerNegotiation, Box<Failure>> {
-        self.0.negotiation(consumer_pid)
+        self.consumer.negotiation(consumer_pid)
     }
 
     /// Up to `limit` negotiations (at most 100) after the consumer pid
@@ -220,7 +224,18 @@ impl Negotiator {
         after: Option<&str>,
         limit: usize,
     ) -> Result<Vec<ldsc_dsp::negotiation::consumer::ConsumerNegotiation>, Box<Failure>> {
-        self.0.list(after, limit)
+        self.consumer.list(after, limit)
+    }
+
+    /// Sends again, in the background, every message that was saved but
+    /// not acknowledged (as provider and as consumer), for example after a
+    /// restart. Call it once at start. Returns how many.
+    ///
+    /// # Errors
+    ///
+    /// The store failed.
+    pub fn resume(&self) -> Result<usize, Box<Failure>> {
+        Ok(self.provider.resume()? + self.consumer.resume()?)
     }
 }
 
@@ -279,7 +294,10 @@ pub fn build(
             auth: None,
         }],
     };
-    let negotiator = Negotiator(Arc::clone(&consumer));
+    let negotiator = Negotiator {
+        consumer: Arc::clone(&consumer),
+        provider: Arc::clone(&provider),
+    };
     let router = Router::new()
         .route("/.well-known/dspace-version", get(version))
         .route(

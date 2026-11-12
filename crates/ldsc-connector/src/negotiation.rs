@@ -69,15 +69,24 @@ impl NegotiationStore for InMemoryNegotiations {
         Ok(())
     }
 
-    fn replace_if(&self, n: &Negotiation, expected: NegotiationState) -> Result<bool, StoreError> {
+    fn replace_if(&self, n: &Negotiation, expected: u64) -> Result<bool, StoreError> {
         let mut map = self.map();
         match map.get(&n.provider_pid) {
-            Some(old) if old.state == expected => {
+            Some(old) if old.version == expected => {
                 map.insert(n.provider_pid.clone(), n.clone());
                 Ok(true)
             }
             _ => Ok(false),
         }
+    }
+
+    fn pending(&self) -> Result<Vec<Negotiation>, StoreError> {
+        Ok(self
+            .map()
+            .values()
+            .filter(|n| n.pending.is_some())
+            .cloned()
+            .collect())
     }
 }
 
@@ -172,8 +181,11 @@ impl NegotiationStore for AnyStore {
     fn insert(&self, n: &Negotiation) -> Result<(), StoreError> {
         self.0.insert(n)
     }
-    fn replace_if(&self, n: &Negotiation, expected: NegotiationState) -> Result<bool, StoreError> {
+    fn replace_if(&self, n: &Negotiation, expected: u64) -> Result<bool, StoreError> {
         self.0.replace_if(n, expected)
+    }
+    fn pending(&self) -> Result<Vec<Negotiation>, StoreError> {
+        self.0.pending()
     }
 }
 
@@ -183,14 +195,21 @@ impl std::fmt::Debug for AnyStore {
     }
 }
 
-/// What [`Sender::post`] returns: the counter-party's JSON answer
-/// (`Value::Null` if it sent none or no JSON), or why the send failed.
+/// What [`Sender::post`] and [`Sender::get`] return: the counter-party's
+/// JSON answer (`Value::Null` if it sent none or no JSON), or why the
+/// request failed.
 pub type SendFuture<'a> = Pin<Box<dyn Future<Output = Result<Value, String>> + Send + 'a>>;
 
 /// Port: sends a message to a counter-party and waits for its HTTP 2xx.
 pub trait Sender: Send + Sync {
     /// POSTs `body` as JSON to `url`.
     fn post<'a>(&'a self, url: &'a str, body: &'a Value) -> SendFuture<'a>;
+
+    /// GETs `url` (a counter-party's negotiation state). The default
+    /// cannot, so a message that failed is never taken as delivered.
+    fn get<'a>(&'a self, url: &'a str) -> SendFuture<'a> {
+        Box::pin(async move { Err(format!("cannot read {url}")) })
+    }
 }
 
 /// How long one POST to a counter-party may take, answer included.
@@ -269,27 +288,42 @@ impl HttpSender {
 impl Sender for HttpSender {
     fn post<'a>(&'a self, url: &'a str, body: &'a Value) -> SendFuture<'a> {
         Box::pin(async move {
-            if !callback_allowed(url, self.allow_http) {
-                return Err(format!("refused callback URL {url}"));
-            }
-            if !self.has_ca_certificates && url.to_ascii_lowercase().starts_with("https://") {
-                return Err(
-                    "no CA certificates to verify the consumer; mount the system bundle".to_owned(),
-                );
-            }
             let bytes = serde_json::to_vec(body).map_err(|e| e.to_string())?;
             let request = hyper::Request::post(url)
                 .header(hyper::header::CONTENT_TYPE, "application/json")
                 .body(Full::new(Bytes::from(bytes)))
                 .map_err(|e| e.to_string())?;
-            tokio::time::timeout(SEND_TIMEOUT, self.exchange(request))
-                .await
-                .map_err(|_| format!("no answer within {}s", SEND_TIMEOUT.as_secs()))?
+            self.call(url, request).await
+        })
+    }
+
+    fn get<'a>(&'a self, url: &'a str) -> SendFuture<'a> {
+        Box::pin(async move {
+            let request = hyper::Request::get(url)
+                .header(hyper::header::ACCEPT, "application/json")
+                .body(Full::new(Bytes::new()))
+                .map_err(|e| e.to_string())?;
+            self.call(url, request).await
         })
     }
 }
 
 impl HttpSender {
+    async fn call(&self, url: &str, request: hyper::Request<Full<Bytes>>) -> Result<Value, String> {
+        if !callback_allowed(url, self.allow_http) {
+            return Err(format!("refused callback URL {url}"));
+        }
+        if !self.has_ca_certificates && url.to_ascii_lowercase().starts_with("https://") {
+            return Err(
+                "no CA certificates to verify the counter-party; mount the system bundle"
+                    .to_owned(),
+            );
+        }
+        tokio::time::timeout(SEND_TIMEOUT, self.exchange(request))
+            .await
+            .map_err(|_| format!("no answer within {}s", SEND_TIMEOUT.as_secs()))?
+    }
+
     async fn exchange(&self, request: hyper::Request<Full<Bytes>>) -> Result<Value, String> {
         use http_body_util::BodyExt as _;
         let response = self
@@ -467,12 +501,34 @@ impl Provider {
             .map_err(|e| Box::new(invalid(provider_pid, &consumer_pid, &e.to_string())))
     }
 
+    /// Sends every message saved as pending, for example after a
+    /// restart. Returns how many.
+    ///
+    /// # Errors
+    ///
+    /// The store failed.
+    pub(crate) fn resume(self: &Arc<Self>) -> Result<usize, Box<Failure>> {
+        let pending = self.service.pending().map_err(Box::new)?;
+        let count = pending.len();
+        for out in pending {
+            tokio::spawn(Arc::clone(self).deliver(out));
+        }
+        Ok(count)
+    }
+
     /// Sends `out` and whatever follows from it, until the provider waits
     /// for the consumer or the negotiation ends.
     async fn deliver(self: Arc<Self>, mut out: Outgoing) {
         loop {
             let next = match self.send(&out).await {
                 Ok(_) => self.service.delivered(&out),
+                // the consumer refused or did not answer, but may have
+                // received it before (a lost answer, or a resend after a
+                // restart): its state says
+                Err(error) if arrived(&*self.sender, &out.status_url, out.to).await => {
+                    tracing::info!(pid = %out.provider_pid, %error, "message had arrived before");
+                    self.service.delivered(&out)
+                }
                 // DSP: errors answering a termination may be ignored
                 Err(error) if out.transition == Transition::Terminate => {
                     tracing::warn!(pid = %out.provider_pid, %error, "termination not acknowledged");
@@ -481,8 +537,7 @@ impl Provider {
                 Err(error) => {
                     tracing::warn!(pid = %out.provider_pid, %error, "consumer not reachable; terminating");
                     self.service
-                        .abort(&out.provider_pid, "the consumer could not be reached")
-                        .map(Some)
+                        .abort(&out, "the consumer could not be reached")
                 }
             };
             match next {
@@ -499,6 +554,17 @@ impl Provider {
     async fn send(&self, out: &Outgoing) -> Result<Value, String> {
         send(&*self.sender, &*self.guard, self.retry, &out.url, &out.body).await
     }
+}
+
+/// Whether the counter-party reports state `to` at `status_url`, that is,
+/// a message that leads there has arrived. `false` when it cannot tell.
+pub(crate) async fn arrived(sender: &dyn Sender, status_url: &str, to: NegotiationState) -> bool {
+    if status_url.is_empty() {
+        return false;
+    }
+    sender.get(status_url).await.is_ok_and(|answer| {
+        serde_json::from_value::<ContractNegotiation>(answer).is_ok_and(|n| n.state == to)
+    })
 }
 
 /// Checks `body` with the guard, then POSTs it to `url`, retrying as
@@ -716,6 +782,8 @@ mod tests {
             )
             .unwrap(),
             agreement: None,
+            pending: None,
+            version: 0,
         }
     }
 
@@ -726,32 +794,31 @@ mod tests {
         assert!(store.get("p").unwrap().is_none());
         store.insert(&n).unwrap();
         assert!(store.insert(&n).is_err());
-        let offered = negotiation(NegotiationState::Offered);
-        assert!(
-            !store
-                .replace_if(&offered, NegotiationState::Accepted)
-                .unwrap()
-        );
-        assert!(
-            store
-                .replace_if(&offered, NegotiationState::Requested)
-                .unwrap()
-        );
+        let mut offered = negotiation(NegotiationState::Offered);
+        offered.version = 1;
+        assert!(!store.replace_if(&offered, 1).unwrap());
+        assert!(store.replace_if(&offered, 0).unwrap());
         assert_eq!(
             store.get("p").unwrap().unwrap().state,
             NegotiationState::Offered
         );
-        assert!(
-            !store
-                .replace_if(
-                    &negotiation(NegotiationState::Agreed),
-                    NegotiationState::Requested
-                )
-                .unwrap()
-        );
-        let mut other = offered;
+        // a second write from the same read loses
+        assert!(!store.replace_if(&offered, 0).unwrap());
+        let mut other = offered.clone();
         other.provider_pid = "q".into();
-        assert!(!store.replace_if(&other, NegotiationState::Offered).unwrap());
+        assert!(!store.replace_if(&other, 0).unwrap());
+        assert!(store.pending().unwrap().is_empty());
+        offered.version = 2;
+        offered.pending = Some(Outgoing {
+            provider_pid: "p".into(),
+            url: "https://c.example/negotiations/c/agreement".into(),
+            body: serde_json::json!({}),
+            transition: Transition::Agree,
+            to: NegotiationState::Agreed,
+            status_url: "https://c.example/negotiations/c".into(),
+        });
+        assert!(store.replace_if(&offered, 1).unwrap());
+        assert_eq!(store.pending().unwrap(), vec![offered]);
     }
 
     #[test]
@@ -786,6 +853,44 @@ mod tests {
                 .contains("500")
         );
         assert!(sender.post("http://127.0.0.1:1/cb", &body).await.is_err());
+    }
+
+    /// Sends, but cannot read a counter-party's state.
+    struct PostOnly;
+
+    impl Sender for PostOnly {
+        fn post<'a>(&'a self, _: &'a str, _: &'a Value) -> SendFuture<'a> {
+            Box::pin(async { Ok(Value::Null) })
+        }
+    }
+
+    #[tokio::test]
+    async fn arrived_reads_the_counter_party_state() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = axum::Router::new()
+            .route(
+                "/negotiations/c",
+                axum::routing::get(|| async {
+                    Json(ContractNegotiation::new("p", "c", NegotiationState::Agreed))
+                }),
+            )
+            .route(
+                "/negotiations/x",
+                axum::routing::get(|| async { Json(serde_json::json!({"state": 1})) }),
+            );
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        let sender = HttpSender::new(true).unwrap();
+        let url = format!("http://{addr}/negotiations/c");
+        assert!(arrived(&sender, &url, NegotiationState::Agreed).await);
+        assert!(!arrived(&sender, &url, NegotiationState::Verified).await);
+        let garbage = format!("http://{addr}/negotiations/x");
+        assert!(!arrived(&sender, &garbage, NegotiationState::Agreed).await);
+        let missing = format!("http://{addr}/negotiations/none");
+        assert!(!arrived(&sender, &missing, NegotiationState::Agreed).await);
+        assert!(!arrived(&sender, "", NegotiationState::Agreed).await);
+        // a sender that cannot read never claims delivery
+        assert!(!arrived(&PostOnly, &url, NegotiationState::Agreed).await);
     }
 
     #[tokio::test]

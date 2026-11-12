@@ -68,8 +68,13 @@ cannot be reached, it terminates the negotiation.
 
 As consumer, the connector accepts the provider's offer and verifies its
 agreement. Providers send their messages to the callback endpoints above.
-A message that does not fit the current state yet, because our own
-message is still being acknowledged, waits up to 3 seconds for it.
+
+On both sides each outgoing message is saved before it is sent, and sent
+again after a restart. A partner's message that arrives before its
+acknowledgement of ours is recorded proves ours arrived, so it is
+accepted at once. If a send fails, the connector asks the partner for its
+state before giving up. See
+[ADR 0007](docs/adr/0007-outbox-and-proof-of-delivery.md).
 
 ### Management API
 
@@ -114,8 +119,6 @@ Known gaps in this version:
   DSP endpoints can negotiate, and agreements name the consumer as
   `urn:ldsc:unauthenticated`. Do not expose the connector to untrusted
   networks.
-- A message the connector was sending when it stopped is not sent again
-  after a restart; that negotiation waits in its last state.
 - The callback address is chosen by the consumer. Only `https://` is
   allowed by default, but internal addresses are not blocked yet; put the
   connector where it cannot reach services it should not call.
