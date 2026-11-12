@@ -42,5 +42,7 @@ COPY --from=certs --chown=65532:65532 /home/nonroot /data
 ENV LDSC_DB_FILE=/data/ldsc.db
 VOLUME /data
 USER 65532:65532
-EXPOSE 8080
+# 8080: DSP. 8081: management API, only when LDSC_MANAGEMENT_API_KEY_FILE is
+# set; it listens on 127.0.0.1 unless LDSC_MANAGEMENT_BIND says otherwise.
+EXPOSE 8080 8081
 ENTRYPOINT ["/ldsc-connector"]

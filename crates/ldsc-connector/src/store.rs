@@ -326,6 +326,39 @@ impl ConsumerStore for SqliteNegotiations {
             .map_err(err)?;
         Ok(changed == 1)
     }
+
+    fn list(
+        &self,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<ConsumerNegotiation>, StoreError> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare(
+                "SELECT consumer_pid, provider_pid, state, provider_address, provider_id,
+                        offer, agreement
+                 FROM consumer_negotiation
+                 WHERE ?1 IS NULL OR consumer_pid > ?1
+                 ORDER BY consumer_pid LIMIT ?2",
+            )
+            .map_err(err)?;
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let rows = stmt
+            .query_map(params![after, limit], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                ))
+            })
+            .map_err(err)?;
+        rows.map(|row| consumer_negotiation(row.map_err(err)?))
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -473,6 +506,14 @@ mod tests {
         assert!(!c.replace_if(&agreed, NegotiationState::Offered).unwrap());
         assert!(c.replace_if(&agreed, NegotiationState::Requested).unwrap());
         assert_eq!(c.get("urn:uuid:c").unwrap().unwrap(), agreed);
+        let mut second = n.clone();
+        second.consumer_pid = "urn:uuid:d".into();
+        c.insert(&second).unwrap();
+        let all = c.list(None, 10).unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0], agreed);
+        assert_eq!(c.list(Some("urn:uuid:c"), 10).unwrap(), vec![second]);
+        assert_eq!(c.list(None, 1).unwrap().len(), 1);
         // the provider table is separate
         assert!(
             NegotiationStore::get(&store, "urn:uuid:p")

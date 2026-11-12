@@ -29,6 +29,11 @@ versions may change behaviour and configuration.
   acceptance, verification and termination to the provider with retries.
   Consumer negotiations are kept in the same SQLite file (schema version 2;
   migrated at start).
+- Management API on its own port (`LDSC_MANAGEMENT_BIND`, default
+  `127.0.0.1:8081`), off unless `LDSC_MANAGEMENT_API_KEY_FILE` is set:
+  start a negotiation as consumer, read one, list them. Every call needs
+  the API key as a bearer token. Its OpenAPI description is generated from
+  the code (utoipa) and served at `/v1/openapi.json`.
 - Negotiations are kept in a SQLite file (`LDSC_DB_FILE`, default
   `ldsc.db`; `/data/ldsc.db` in the image, mount a volume there). See
   ADR 0006.

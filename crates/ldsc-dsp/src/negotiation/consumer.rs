@@ -88,7 +88,22 @@ pub trait ConsumerStore {
         negotiation: &ConsumerNegotiation,
         expected: NegotiationState,
     ) -> Result<bool, StoreError>;
+
+    /// Up to `limit` negotiations whose consumer pid sorts after `after`
+    /// (from the start if `None`), in consumer pid order.
+    ///
+    /// # Errors
+    ///
+    /// The store cannot be read.
+    fn list(
+        &self,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<ConsumerNegotiation>, StoreError>;
 }
+
+/// The most negotiations [`ConsumerService::list`] returns at once.
+pub const MAX_PAGE: usize = 100;
 
 /// What the consumer does next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -226,6 +241,31 @@ impl<S: ConsumerStore, D: ConsumerDecider, E: Environment> ConsumerService<S, D,
     /// Unknown negotiation or store failure.
     pub fn get(&self, consumer_pid: &str) -> Result<ContractNegotiation, Failure> {
         Ok(self.load(consumer_pid)?.ack())
+    }
+
+    /// The negotiation with this consumer pid, as stored.
+    ///
+    /// # Errors
+    ///
+    /// Unknown negotiation or store failure.
+    pub fn negotiation(&self, consumer_pid: &str) -> Result<ConsumerNegotiation, Failure> {
+        self.load(consumer_pid)
+    }
+
+    /// One page of negotiations in consumer pid order: up to `limit`
+    /// (at most [`MAX_PAGE`]) after `after`.
+    ///
+    /// # Errors
+    ///
+    /// Store failure.
+    pub fn list(
+        &self,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<ConsumerNegotiation>, Failure> {
+        self.store
+            .list(after, limit.clamp(1, MAX_PAGE))
+            .map_err(Failure::Store)
     }
 
     /// `POST <callback>/negotiations/:consumerPid/offers`.

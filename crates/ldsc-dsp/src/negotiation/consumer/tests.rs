@@ -38,6 +38,19 @@ impl ConsumerStore for &Store {
             _ => Ok(false),
         }
     }
+    fn list(
+        &self,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<ConsumerNegotiation>, StoreError> {
+        let map = self.0.borrow();
+        Ok(map
+            .values()
+            .filter(|n| after.is_none_or(|a| n.consumer_pid.as_str() > a))
+            .take(limit)
+            .cloned()
+            .collect())
+    }
 }
 
 #[derive(Default)]
@@ -339,4 +352,23 @@ fn bad_starts() {
         .offer(&n.consumer_pid, offer_msg("", &n.consumer_pid))
         .unwrap_err();
     assert_eq!(status(e), "400");
+}
+
+#[test]
+fn reads_and_pages() {
+    let store = Store::default();
+    let svc = ConsumerService::new(&store, AcceptAndVerify, Env::default(), CB.to_owned());
+    let mut pids = Vec::new();
+    for _ in 0..3 {
+        pids.push(svc.start(PROVIDER, "p", offer()).unwrap().0.consumer_pid);
+    }
+    pids.sort();
+    assert_eq!(svc.negotiation(&pids[1]).unwrap().consumer_pid, pids[1]);
+    assert_eq!(status(svc.negotiation("unknown").unwrap_err()), "404");
+    let first = svc.list(None, 2).unwrap();
+    assert_eq!(first.len(), 2);
+    let rest = svc.list(Some(&first[1].consumer_pid), 0).unwrap();
+    assert_eq!(rest.len(), 1, "a limit of 0 still returns one");
+    assert_eq!(rest[0].consumer_pid, pids[2]);
+    assert_eq!(svc.list(None, 10_000).unwrap().len(), 3);
 }

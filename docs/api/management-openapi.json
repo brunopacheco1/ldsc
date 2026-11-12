@@ -1,0 +1,339 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "LDSC management API",
+    "description": "Starts and follows contract negotiations in which this connector is the consumer. Served on its own port (LDSC_MANAGEMENT_BIND), never on the DSP port. Every call except this description needs the API key.",
+    "license": {
+      "name": "Apache-2.0",
+      "identifier": "Apache-2.0"
+    },
+    "version": "0.2.0"
+  },
+  "paths": {
+    "/v1/negotiations": {
+      "get": {
+        "tags": [
+          "Negotiations"
+        ],
+        "summary": "The negotiations this connector runs as consumer, a page at a time.",
+        "operationId": "list",
+        "parameters": [
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Return negotiations whose consumer pid sorts after this one.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "How many to return, 1 to 100 (default 100).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NegotiationPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong API key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Negotiations"
+        ],
+        "summary": "Start a negotiation as consumer. The request to the provider is sent in\nthe background; follow the negotiation with `GET /v1/negotiations/{consumerPid}`.",
+        "operationId": "start",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartNegotiation"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Started (state REQUESTED)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NegotiationView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong API key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/v1/negotiations/{consumerPid}": {
+      "get": {
+        "tags": [
+          "Negotiations"
+        ],
+        "summary": "One negotiation, with its agreement once the provider sent it.",
+        "operationId": "one",
+        "parameters": [
+          {
+            "name": "consumerPid",
+            "in": "path",
+            "description": "Our process id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The negotiation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NegotiationView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong API key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown negotiation",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "NegotiationPage": {
+        "type": "object",
+        "description": "One page of negotiations.",
+        "required": [
+          "negotiations"
+        ],
+        "properties": {
+          "negotiations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NegotiationView"
+            },
+            "description": "The negotiations, in consumer pid order."
+          },
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `after` to get the next page; absent on the last page."
+          }
+        }
+      },
+      "NegotiationView": {
+        "type": "object",
+        "description": "A negotiation this connector runs as consumer.",
+        "required": [
+          "consumerPid",
+          "state",
+          "providerAddress",
+          "providerId",
+          "offer"
+        ],
+        "properties": {
+          "agreement": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "The agreement (DSP 2025-1 `Agreement`), once the provider sent it.\nValid for use once `state` is `FINALIZED`."
+          },
+          "consumerPid": {
+            "type": "string",
+            "description": "Our process id."
+          },
+          "offer": {
+            "type": "object",
+            "description": "The latest offer (DSP 2025-1 `Offer`)."
+          },
+          "providerAddress": {
+            "type": "string",
+            "description": "The provider's DSP endpoint."
+          },
+          "providerId": {
+            "type": "string",
+            "description": "The provider's participant id."
+          },
+          "providerPid": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The provider's process id, once it has answered."
+          },
+          "state": {
+            "type": "string",
+            "description": "The DSP state, for example `REQUESTED` or `FINALIZED`.",
+            "example": "FINALIZED"
+          }
+        }
+      },
+      "Problem": {
+        "type": "object",
+        "description": "An error, as RFC 9457 problem details.",
+        "required": [
+          "title",
+          "status",
+          "detail"
+        ],
+        "properties": {
+          "detail": {
+            "type": "string",
+            "description": "What went wrong in this case."
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The HTTP status code.",
+            "minimum": 0
+          },
+          "title": {
+            "type": "string",
+            "description": "Short summary of the problem type."
+          }
+        }
+      },
+      "StartNegotiation": {
+        "type": "object",
+        "description": "Start a negotiation as consumer.",
+        "required": [
+          "providerAddress",
+          "providerId",
+          "offer"
+        ],
+        "properties": {
+          "datasetId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The dataset id. Optional if the offer has a `target`; offers in a\ncatalog have none, as the dataset holds them.",
+            "example": "urn:uuid:dataset-1"
+          },
+          "offer": {
+            "type": "object",
+            "description": "The offer from the provider's catalog (a DSP 2025-1 `Offer`), copied\nunchanged from the dataset's `hasPolicy`."
+          },
+          "providerAddress": {
+            "type": "string",
+            "description": "The provider's DSP endpoint, for example\n`https://provider.example/dsp/2025-1` (the catalog's\n`DataService` `endpointURL`).",
+            "example": "https://provider.example/dsp/2025-1"
+          },
+          "providerId": {
+            "type": "string",
+            "description": "The provider's participant id (the catalog's `participantId`).",
+            "example": "did:web:provider.example"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "securitySchemes": {
+      "api_key": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "The key from LDSC_MANAGEMENT_API_KEY_FILE: Authorization: Bearer <key>"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "Negotiations",
+      "description": "Contract negotiations as consumer (DSP 2025-1)"
+    }
+  ]
+}

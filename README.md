@@ -57,6 +57,8 @@ Configuration (environment variables):
 | `LDSC_PUBLIC_URL` | `http://localhost:8080` | Public base URL; the DSP endpoint is this plus `/dsp/2025-1`, the consumer callback address this plus `/dsp/2025-1/callback` |
 | `LDSC_DATASETS_FILE` | none (empty catalog) | JSON file with the datasets to offer |
 | `LDSC_DB_FILE` | `ldsc.db` (`/data/ldsc.db` in the image) | SQLite file that keeps negotiations; one connector per file |
+| `LDSC_MANAGEMENT_API_KEY_FILE` | none (management API off) | File with the management API key (at least 32 characters, for example `openssl rand -hex 32`) |
+| `LDSC_MANAGEMENT_BIND` | `127.0.0.1:8081` | Address of the management API |
 | `LDSC_ALLOW_HTTP_CALLBACKS` | `false` | `true` allows `http://` addresses for consumers' callbacks and for providers; development and tests only |
 
 As provider, the connector agrees to any request for an offer in its
@@ -67,9 +69,33 @@ cannot be reached, it terminates the negotiation.
 As consumer, the connector accepts the provider's offer and verifies its
 agreement. Providers send their messages to the callback endpoints above.
 A message that does not fit the current state yet, because our own
-message is still being acknowledged, waits up to 3 seconds for it. The
-management API to start a negotiation as consumer comes in the next
-change of 0.3; until then only the test build starts one.
+message is still being acknowledged, waits up to 3 seconds for it.
+
+### Management API
+
+Your own systems start and follow negotiations as consumer through the
+management API. It is not part of DSP, so it has its own port
+(`LDSC_MANAGEMENT_BIND`) and is off unless `LDSC_MANAGEMENT_API_KEY_FILE`
+is set. Every call needs `Authorization: Bearer <key>`.
+
+| Method and path | What it does |
+|---|---|
+| `POST /v1/negotiations` | Starts a negotiation with a provider for an offer from its catalog |
+| `GET /v1/negotiations/{consumerPid}` | Returns a negotiation; it holds the agreement once `state` is `FINALIZED` |
+| `GET /v1/negotiations?after=&limit=` | Lists negotiations, up to 100 at a time |
+| `GET /v1/openapi.json` | The OpenAPI description (no key needed); also in [docs/api/management-openapi.json](docs/api/management-openapi.json) |
+
+For example, with an offer copied from the provider's catalog:
+
+```sh
+curl -s -X POST localhost:8081/v1/negotiations \
+  -H "authorization: Bearer $(cat key)" -H 'content-type: application/json' -d '{
+  "providerAddress": "https://provider.example/dsp/2025-1",
+  "providerId": "did:web:provider.example",
+  "datasetId": "air-quality",
+  "offer": {"@id": "air-quality:offer:eu-only", "@type": "Offer",
+            "permission": [{"action": "use"}]}}'
+```
 
 The image carries
 Mozilla's CA certificate bundle (from Debian, MPL-2.0) to verify `https`

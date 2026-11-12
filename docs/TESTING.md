@@ -55,6 +55,10 @@ Where the tests are:
   store is tested on an in-memory database and on a real file.
 - `tests/dsp_catalog.rs` also checks that every path in
   [docs/api/openapi.json](api/openapi.json) is served.
+- `tests/management_api.rs` tests the management API and checks that
+  [docs/api/management-openapi.json](api/management-openapi.json) is the
+  description the code generates. After changing the API, regenerate it:
+  `LDSC_UPDATE_OPENAPI=1 cargo test -p ldsc-connector --test management_api`.
 
 Rules for new tests:
 
@@ -185,6 +189,27 @@ The fake consumer prints the agreement. Send the verification
 `/dsp/2025-1/negotiations/<providerPid>/agreement/verification`) and the
 provider sends the `FINALIZED` event. `GET
 /dsp/2025-1/negotiations/<providerPid>` shows the state at each step.
+
+### Two connectors
+
+One connector as provider, one as consumer, both on your machine:
+
+```sh
+cargo build -p ldsc-connector
+openssl rand -hex 32 > /tmp/ldsc-key
+LDSC_BIND=127.0.0.1:9101 LDSC_PUBLIC_URL=http://127.0.0.1:9101 \
+LDSC_PARTICIPANT_ID=did:web:provider LDSC_DATASETS_FILE=examples/datasets.json \
+LDSC_ALLOW_HTTP_CALLBACKS=true LDSC_DB_FILE=/tmp/ldsc-p.db target/debug/ldsc-connector &
+LDSC_BIND=127.0.0.1:9201 LDSC_PUBLIC_URL=http://127.0.0.1:9201 \
+LDSC_PARTICIPANT_ID=did:web:consumer LDSC_ALLOW_HTTP_CALLBACKS=true \
+LDSC_DB_FILE=/tmp/ldsc-c.db LDSC_MANAGEMENT_BIND=127.0.0.1:9202 \
+LDSC_MANAGEMENT_API_KEY_FILE=/tmp/ldsc-key target/debug/ldsc-connector &
+```
+
+Read an offer from the provider's catalog, then start the negotiation
+from the consumer's management API (see the README for the request) and
+read it with `GET localhost:9202/v1/negotiations/<consumerPid>`. Within a
+second its state is `FINALIZED` and it holds the agreement.
 
 ## Footprint
 

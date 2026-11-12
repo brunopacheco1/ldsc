@@ -44,6 +44,9 @@ notices script runs the same build as a dry run: nothing is pushed or signed.
 1. In a pull request, set `version` in `Cargo.toml` (`[workspace.package]`)
    to `X.Y.Z`, rename `## [Unreleased]` in `CHANGELOG.md` to
    `## [X.Y.Z] - YYYY-MM-DD`, add a fresh empty `## [Unreleased]` above it,
+   set `info.version` in `docs/api/openapi.json`, regenerate
+   `docs/api/management-openapi.json`
+   (`LDSC_UPDATE_OPENAPI=1 cargo test -p ldsc-connector --test management_api`),
    and merge.
 2. Tag the merge commit with your personal key and push the tag:
    ```sh
