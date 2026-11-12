@@ -49,6 +49,7 @@ Configuration (environment variables):
 | `LDSC_PARTICIPANT_ID` | `did:web:localhost%3A8080` | Participant id (a DID) |
 | `LDSC_PUBLIC_URL` | `http://localhost:8080` | Public base URL; the DSP endpoint is this plus `/dsp/2025-1` |
 | `LDSC_DATASETS_FILE` | none (empty catalog) | JSON file with the datasets to offer |
+| `LDSC_DB_FILE` | `ldsc.db` (`/data/ldsc.db` in the image) | SQLite file that keeps negotiations; one connector per file |
 | `LDSC_ALLOW_HTTP_CALLBACKS` | `false` | `true` lets consumers give `http://` callback addresses; development and tests only |
 
 As provider, the connector agrees to any request for an offer in its
@@ -71,8 +72,8 @@ Known gaps in this version:
   DSP endpoints can negotiate, and agreements name the consumer as
   `urn:ldsc:unauthenticated`. Do not expose the connector to untrusted
   networks.
-- **Negotiations are kept in memory** and lost on restart (a SQLite file
-  store follows in 0.3).
+- A message the connector was sending when it stopped is not sent again
+  after a restart; that negotiation waits in its last state.
 - The callback address is chosen by the consumer. Only `https://` is
   allowed by default, but internal addresses are not blocked yet; put the
   connector where it cannot reach services it should not call.
@@ -93,6 +94,7 @@ Run the image with the example datasets:
 docker run --rm -p 8080:8080 \
   -v "$PWD/examples/datasets.json:/datasets.json:ro" \
   -e LDSC_DATASETS_FILE=/datasets.json \
+  -v ldsc-data:/data \
   ghcr.io/brunopacheco1/ldsc-connector:0.2.0
 ```
 

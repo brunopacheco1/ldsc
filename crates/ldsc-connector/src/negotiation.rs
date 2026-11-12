@@ -349,7 +349,8 @@ impl std::fmt::Debug for Ports {
 }
 
 impl Ports {
-    /// In-memory store, no extra message rules, and the default decider:
+    /// In-memory store (tests and development), no extra message rules,
+    /// and the default decider:
     /// agree to any offer from the catalog. With the `tck` feature the
     /// decider follows the DSP TCK scripts instead.
     #[must_use]

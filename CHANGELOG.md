@@ -22,7 +22,10 @@ versions may change behaviour and configuration.
 - Provider side of contract negotiation: the DSP 2025-1 negotiation
   endpoints, a default policy that agrees to catalog offers, and delivery of
   offers, agreements, finalization and termination to the consumer's
-  callback with retries. Negotiations are kept in memory for now.
+  callback with retries.
+- Negotiations are kept in a SQLite file (`LDSC_DB_FILE`, default
+  `ldsc.db`; `/data/ldsc.db` in the image, mount a volume there). See
+  ADR 0006.
 - `MessageGuard` port: every inbound and outbound negotiation message goes
   through it, so a dataspace can add its own rules, for example SHACL shapes
   (ADR 0005). The default allows everything.
@@ -35,6 +38,7 @@ versions may change behaviour and configuration.
   with a test-only `tck` build feature that scripts provider decisions.
 
 ### Changed
+- Minimum Rust version 1.89 (was 1.85), needed by `rusqlite`.
 - A dataset definition whose offer has a `target` is refused at start;
   DSP forbids `target` on offers inside a catalog.
 

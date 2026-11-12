@@ -38,8 +38,9 @@ dataspace participants over HTTPS.
 - Production readiness: LDSC is a prototype until 1.0.
 - TLS termination inside the services (not on the roadmap yet); run them behind a
   TLS-terminating proxy.
-- Persistence and multi-instance safety *(planned, 0.3+)*: state is in
-  memory today.
+- Multi-instance safety: negotiations are kept in one SQLite file per
+  process (ADR 0006); several replicas need the PostgreSQL adapter
+  *(planned)*.
 - Authentication of DSP callers *(planned, 0.5, DCP)*: until then any
   party that reaches the endpoints can negotiate a contract.
 - Protection against server-side request forgery through the

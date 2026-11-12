@@ -36,6 +36,11 @@ LABEL org.opencontainers.image.title="ldsc-connector" \
       org.opencontainers.image.created="${CREATED}"
 COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY dist/${TARGETARCH}/ldsc-connector /ldsc-connector
+# Negotiations are kept in a SQLite file. /data is owned by the runtime user;
+# mount a volume there so the file survives a new container.
+COPY --from=certs --chown=65532:65532 /home/nonroot /data
+ENV LDSC_DB_FILE=/data/ldsc.db
+VOLUME /data
 USER 65532:65532
 EXPOSE 8080
 ENTRYPOINT ["/ldsc-connector"]

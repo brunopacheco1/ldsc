@@ -5,3 +5,8 @@
 /target
 /dist
 *.cdx.json
+
+# SQLite files from local runs
+*.db
+*.db-shm
+*.db-wal

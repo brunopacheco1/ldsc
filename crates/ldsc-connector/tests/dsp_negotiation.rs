@@ -85,6 +85,7 @@ fn config(allow_http: bool) -> Config {
         public_url: "https://provider.example".into(),
         datasets: ldsc_connector::read_datasets(std::path::Path::new(path)).unwrap(),
         allow_http_callbacks: allow_http,
+        db_file: "unused.db".into(),
     }
 }
 

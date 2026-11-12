@@ -109,7 +109,8 @@ all checks green, Scorecard published.
 
 ## 0.3 Contract negotiation
 
-- Provider and consumer state machines, persisted in PostgreSQL.
+- Provider and consumer state machines, persisted in a SQLite file
+  (ADR 0006); a PostgreSQL adapter follows later on the same port.
 - Minimal ODRL policy support: permit all, and one constraint type.
 - Management API to start a negotiation (consumer side).
 - Exit: DSP TCK negotiation tests green; two LDSC instances agree a contract.
