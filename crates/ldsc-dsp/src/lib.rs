@@ -49,6 +49,7 @@ macro_rules! type_tag {
 pub mod catalog;
 pub mod guard;
 pub mod negotiation;
+pub mod policy;
 
 type_tag!(
     /// `@type: CatalogRequestMessage`

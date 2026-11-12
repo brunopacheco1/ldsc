@@ -50,3 +50,10 @@ path = "fuzz_targets/dsp_negotiation.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "odrl_policy"
+path = "fuzz_targets/odrl_policy.rs"
+test = false
+doc = false
+bench = false

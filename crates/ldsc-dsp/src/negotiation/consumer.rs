@@ -516,8 +516,24 @@ impl<S: ConsumerStore, D: ConsumerDecider, E: Environment> ConsumerService<S, D,
         match self.decider.decide(n) {
             ConsumerDecision::Wait => None,
             ConsumerDecision::Terminate => Self::termination(n, "terminated by the consumer"),
-            ConsumerDecision::Accept => Self::accept(n),
-            ConsumerDecision::Verify => Self::verification(n),
+            // accept only an offer whose constraints hold now, verify only
+            // an agreement with the terms we asked for or accepted (ADR 0009)
+            ConsumerDecision::Accept => {
+                match crate::policy::permissions_hold(&n.offer, &self.env.now()) {
+                    Ok(()) => Self::accept(n),
+                    Err(e) => Self::termination(n, &e.to_string()),
+                }
+            }
+            ConsumerDecision::Verify => {
+                if n.agreement
+                    .as_ref()
+                    .is_some_and(|a| crate::policy::same_terms(&n.offer, a))
+                {
+                    Self::verification(n)
+                } else {
+                    Self::termination(n, "the agreement's terms differ from the offer")
+                }
+            }
             ConsumerDecision::Request => Self::counter_offer(n),
         }
     }

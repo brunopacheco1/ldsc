@@ -22,7 +22,8 @@ body:json {
     "offer": {
       "@id": "{{offerId}}",
       "@type": "Offer",
-      "target": "{{datasetId}}"
+      "target": "{{datasetId}}",
+      "permission": [{"action": "use"}]
     },
     "callbackAddress": "{{callbackAddress}}"
   }
@@ -47,6 +48,7 @@ assert {
 docs {
   DSP 2025-1 Contract Negotiation, HTTPS binding: POST /negotiations/request.
   The provider calls back {{callbackAddress}}; start the fake consumer from docs/TESTING.md (port 9000) first.
+  The offer must have the catalog offer's terms exactly, or the provider terminates (ADR 0009).
   A new consumerPid is generated on every run.
   Saves providerPid for the next requests.
 }

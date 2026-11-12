@@ -35,16 +35,16 @@
     ],
     "hasPolicy": [
       {
-        "@id": "air-quality:offer:eu-only",
+        "@id": "air-quality:offer:until-2030",
         "@type": "Offer",
         "permission": [
           {
             "action": "use",
             "constraint": [
               {
-                "leftOperand": "spatial",
-                "operator": "eq",
-                "rightOperand": "EU"
+                "leftOperand": "dateTime",
+                "operator": "lteq",
+                "rightOperand": "2030-12-31"
               }
             ]
           }

@@ -6,7 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # ADR 0007: Save each message before sending it (outbox), and proof of delivery
 
-- Status: **Proposed**
+- Status: **Accepted** (decided by the maintainer, 2026-11-12)
 - Date: 2026-11-12
 - Asked by: the maintainer, 2026-11-12 ("a delay is a remediation, not a
   fix"); option "Save message before sending" chosen the same day.

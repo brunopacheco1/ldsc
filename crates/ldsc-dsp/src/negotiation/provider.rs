@@ -450,7 +450,12 @@ impl<S: NegotiationStore, D: Decider, C: DatasetStore, E: Environment> ProviderS
             Decision::Wait => None,
             Decision::Terminate => Some(Self::termination(n, "terminated by the provider")),
             Decision::Offer => Some(Self::offer(n)),
-            Decision::Agree => Some(self.agreement(n)),
+            // never agree to terms that are not the catalog's, or whose
+            // constraints do not hold now (ADR 0009)
+            Decision::Agree => Some(match self.agreeable(n) {
+                Ok(()) => self.agreement(n),
+                Err(reason) => Self::termination(n, &reason),
+            }),
             Decision::Finalize => Some(Self::finalization(n)),
         }
     }
@@ -510,6 +515,20 @@ impl<S: NegotiationStore, D: Decider, C: DatasetStore, E: Environment> ProviderS
             reason: vec![serde_json::Value::String(reason.to_owned())],
         };
         outgoing(n, "termination", &msg, Transition::Terminate)
+    }
+
+    /// The negotiated offer has the terms of the catalog offer with its id,
+    /// and its permissions hold now.
+    fn agreeable(&self, n: &Negotiation) -> Result<(), String> {
+        let listed = self
+            .catalog
+            .get(n.dataset_id())
+            .and_then(|d| d.has_policy.into_iter().find(|o| o.id == n.offer.id))
+            .ok_or("the offer is no longer in the catalog")?;
+        if !crate::policy::same_terms(&listed, &n.offer) {
+            return Err("the offer's terms differ from the catalog".to_owned());
+        }
+        crate::policy::permissions_hold(&n.offer, &self.env.now()).map_err(|e| e.to_string())
     }
 
     /// The offer must name a dataset of this provider and one of its offers.

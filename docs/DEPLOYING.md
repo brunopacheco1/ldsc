@@ -35,7 +35,12 @@ Check each item and keep the answers in your own runbook.
   LDSC itself serves plain HTTP.
 - [ ] **Datasets file.** A JSON file with the datasets you offer (see the
   [README](../README.md#interface)). The connector refuses to start if a
-  definition breaks a DSP rule, so test the file before a rollout.
+  definition breaks a DSP rule or an offer uses a constraint it does not
+  understand (only `dateTime` for now, ADR 0009), so test the file before
+  a rollout.
+- [ ] **Clock.** Offer constraints such as a date limit are checked
+  against the host clock (ADR 0009). Keep it synchronised (NTP); a
+  container uses the host's clock.
 - [ ] **Management API.** Needed only if this connector starts
   negotiations as consumer. Create a key (`openssl rand -hex 32`), keep it
   in your secret store, and mount it as a file
@@ -207,6 +212,6 @@ In this version (see also [SECURITY-ASSURANCE.md](SECURITY-ASSURANCE.md)):
 - No caller authentication until 0.5.
 - One replica per database file; no PostgreSQL adapter yet.
 - Internal callback addresses are not blocked.
-- The provider agrees to every request for an offer in its catalog; offer
-  constraints (for example a date limit) are not checked yet.
+- Policies: only the `dateTime` constraint is understood; prohibitions
+  and duties are carried into agreements but not enforced (ADR 0009).
 - No metrics endpoint yet.
