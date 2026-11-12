@@ -107,7 +107,7 @@ all checks green, Scorecard published.
   Signed-Releases 10, Branch-Protection 5. Branch-Protection was 0
   because the `main` ruleset targeted no branch; fixed.
 
-## 0.3 Contract negotiation
+## 0.3 Contract negotiation (released 2026-11-12 as v0.3.0)
 
 - Provider and consumer state machines, persisted in a SQLite file
   (ADR 0006); a PostgreSQL adapter follows later on the same port.
@@ -117,6 +117,12 @@ all checks green, Scorecard published.
   The DSP endpoints keep the hand-written `docs/api/openapi.json`, which
   uses the official DSP schemas.
 - Exit: DSP TCK negotiation tests green; two Portitor instances agree a contract.
+- Result (2026-11-12): met. The DSP TCK passes the 15 provider and 16
+  consumer negotiation tests (CN:01 to CN:03, CN_C:01 to CN_C:03).
+  `scripts/demo.sh` has two connectors agree a contract and refuse
+  changed terms; CI runs it on every pull request. Also in 0.3: outbox
+  with proof of delivery (ADR 0007), minimal ODRL (ADR 0009), and the
+  rename to Portitor (ADR 0008).
 
 ## 0.4 Transfer process and HTTP data plane
 
