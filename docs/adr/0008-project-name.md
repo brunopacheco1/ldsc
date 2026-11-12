@@ -40,7 +40,9 @@ exchange against agreed policies, and its data plane carries the data.
 - Images: `ghcr.io/brunopacheco1/portitor-<component>`.
 - Configuration: `PORTITOR_*` environment variables.
 - Repository: `brunopacheco1/portitor`.
-- Tagline: "a Luxembourg Data Space Connector".
+- No long name. The first draft kept "a Luxembourg Data Space Connector"
+  as a tagline; the maintainer dropped it before 0.3.0 (2026-11-12),
+  because it reads like an official national product too.
 
 Checked on 2026-11-12: `portitor` was free on crates.io and only six small,
 unrelated GitHub repositories used the name. Not yet checked: domain names
@@ -48,8 +50,8 @@ and a formal trademark search (EUIPO, WIPO, BOIP); to do before 1.0.
 
 ## Consequences
 
-- 0.1 and 0.2 deployments must switch image name, environment variables and
-  database file name (see the CHANGELOG upgrade note).
+- 0.1 and 0.2 deployments must switch image name and environment
+  variables (see the CHANGELOG upgrade note). Neither had a database file.
 - Images 0.1.0 and 0.2.0 stay under `ldsc-connector` with their signatures;
   new releases are published under the new name only.
 - ADRs 0001 to 0007 and past CHANGELOG entries keep the old name, as the

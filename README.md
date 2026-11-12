@@ -4,7 +4,7 @@ SPDX-FileCopyrightText: Portitor contributors
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# Portitor — a Luxembourg Data Space Connector
+# Portitor
 
 A small, fast connector for the Luxembourg data space that implements the
 Eclipse Dataspace Protocol (DSP) and the Decentralized Claims Protocol (DCP).

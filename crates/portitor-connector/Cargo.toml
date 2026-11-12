@@ -4,7 +4,7 @@
 
 [package]
 name = "portitor-connector"
-description = "Portitor, a Luxembourg Data Space Connector"
+description = "Portitor connector: Dataspace Protocol 2025-1 and Decentralized Claims Protocol 1.0"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
