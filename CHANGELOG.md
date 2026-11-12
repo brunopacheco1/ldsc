@@ -28,6 +28,9 @@ versions may change behaviour and configuration.
   (ADR 0005). The default allows everything.
 - `LDSC_ALLOW_HTTP_CALLBACKS`: allow `http://` callback addresses
   (development and tests only; `https://` only by default).
+- The container image now carries the CA certificate bundle (Mozilla's,
+  as packaged by Debian, MPL-2.0) so the connector can verify `https`
+  callback addresses.
 - The DSP TCK now runs the 15 provider negotiation tests (CN:01 to CN:03),
   with a test-only `tck` build feature that scripts provider decisions.
 

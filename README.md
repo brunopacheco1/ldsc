@@ -54,7 +54,9 @@ Configuration (environment variables):
 As provider, the connector agrees to any request for an offer in its
 catalog, then finalizes once the consumer verifies. It sends its messages
 to the consumer's `callbackAddress` and retries 3 times; if the consumer
-cannot be reached, it terminates the negotiation.
+cannot be reached, it terminates the negotiation. The image carries
+Mozilla's CA certificate bundle (from Debian, MPL-2.0) to verify `https`
+callback addresses.
 
 Known gaps in this version:
 - **No caller authentication until 0.5 (DCP).** Anyone who can reach the
@@ -63,12 +65,6 @@ Known gaps in this version:
   networks.
 - **Negotiations are kept in memory** and lost on restart (a SQLite file
   store follows in 0.3).
-- **The image has no CA certificates.** To reach `https://` callbacks, mount
-  the host's bundle, for example
-  `-v /etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro`.
-  Without it the connector starts and serves its catalog, but every
-  negotiation ends in termination because the consumer cannot be reached
-  (the log says why).
 - The callback address is chosen by the consumer. Only `https://` is
   allowed by default, but internal addresses are not blocked yet; put the
   connector where it cannot reach services it should not call.
