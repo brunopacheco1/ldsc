@@ -75,8 +75,9 @@ Website:
 OpenSSF:
 - Register at bestpractices.dev (done: project 16578, 91% at release).
   Reaching **passing** moved to 0.2.
-- OpenSSF Baseline **level 1** (version 2026-08-28) self-assessment recorded
-  in `docs/SECURITY-ASSURANCE.md`. Level 1 is the target for all of 0.x.
+- OpenSSF Baseline **level 1** (version 2026-08-28) is the target for all
+  of 0.x ([ADR 0012](adr/0012-openssf-baseline.md)). The written
+  self-assessment moved to 0.9 (maintainer, 2026-11-12).
 
 Exit: a "hello" binary ships as a signed image through the full pipeline,
 all checks green, Scorecard published.
@@ -192,6 +193,9 @@ all checks green, Scorecard published.
 - Threat model review, fuzzing on every parser (ClusterFuzzLite),
   benchmarks published.
 - OpenSSF Best Practices **silver**.
+- OpenSSF Baseline **level 1** self-assessment, control by control, in
+  `docs/SECURITY-ASSURANCE.md` (moved from 0.1, maintainer, 2026-11-12);
+  decide whether 1.0 aims at a higher level.
 - Dependency review with **cargo-vet**: every crate version in `Cargo.lock`
   audited (own audits or imported sets, such as Mozilla's and Google's) or
   explicitly exempted; CI fails on an unaudited change. Deferred from 0.1

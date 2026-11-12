@@ -22,8 +22,8 @@ for a project that has one maintainer today.
 
 - Portitor meets **OpenSSF Baseline level 1** (Baseline version
   2026-08-28) for all 0.x releases. The self-assessment, control by
-  control, belongs in [SECURITY-ASSURANCE](../SECURITY-ASSURANCE.md); as
-  of 2026-11-12 it is not written yet.
+  control, is written in the 0.9 hardening release, in
+  [SECURITY-ASSURANCE](../SECURITY-ASSURANCE.md) (maintainer, 2026-11-12).
 - Alongside it, the project keeps the OpenSSF Best Practices badge at
   **passing** (project 16578) and tracks its OpenSSF Scorecard score.
 - Moving to a higher level is decided before 1.0, in the 0.9 hardening
@@ -31,8 +31,9 @@ for a project that has one maintainer today.
 
 ## Consequences
 
-- Every level 1 control must hold for every release; the
-  self-assessment shows how.
+- Every level 1 control must hold for every release. Until the written
+  self-assessment in 0.9, that rests on the project's settings and CI
+  checks, not on a document.
 - The project already does more than it promises (for example signed
   commits and tags, and releases with provenance and an SBOM); only
   level 1 is a commitment for 0.x.
