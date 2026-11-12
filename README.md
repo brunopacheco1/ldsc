@@ -58,6 +58,14 @@ cannot be reached, it terminates the negotiation. The image carries
 Mozilla's CA certificate bundle (from Debian, MPL-2.0) to verify `https`
 callback addresses.
 
+To also trust a private CA (a private network, or a self-signed test
+certificate), mount its PEM file into a folder and set `SSL_CERT_DIR` to
+the image's folder plus yours, for example
+`-v "$PWD/my-ca:/ca:ro" -e SSL_CERT_DIR=/etc/ssl/certs:/ca`. When
+`SSL_CERT_DIR` or `SSL_CERT_FILE` is set, only those locations are used, so
+keep `/etc/ssl/certs` in the list. The peer's certificate must still name
+the host in the callback address; certificate checks cannot be turned off.
+
 Known gaps in this version:
 - **No caller authentication until 0.5 (DCP).** Anyone who can reach the
   DSP endpoints can negotiate, and agreements name the consumer as
