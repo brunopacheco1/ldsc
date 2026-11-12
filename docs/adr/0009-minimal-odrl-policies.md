@@ -1,5 +1,5 @@
 <!--
-SPDX-FileCopyrightText: LDSC contributors
+SPDX-FileCopyrightText: Portitor contributors
 
 SPDX-License-Identifier: Apache-2.0
 -->
@@ -70,7 +70,7 @@ Facts checked (2026-11-12):
 - **Only permissions are evaluated**, because they decide whether an
   agreement may be made now. Prohibitions and duties are terms of the
   agreement; they are compared and carried into it, but not enforced.
-- The evaluator is a pure module in `ldsc-dsp` (`policy`), with no new
+- The evaluator is a pure module in `portitor-dsp` (`policy`), with no new
   dependency.
 
 ## Consequences

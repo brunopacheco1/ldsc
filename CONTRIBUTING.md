@@ -1,10 +1,10 @@
 <!--
-SPDX-FileCopyrightText: LDSC contributors
+SPDX-FileCopyrightText: Portitor contributors
 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# Contributing to LDSC
+# Contributing to Portitor
 
 Thanks for helping. Bug reports, questions and pull requests are all welcome.
 
@@ -21,7 +21,7 @@ in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and the decisions in
 
 ## Building
 
-LDSC needs the Rust toolchain pinned in CI (`RUST_TOOLCHAIN` in
+Portitor needs the Rust toolchain pinned in CI (`RUST_TOOLCHAIN` in
 `.github/workflows/ci.yml`) or newer, and `rust-version` from `Cargo.toml`
 at least.
 
@@ -66,7 +66,7 @@ The build enforces the style, so a pull request that breaks it fails:
 
 ## Licensing of contributions
 
-LDSC is licensed under the [Apache License 2.0](LICENSE). Unless you state
+Portitor is licensed under the [Apache License 2.0](LICENSE). Unless you state
 otherwise, any contribution you submit is licensed under the same terms, as
 section 5 of the licence describes. No separate contributor agreement or
 sign-off is required.

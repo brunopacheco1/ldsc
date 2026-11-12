@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: LDSC contributors
+# SPDX-FileCopyrightText: Portitor contributors
 #
 # SPDX-License-Identifier: Apache-2.0
 """Writes a third-party notices file from CycloneDX SBOMs (written by cargo-cyclonedx):
-every external crate compiled into the LDSC binaries, with its licence and project page.
+every external crate compiled into the Portitor binaries, with its licence and project page.
 Attached to each GitHub release.
 
-Usage: third_party_notices.py VERSION crates/ldsc-connector/ldsc-connector_bin.cdx.json ... > THIRD-PARTY-NOTICES.txt
+Usage: third_party_notices.py VERSION crates/portitor-connector/portitor-connector_bin.cdx.json ... > THIRD-PARTY-NOTICES.txt
 """
 import json
 import sys
 from pathlib import Path
 
 # Our own crates: covered by this repository's REUSE check.
-OWN_PREFIX = "ldsc-"
+OWN_PREFIX = "portitor-"
 
 
 def load_bom(path, root):
@@ -49,9 +49,9 @@ def main(argv):
             key = f"{component['name']} {component.get('version', '')}"
             entry = components.setdefault(key, {"component": component, "binaries": set()})
             entry["binaries"].add(binary)
-    print(f"LDSC {version} - third-party components")
+    print(f"Portitor {version} - third-party components")
     print()
-    print("The LDSC binaries are statically linked and include the following crates.")
+    print("The Portitor binaries are statically linked and include the following crates.")
     print()
     for key in sorted(components):
         licence, page = describe(components[key]["component"])

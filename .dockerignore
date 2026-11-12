@@ -1,6 +1,6 @@
-# SPDX-FileCopyrightText: LDSC contributors
+# SPDX-FileCopyrightText: Portitor contributors
 #
 # SPDX-License-Identifier: Apache-2.0
 
 *
-!dist/*/ldsc-connector
+!dist/*/portitor-connector

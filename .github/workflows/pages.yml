@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: LDSC contributors
+# SPDX-FileCopyrightText: Portitor contributors
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -12,14 +12,14 @@ on:
     paths:
       - 'site/**'
       - 'docs/api/**'
-      - 'crates/ldsc-dsp/tests/schemas/**'
+      - 'crates/portitor-dsp/tests/schemas/**'
       - 'scripts/openapi_site.py'
       - '.github/workflows/pages.yml'
   pull_request:
     paths:
       - 'site/**'
       - 'docs/api/**'
-      - 'crates/ldsc-dsp/tests/schemas/**'
+      - 'crates/portitor-dsp/tests/schemas/**'
       - 'scripts/openapi_site.py'
       - '.github/workflows/pages.yml'
   workflow_run:
@@ -52,12 +52,12 @@ jobs:
           status="${tag:+latest release ${tag}}"
           status="${status:-no release yet}"
           scorecard="not available"
-          if card=$(curl -fsS --max-time 20 https://api.scorecard.dev/projects/github.com/brunopacheco1/ldsc); then
+          if card=$(curl -fsS --max-time 20 https://api.scorecard.dev/projects/github.com/brunopacheco1/portitor); then
             score=$(jq -r '.score // empty' <<< "$card")
             [[ "$score" =~ ^[0-9]+(\.[0-9]+)?$ ]] && scorecard="${score} / 10"
           fi
           gate="not available"
-          if result=$(curl -fsS --max-time 20 "https://sonarcloud.io/api/qualitygates/project_status?projectKey=brunopacheco1_ldsc"); then
+          if result=$(curl -fsS --max-time 20 "https://sonarcloud.io/api/qualitygates/project_status?projectKey=brunopacheco1_portitor"); then
             case "$(jq -r '.projectStatus.status // empty' <<< "$result")" in
               OK) gate=passed ;;
               ERROR) gate=failing ;;
@@ -65,7 +65,7 @@ jobs:
             esac
           fi
           reuse="not available"
-          if lint=$(curl -fsS --max-time 20 https://api.reuse.software/status/github.com/brunopacheco1/ldsc); then
+          if lint=$(curl -fsS --max-time 20 https://api.reuse.software/status/github.com/brunopacheco1/portitor); then
             case "$(jq -r '.status // empty' <<< "$lint")" in
               compliant) reuse=compliant ;;
               non-compliant) reuse=failing ;;
@@ -95,7 +95,7 @@ jobs:
         run: |
           mkdir -p _site
           cp -R site/. _site/
-          python3 scripts/openapi_site.py docs/api/openapi.json crates/ldsc-dsp/tests/schemas _site
+          python3 scripts/openapi_site.py docs/api/openapi.json crates/portitor-dsp/tests/schemas _site
           cp docs/api/management-openapi.json _site/api/management-openapi.json
           sed -i -e "s|@STATUS@|${STATUS}|g" -e "s|@SCORECARD@|${SCORECARD}|g" -e "s|@GATE@|${GATE}|g" \
             -e "s|@REUSE@|${REUSE}|g" -e "s|@BESTPRACTICES@|${BESTPRACTICES}|g" \

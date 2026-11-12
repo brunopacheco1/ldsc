@@ -1,12 +1,12 @@
 <!--
-SPDX-FileCopyrightText: LDSC contributors
+SPDX-FileCopyrightText: Portitor contributors
 
 SPDX-License-Identifier: Apache-2.0
 -->
 
 # Code of conduct
 
-LDSC follows the [Contributor Covenant, version 2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct/).
+Portitor follows the [Contributor Covenant, version 2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct/).
 In short: be respectful and constructive, assume good intent, and keep
 discussions about the work. Harassment and personal attacks are not
 tolerated in issues, pull requests or any other project space.

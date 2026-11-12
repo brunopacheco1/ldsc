@@ -1,12 +1,12 @@
 <!--
-SPDX-FileCopyrightText: LDSC contributors
+SPDX-FileCopyrightText: Portitor contributors
 
 SPDX-License-Identifier: Apache-2.0
 -->
 
 # Security assurance case
 
-Why LDSC's security requirements are met: what users can expect, the
+Why Portitor's security requirements are met: what users can expect, the
 threats considered, the trust boundaries, the design principles applied,
 the common weaknesses countered, and the evidence. How to report a
 vulnerability is in [SECURITY.md](../SECURITY.md); the design is in
@@ -17,8 +17,8 @@ Status: **0.x, prototype.** This case grows with each release. Items marked
 
 ## What users can and cannot expect
 
-LDSC runs as network services (`ldsc-connector`, later `ldsc-identity` and
-`ldsc-issuer`, [ADR 0003](adr/0003-component-split.md)) that talk to other
+Portitor runs as network services (`portitor-connector`, later `portitor-identity` and
+`portitor-issuer`, [ADR 0003](adr/0003-component-split.md)) that talk to other
 dataspace participants over HTTPS.
 
 **Users can expect:**
@@ -35,7 +35,7 @@ dataspace participants over HTTPS.
   (keyless) and carry an SBOM and SLSA build provenance as attestations.
 
 **Users cannot expect (out of scope in 0.x):**
-- Production readiness: LDSC is a prototype until 1.0.
+- Production readiness: Portitor is a prototype until 1.0.
 - TLS termination inside the services (not on the roadmap yet); run them behind a
   TLS-terminating proxy.
 - Multi-instance safety: negotiations are kept in one SQLite file per
@@ -56,7 +56,7 @@ dataspace participants over HTTPS.
 |---|---|---|
 | Datasets and transfers | A party that is not authorised reads data or starts a transfer | DCP verification of every request *(planned, 0.5)*; ODRL policy checks *(planned, 0.3)* |
 | Participant identity | Forged or replayed self-issued tokens | Algorithm allow-list, key relationship check, audience check, expiry with bounded leeway, `jti` replay cache |
-| Private keys | Keys leak from the internet-facing connector | Keys live only in `ldsc-identity` and `ldsc-issuer`, not in the connector (ADR 0003) |
+| Private keys | Keys leak from the internet-facing connector | Keys live only in `portitor-identity` and `portitor-issuer`, not in the connector (ADR 0003) |
 | Internal services | A consumer gives a `callbackAddress` that points at an internal service, so the connector calls it (SSRF) | Only `https://` URLs with a host, unless the operator allows `http://`; the response body is never read; a 10 s timeout; blocking internal addresses *(planned)* |
 | Negotiation state | A consumer drives a negotiation out of order, or two messages race | The DSP state machine as a pure function in the domain; every change is a compare-and-update on a version number; a message that races our acknowledgement is accepted only as proof of delivery of our saved pending message (ADR 0007) |
 | Service availability | Crafted or oversized messages crash or exhaust a service | Typed parsing with no `unsafe`; request size limits *(planned, 0.8)*; fuzzing of parsers *(planned, 0.9)* |

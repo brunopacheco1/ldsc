@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: LDSC contributors
+# SPDX-FileCopyrightText: Portitor contributors
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -32,15 +32,15 @@ jobs:
       - name: Clippy
         run: |
           cargo clippy --workspace --all-targets --locked -- -D warnings
-          cargo clippy -p ldsc-connector --features tck --all-targets --locked -- -D warnings
+          cargo clippy -p portitor-connector --features tck --all-targets --locked -- -D warnings
       - name: Test
         run: |
           cargo test --workspace --locked
           # the TCK scripts (test-only feature, never in a release build)
-          cargo test -p ldsc-connector --features tck --locked
+          cargo test -p portitor-connector --features tck --locked
       - name: Domain crates have no I/O dependencies (ADR 0004)
         run: |
-          for c in ldsc-dsp ldsc-dcp; do
+          for c in portitor-dsp portitor-dcp; do
             if cargo tree -p "$c" -e normal --prefix none | grep -E '^(axum|hyper|tokio|sqlx|reqwest) '; then
               echo "::error::$c depends on an I/O crate"; exit 1
             fi
@@ -48,28 +48,28 @@ jobs:
       - name: Build static binary
         run: |
           start=$(date +%s)
-          cargo build --release --locked --target x86_64-unknown-linux-musl -p ldsc-connector
+          cargo build --release --locked --target x86_64-unknown-linux-musl -p portitor-connector
           echo "release build seconds (with cache): $(( $(date +%s) - start ))" >> "$GITHUB_STEP_SUMMARY"
       - name: Build image
         run: |
-          mkdir -p dist/amd64 && cp target/x86_64-unknown-linux-musl/release/ldsc-connector dist/amd64/
-          docker build -t ldsc-connector:ci .
+          mkdir -p dist/amd64 && cp target/x86_64-unknown-linux-musl/release/portitor-connector dist/amd64/
+          docker build -t portitor-connector:ci .
           # https callbacks need the CA bundle in the image
-          id=$(docker create ldsc-connector:ci)
+          id=$(docker create portitor-connector:ci)
           docker cp "$id:/etc/ssl/certs/ca-certificates.crt" ca.crt
           docker rm "$id"
           grep -q "BEGIN CERTIFICATE" ca.crt
           # the non-root user can create the SQLite file in /data
-          docker run -d --name smoke -p 8080:8080 ldsc-connector:ci
+          docker run -d --name smoke -p 8080:8080 portitor-connector:ci
           for _ in $(seq 50); do curl -sf http://127.0.0.1:8080/health && break; sleep 0.2; done
           curl -sf http://127.0.0.1:8080/health
           docker logs smoke
           docker rm -f smoke
-          docker image inspect ldsc-connector:ci --format 'image bytes: {{.Size}}' >> "$GITHUB_STEP_SUMMARY"
+          docker image inspect portitor-connector:ci --format 'image bytes: {{.Size}}' >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ldsc-connector-musl
-          path: target/x86_64-unknown-linux-musl/release/ldsc-connector
+          name: portitor-connector-musl
+          path: target/x86_64-unknown-linux-musl/release/portitor-connector
           retention-days: 7
 
   reuse:

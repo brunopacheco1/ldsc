@@ -1,6 +1,6 @@
 {
   "version": "1",
-  "name": "LDSC connector",
+  "name": "Portitor connector",
   "type": "collection",
   "ignore": ["node_modules", ".git"]
 }

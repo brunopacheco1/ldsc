@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: LDSC contributors
+# SPDX-FileCopyrightText: Portitor contributors
 #
 # SPDX-License-Identifier: Apache-2.0
 """Fail unless the DSP TCK log shows the implemented test groups passing.

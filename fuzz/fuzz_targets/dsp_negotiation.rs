@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: LDSC contributors
+// SPDX-FileCopyrightText: Portitor contributors
 //
 // SPDX-License-Identifier: Apache-2.0
 
@@ -8,7 +8,7 @@
 //! sequence may leave a terminal state.
 #![no_main]
 
-use ldsc_dsp::negotiation::{
+use portitor_dsp::negotiation::{
     ContractAgreementMessage, ContractAgreementVerificationMessage,
     ContractNegotiationEventMessage, ContractNegotiationTerminationMessage, ContractOfferMessage,
     ContractRequestMessage, NegotiationState, Role, Transition, next_state,

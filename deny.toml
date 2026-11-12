@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: LDSC contributors
+# SPDX-FileCopyrightText: Portitor contributors
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -12,7 +12,7 @@ all-features = true
 yanked = "deny"
 
 [licenses]
-# Permissive licences compatible with distributing LDSC under Apache-2.0.
+# Permissive licences compatible with distributing Portitor under Apache-2.0.
 allow = [
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
@@ -50,5 +50,5 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # Features we refuse, even if a dependency turns them back on.
 [[bans.features]]
 crate = "base64"
-# unsafe SIMD decoding (default in 0.23); LDSC only decodes short JWT segments
+# unsafe SIMD decoding (default in 0.23); Portitor only decodes short JWT segments
 deny = ["simd-unsafe"]

@@ -1,5 +1,5 @@
 <!--
-SPDX-FileCopyrightText: LDSC contributors
+SPDX-FileCopyrightText: Portitor contributors
 
 SPDX-License-Identifier: Apache-2.0
 -->
@@ -75,6 +75,17 @@ versions may change behaviour and configuration.
   `docs/TESTING.md`).
 
 ### Changed
+- **The project is renamed from LDSC to Portitor** ([ADR 0008](docs/adr/0008-project-name.md)).
+  This breaks existing deployments of 0.1 and 0.2:
+  - Image: `ghcr.io/brunopacheco1/portitor-connector` (was `ldsc-connector`).
+    Images 0.1.0 and 0.2.0 stay at the old name with their signatures.
+  - Binary and crates: `portitor-connector`, `portitor-dsp`, `portitor-dcp`.
+  - Environment variables: `PORTITOR_*` instead of `LDSC_*`
+    (for example `PORTITOR_DB_FILE`, `PORTITOR_PUBLIC_URL`).
+  - Default database file: `/data/portitor.db` (was `/data/ldsc.db`). To
+    keep existing negotiations, rename `ldsc.db*` to `portitor.db*` while the
+    container is stopped, or set `PORTITOR_DB_FILE=/data/ldsc.db`.
+  - Repository and website move to `brunopacheco1/portitor`.
 - Minimum Rust version 1.89 (was 1.85), needed by `rusqlite`.
 - A dataset definition whose offer has a `target` is refused at start;
   DSP forbids `target` on offers inside a catalog.

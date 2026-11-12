@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: LDSC contributors
+// SPDX-FileCopyrightText: Portitor contributors
 //
 // SPDX-License-Identifier: Apache-2.0
 
@@ -10,7 +10,7 @@
 
 use std::sync::OnceLock;
 
-use ldsc_dcp::{
+use portitor_dcp::{
     Claims, DidDocument, JtiCache, Relationship, SigningKey, VerificationMethod,
     validate_self_issued,
 };

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-FileCopyrightText: LDSC contributors
+# SPDX-FileCopyrightText: Portitor contributors
 #
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -9,8 +9,8 @@
 set -euo pipefail
 bin=${1:?binary}
 port=18080
-# LDSC_BIND is read by LDSC; LDSC_HOST/LDSC_PORT were used by the Quarkus bake-off build.
-export LDSC_BIND=127.0.0.1:$port LDSC_HOST=127.0.0.1 LDSC_PORT=$port LDSC_DATASETS_FILE=tck/datasets.json RUST_LOG=warn
+# PORTITOR_BIND is read by Portitor; PORTITOR_HOST/PORTITOR_PORT were used by the Quarkus bake-off build.
+export PORTITOR_BIND=127.0.0.1:$port PORTITOR_HOST=127.0.0.1 PORTITOR_PORT=$port PORTITOR_DATASETS_FILE=tck/datasets.json RUST_LOG=warn
 
 start=$(date +%s%N)
 "$bin" & pid=$!
