@@ -223,6 +223,43 @@ from the consumer's management API (see the README for the request) and
 read it with `GET localhost:9202/v1/negotiations/<consumerPid>`. Within a
 second its state is `FINALIZED` and it holds the agreement.
 
+## Debugging in VS Code
+
+The repository ships shared VS Code files in `.vscode/`: debug
+configurations (`launch.json`), tasks (`tasks.json`) and the recommended
+extensions (`extensions.json`). Install the recommended
+[rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+and [CodeLLDB](https://marketplace.visualstudio.com/items?itemName=vadimcn.vscode-lldb)
+when VS Code asks. Then open Run and Debug, pick a configuration and press F5.
+
+| Configuration | What it starts |
+|---|---|
+| Connector (single, :8080, management :8081) | one connector with `examples/datasets.json`; the `single` environment of `_http/` |
+| Connector: provider (:9101) / consumer (:9201, management :9202) | the two connectors of [Two connectors](#two-connectors); the `two-connectors` environment |
+| Two connectors (provider + consumer) | both at once; stopping one stops both |
+| Connector: TCK build (:8080) | the connector with the `tck` feature and `tck/datasets.json`, for the [TCK](#dsp-conformance-tck) |
+| Tests: *crate* (unit) | the unit tests of one crate |
+| Tests: *crate* *file* | one integration test file in `crates/*/tests` |
+
+CodeLLDB runs `cargo run` or `cargo test` for the configuration and
+starts the result under the debugger, so it always debugs a fresh build.
+Databases and the management API key are kept in `target/`
+(`target/vscode-*.db`, `target/vscode-management.key`); a task creates the
+key the first time. Put that key in the `apiKey` secret of the `_http/`
+collection. Delete the `.db` files to start from an empty store.
+
+To debug one test, use the **Debug** link that rust-analyzer shows above
+each `#[test]`, or add the test name to `"args"` of a test configuration.
+A new test file in `crates/*/tests` gets its own configuration in
+`launch.json`.
+
+Personal settings go in `.vscode/settings.json`, which git ignores. If
+CodeLLDB cannot find `cargo` (common on macOS when VS Code is not started
+from a terminal), set `lldb.cargo` there or in your user settings to the
+full path, for example `/Users/<you>/.cargo/bin/cargo`.
+
+Fuzz targets need a nightly toolchain and are not in `launch.json`.
+
 ## Footprint
 
 `scripts/measure.sh <binary>` measures start time, memory and latency of a
