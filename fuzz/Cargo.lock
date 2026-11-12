@@ -102,6 +102,7 @@ dependencies = [
  "ldsc-dcp",
  "ldsc-dsp",
  "libfuzzer-sys",
+ "serde",
  "serde_json",
 ]
 

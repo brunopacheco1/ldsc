@@ -21,8 +21,8 @@ SPDX-FileCopyrightText = "LDSC contributors"
 SPDX-License-Identifier = "Apache-2.0"
 
 [[annotations]]
-# JSON Schemas copied unchanged from the Eclipse Dataspace Protocol, tag 2025-1-err2
-path = "crates/ldsc-dsp/tests/schemas/*.json"
+# JSON Schemas and examples copied unchanged from the Eclipse Dataspace Protocol, tag 2025-1-err2
+path = ["crates/ldsc-dsp/tests/schemas/*.json", "crates/ldsc-dsp/tests/examples/**/*.json"]
 precedence = "override"
 SPDX-FileCopyrightText = "Eclipse Dataspace Protocol contributors (https://github.com/eclipse-dataspace-protocol-base/DataspaceProtocol)"
 SPDX-License-Identifier = "Apache-2.0"

@@ -18,6 +18,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 ldsc-dcp = { path = "../crates/ldsc-dcp" }
 ldsc-dsp = { path = "../crates/ldsc-dsp" }
+serde = "1"
 serde_json = "1"
 
 [workspace]
@@ -39,6 +40,13 @@ bench = false
 [[bin]]
 name = "dcp_token_validate"
 path = "fuzz_targets/dcp_token_validate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dsp_negotiation"
+path = "fuzz_targets/dsp_negotiation.rs"
 test = false
 doc = false
 bench = false
