@@ -75,8 +75,9 @@ Website:
 OpenSSF:
 - Register at bestpractices.dev (done: project 16578, 91% at release).
   Reaching **passing** moved to 0.2.
-- OpenSSF Baseline **level 1** (version 2026-08-28) self-assessment recorded
-  in `docs/SECURITY-ASSURANCE.md`. Level 1 is the target for all of 0.x.
+- OpenSSF Baseline **level 1** (version 2026-08-28) is the target for all
+  of 0.x ([ADR 0012](adr/0012-openssf-baseline.md)). The written
+  self-assessment moved to 0.9 (maintainer, 2026-11-12).
 
 Exit: a "hello" binary ships as a signed image through the full pipeline,
 all checks green, Scorecard published.
@@ -131,17 +132,19 @@ all checks green, Scorecard published.
   short-lived token. Internal interface follows Eclipse Data Plane
   Signaling v1.0-RC4, so the data plane can later be split out.
 - Exit: DSP TCK transfer tests green; end-to-end file transfer between two
-  instances in Docker Compose; **interop test against EDC** (catalog,
-  negotiation, transfer with a static token) runs in CI.
+  instances in Docker Compose. The EDC interop test moved to 0.5, so it
+  runs once with real identity (DCP) instead of EDC's mock (maintainer,
+  2026-11-12).
 
 ## 0.5 DCP: identity and presentation
 
 - Identity component: did:web document, key management, self-issued ID
   token, presentation query API, storage API.
 - Connector verifies the counter-party's credentials on every DSP request.
+- **First interop test against EDC**, in CI: catalog, negotiation and
+  transfer, with DCP against EDC's IdentityHub.
 - Exit: DCP TCK credential service tests green; DSP flows from 0.2 to 0.4
-  run with DCP authentication instead of a static token; the EDC interop
-  test runs with DCP against EDC's IdentityHub.
+  run with DCP authentication; the EDC interop test is green in CI.
 - Spike: how to join a **Simpl-Open** dataspace. Simpl-Open uses EDC with
   DCP outside its agent, but x509/mTLS and attribute-based access inside it.
   Decide whether Portitor needs an x509/mTLS authentication profile.
@@ -190,6 +193,9 @@ all checks green, Scorecard published.
 - Threat model review, fuzzing on every parser (ClusterFuzzLite),
   benchmarks published.
 - OpenSSF Best Practices **silver**.
+- OpenSSF Baseline **level 1** self-assessment, control by control, in
+  `docs/SECURITY-ASSURANCE.md` (moved from 0.1, maintainer, 2026-11-12);
+  decide whether 1.0 aims at a higher level.
 - Dependency review with **cargo-vet**: every crate version in `Cargo.lock`
   audited (own audits or imported sets, such as Mozilla's and Google's) or
   explicitly exempted; CI fails on an unaudited change. Deferred from 0.1
@@ -197,13 +203,3 @@ all checks green, Scorecard published.
 - Interoperability tests against Eclipse EDC and Simpl-Open (with Gaia-X).
 - API and config freeze, upgrade notes, documentation review.
 - Exit: Scorecard at least 8/10; no open high findings in Sonar or CodeQL.
-
-## Decisions taken (2026-11-11)
-
-- Licence: Apache-2.0.
-- Interoperability targets: Eclipse EDC and Simpl-Open (a customised EDC
-  with Gaia-X support). Gaia-X Trust Framework is in scope (0.7).
-- OpenSSF Baseline: level 1 for 0.x.
-- Language: Rust, accepted after the bake-off against Java on Quarkus native, which stays the fallback ([ADR 0002](adr/0002-technology-stack.md)).
-- Data plane inside the connector, behind an interface that follows Data
-  Plane Signaling (see ARCHITECTURE.md).

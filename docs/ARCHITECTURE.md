@@ -25,8 +25,8 @@ judged against it.
    an ADR. *Check:* every external endpoint cites its spec section; the
    DSP and DCP TCKs run in CI.
 2. **Interoperability is tested, not assumed.** EDC and Simpl-Open are
-   the reference counterparts. *Check:* an interop test per protocol flow
-   runs in CI from 0.4.
+   the reference counterparts ([ADR 0011](adr/0011-interoperability-targets.md)).
+   *Check:* an interop test per protocol flow runs in CI from 0.5.
 3. **Few components, one version.** One mono repo and one version for all
    components. Each component is a module of the repo and can ship as its
    own image. A new component needs an ADR. *Check:* the component list
