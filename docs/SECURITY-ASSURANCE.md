@@ -106,6 +106,6 @@ dataspace participants over HTTPS.
 
 ## OpenSSF Baseline
 
-Target: **level 1** (Baseline version 2026-08-28) for all of 0.x. The
+Target: **level 1** (Baseline version 2026-08-28) for all of 0.x ([ADR 0012](adr/0012-openssf-baseline.md)). The
 self-assessment, control by control, is added here when the 0.1 settings
 are in place.

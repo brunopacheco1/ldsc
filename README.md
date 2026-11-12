@@ -171,4 +171,4 @@ docker run --rm -p 8080:8080 \
   ghcr.io/brunopacheco1/portitor-connector:0.3.0
 ```
 
-Licensed under [Apache-2.0](LICENSE).
+Licensed under [Apache-2.0](LICENSE) ([ADR 0010](docs/adr/0010-licence.md)).
