@@ -12,6 +12,18 @@ versions may change behaviour and configuration.
 
 ## [Unreleased]
 
+### Added
+- Contract negotiation (DSP 2025-1) in `ldsc-dsp`: the six message types,
+  the acknowledgement and error types, and the state machine as a pure
+  function. Checked against every negotiation example and JSON Schema of
+  the specification, and fuzzed (`dsp_negotiation`).
+- ODRL logical constraints (`and`, `or`, `xone`, `andSequence`), duties
+  and profiles in policies, so agreements from other connectors parse.
+
+### Changed
+- A dataset definition whose offer has a `target` is refused at start;
+  DSP forbids `target` on offers inside a catalog.
+
 ## [0.2.0] - 2026-11-12
 
 ### Added

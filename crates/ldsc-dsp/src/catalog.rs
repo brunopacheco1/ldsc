@@ -40,6 +40,9 @@ pub enum DatasetDefinitionError {
     NoOffer(String),
     /// A dataset has no distribution; DSP 2025-1 requires at least one.
     NoDistribution(String),
+    /// An offer in a catalog has a `target`; DSP 2025-1 forbids it there
+    /// (the dataset is the target).
+    OfferWithTarget(String),
     /// A distribution has an empty `format`.
     EmptyFormat(String),
     /// A distribution names a data service this connector does not run.
@@ -58,6 +61,9 @@ impl std::fmt::Display for DatasetDefinitionError {
             Self::DuplicateId(id) => write!(f, "dataset {id:?} is defined twice"),
             Self::NoOffer(id) => write!(f, "dataset {id:?} has no offer (hasPolicy)"),
             Self::NoDistribution(id) => write!(f, "dataset {id:?} has no distribution"),
+            Self::OfferWithTarget(id) => {
+                write!(f, "dataset {id:?} has an offer with a target; leave it out")
+            }
             Self::EmptyFormat(id) => write!(f, "dataset {id:?} has a distribution without format"),
             Self::UnknownAccessService { dataset, service } => write!(
                 f,
@@ -94,6 +100,9 @@ pub fn prepare_datasets(
         }
         if d.distribution.is_empty() {
             return Err(DatasetDefinitionError::NoDistribution(d.id.clone()));
+        }
+        if d.has_policy.iter().any(|o| o.target.is_some()) {
+            return Err(DatasetDefinitionError::OfferWithTarget(d.id.clone()));
         }
         for dist in &mut d.distribution {
             if dist.format.is_empty() {
@@ -193,6 +202,9 @@ mod tests {
                     constraint: vec![],
                 }],
                 prohibition: vec![],
+                obligation: vec![],
+                target: None,
+                profile: None,
             }],
             distribution: vec![Distribution {
                 kind: DistributionType,
@@ -219,6 +231,8 @@ mod tests {
         no_format.distribution[0].format.clear();
         let mut other_service = dataset("a");
         other_service.distribution[0].access_service = "elsewhere".to_owned();
+        let mut targeted = dataset("a");
+        targeted.has_policy[0].target = Some("a".to_owned());
         let cases = [
             (vec![dataset("")], DatasetDefinitionError::EmptyId),
             (
@@ -236,6 +250,10 @@ mod tests {
             (
                 vec![no_format],
                 DatasetDefinitionError::EmptyFormat("a".to_owned()),
+            ),
+            (
+                vec![targeted],
+                DatasetDefinitionError::OfferWithTarget("a".to_owned()),
             ),
             (
                 vec![other_service],

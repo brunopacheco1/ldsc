@@ -9,10 +9,8 @@
 //! process messages as plain JSON or as JSON-LD"). Every `@type` is a
 //! dedicated marker type, so a message of the wrong type fails to parse.
 
-pub mod catalog;
-
 use serde::de::Error as _;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// The DSP 2025-1 JSON-LD context URI.
 pub const CONTEXT: &str = "https://w3id.org/dspace/2025/1/context.jsonld";
@@ -26,19 +24,19 @@ macro_rules! type_tag {
         #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
         pub struct $name;
 
-        impl Serialize for $name {
-            fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        impl serde::Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
                 s.serialize_str($lit)
             }
         }
 
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-                let v = String::deserialize(d)?;
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                let v = <String as serde::Deserialize>::deserialize(d)?;
                 if v == $lit {
                     Ok($name)
                 } else {
-                    Err(D::Error::custom(format!(
+                    Err(<D::Error as serde::de::Error>::custom(format!(
                         "expected @type \"{}\", got \"{v}\"",
                         $lit
                     )))
@@ -47,6 +45,9 @@ macro_rules! type_tag {
         }
     };
 }
+
+pub mod catalog;
+pub mod negotiation;
 
 type_tag!(
     /// `@type: CatalogRequestMessage`
@@ -172,13 +173,37 @@ pub struct CatalogRequestMessage {
 /// An atomic ODRL constraint.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Constraint {
+pub struct AtomicConstraint {
     /// Left operand, for example `spatial`.
     pub left_operand: String,
     /// Operator, for example `eq`.
     pub operator: String,
     /// Right operand.
     pub right_operand: serde_json::Value,
+}
+
+/// An ODRL logical constraint over other constraints.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LogicalConstraint {
+    /// All must hold.
+    And(Vec<Constraint>),
+    /// All must hold, in order.
+    AndSequence(Vec<Constraint>),
+    /// At least one must hold.
+    Or(Vec<Constraint>),
+    /// Exactly one must hold.
+    Xone(Vec<Constraint>),
+}
+
+/// An ODRL constraint: atomic, or logical over other constraints.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Constraint {
+    /// For example `{"and": [...]}`.
+    Logical(LogicalConstraint),
+    /// For example `{"leftOperand": "dateTime", "operator": "lteq", ...}`.
+    Atomic(AtomicConstraint),
 }
 
 /// An ODRL rule (permission, prohibition or duty).
@@ -206,6 +231,16 @@ pub struct Offer {
     /// Prohibitions.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prohibition: Vec<Rule>,
+    /// Duties.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub obligation: Vec<Rule>,
+    /// Dataset identifier. Absent in a catalog (the dataset holds the
+    /// offer); required when the offer travels in a negotiation message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// ODRL profiles the policy follows (one IRI or a list).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<serde_json::Value>,
 }
 
 /// A DCAT data service (the connector endpoint).
