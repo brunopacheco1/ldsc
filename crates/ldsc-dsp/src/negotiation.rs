@@ -10,6 +10,7 @@
 //! the provider (checking a consumer's message) and the consumer (checking a
 //! provider's message).
 
+pub mod consumer;
 pub mod provider;
 
 use serde::{Deserialize, Serialize};

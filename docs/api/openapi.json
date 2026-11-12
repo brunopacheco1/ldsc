@@ -7,7 +7,7 @@
       "name": "Apache-2.0",
       "identifier": "Apache-2.0"
     },
-    "description": "HTTP interface of ldsc-connector. The DSP endpoints follow the DSP 2025-1 HTTPS bindings; the message schemas are the official DSP 2025-1 JSON Schemas (copied unchanged in crates/ldsc-dsp/tests/schemas). DSP itself publishes no OpenAPI file; this one is written by hand and a test checks that every path in it is served. No authentication until 0.5 (DCP)."
+    "description": "HTTP interface of ldsc-connector. The DSP endpoints follow the DSP 2025-1 HTTPS bindings; the message schemas are the official DSP 2025-1 JSON Schemas (copied unchanged in crates/ldsc-dsp/tests/schemas). DSP itself publishes no OpenAPI file; this one is written by hand and a test checks that every path in it is served. As consumer, the connector sends callbackAddress = public URL + /dsp/2025-1/callback, so providers call the callback paths below. No authentication until 0.5 (DCP)."
   },
   "servers": [
     {
@@ -440,6 +440,296 @@
           },
           "404": {
             "description": "Unknown negotiation (also answered for another consumer's negotiation)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/ldsc-dsp/tests/schemas/contract-negotiation-error-schema.json"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dsp/2025-1/callback/negotiations/{consumerPid}": {
+      "get": {
+        "tags": [
+          "Contract negotiation (consumer callback)"
+        ],
+        "summary": "Return the state of a negotiation this connector started as consumer",
+        "operationId": "consumerNegotiation",
+        "parameters": [
+          {
+            "name": "consumerPid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The consumer's id for the negotiation"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The negotiation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/ldsc-dsp/tests/schemas/contract-negotiation-schema.json"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown negotiation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/ldsc-dsp/tests/schemas/contract-negotiation-error-schema.json"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dsp/2025-1/callback/negotiations/{consumerPid}/offers": {
+      "post": {
+        "tags": [
+          "Contract negotiation (consumer callback)"
+        ],
+        "summary": "Provider sends an offer",
+        "operationId": "consumerOffer",
+        "parameters": [
+          {
+            "name": "consumerPid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The consumer's id for the negotiation"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "../../crates/ldsc-dsp/tests/schemas/contract-offer-message-schema.json"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Offer recorded (state OFFERED)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/ldsc-dsp/tests/schemas/contract-negotiation-schema.json"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid message, or it does not fit the state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/ldsc-dsp/tests/schemas/contract-negotiation-error-schema.json"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown negotiation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/ldsc-dsp/tests/schemas/contract-negotiation-error-schema.json"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dsp/2025-1/callback/negotiations/{consumerPid}/agreement": {
+      "post": {
+        "tags": [
+          "Contract negotiation (consumer callback)"
+        ],
+        "summary": "Provider sends the agreement",
+        "operationId": "consumerAgreement",
+        "parameters": [
+          {
+            "name": "consumerPid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The consumer's id for the negotiation"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "../../crates/ldsc-dsp/tests/schemas/contract-agreement-message-schema.json"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Agreement recorded (state AGREED)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/ldsc-dsp/tests/schemas/contract-negotiation-schema.json"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid message, or it does not fit the state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/ldsc-dsp/tests/schemas/contract-negotiation-error-schema.json"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown negotiation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/ldsc-dsp/tests/schemas/contract-negotiation-error-schema.json"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dsp/2025-1/callback/negotiations/{consumerPid}/events": {
+      "post": {
+        "tags": [
+          "Contract negotiation (consumer callback)"
+        ],
+        "summary": "Provider finalizes the negotiation",
+        "operationId": "consumerEvent",
+        "parameters": [
+          {
+            "name": "consumerPid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The consumer's id for the negotiation"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "../../crates/ldsc-dsp/tests/schemas/contract-negotiation-event-message-schema.json"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Finalized (state FINALIZED)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/ldsc-dsp/tests/schemas/contract-negotiation-schema.json"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid message, or it does not fit the state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/ldsc-dsp/tests/schemas/contract-negotiation-error-schema.json"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown negotiation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/ldsc-dsp/tests/schemas/contract-negotiation-error-schema.json"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dsp/2025-1/callback/negotiations/{consumerPid}/termination": {
+      "post": {
+        "tags": [
+          "Contract negotiation (consumer callback)"
+        ],
+        "summary": "Provider ends the negotiation",
+        "operationId": "consumerTermination",
+        "parameters": [
+          {
+            "name": "consumerPid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The consumer's id for the negotiation"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "../../crates/ldsc-dsp/tests/schemas/contract-negotiation-termination-message-schema.json"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Terminated (state TERMINATED)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/ldsc-dsp/tests/schemas/contract-negotiation-schema.json"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid message, or it does not fit the state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/ldsc-dsp/tests/schemas/contract-negotiation-error-schema.json"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown negotiation",
             "content": {
               "application/json": {
                 "schema": {

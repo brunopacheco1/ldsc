@@ -23,6 +23,12 @@ versions may change behaviour and configuration.
   endpoints, a default policy that agrees to catalog offers, and delivery of
   offers, agreements, finalization and termination to the consumer's
   callback with retries.
+- Consumer side of contract negotiation: the DSP 2025-1 consumer callback
+  endpoints under `/dsp/2025-1/callback`, a default policy that accepts the
+  provider's offer and verifies its agreement, and delivery of requests,
+  acceptance, verification and termination to the provider with retries.
+  Consumer negotiations are kept in the same SQLite file (schema version 2;
+  migrated at start).
 - Negotiations are kept in a SQLite file (`LDSC_DB_FILE`, default
   `ldsc.db`; `/data/ldsc.db` in the image, mount a volume there). See
   ADR 0006.
@@ -40,8 +46,10 @@ versions may change behaviour and configuration.
   also published on the website (`/api/`).
 - The connector stops cleanly on SIGTERM (`docker stop`, Kubernetes); it
   used to wait to be killed.
-- The DSP TCK now runs the 15 provider negotiation tests (CN:01 to CN:03),
-  with a test-only `tck` build feature that scripts provider decisions.
+- The DSP TCK now runs the 15 provider negotiation tests (CN:01 to CN:03)
+  and the 16 consumer negotiation tests (CN_C:01 to CN_C:03), with a
+  test-only `tck` build feature that scripts decisions and adds the
+  endpoint the TCK uses to start consumer tests.
 
 ### Changed
 - Minimum Rust version 1.89 (was 1.85), needed by `rusqlite`.
