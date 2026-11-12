@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: LDSC contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Build context for the fuzzing image only (BuildKit reads this file
+# instead of the root .dockerignore, which admits just the release binary).
+*
+!Cargo.toml
+!Cargo.lock
+!crates/
+!fuzz/
+fuzz/target/
+!.clusterfuzzlite/build.sh
