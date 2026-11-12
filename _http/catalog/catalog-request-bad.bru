@@ -1,0 +1,26 @@
+meta {
+  name: Bad catalog request (400)
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{dsp}}/catalog/request
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "@type": "NotACatalogRequest"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body["@type"]: eq CatalogError
+}

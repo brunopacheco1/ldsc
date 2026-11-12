@@ -62,6 +62,10 @@ versions may change behaviour and configuration.
   and the 16 consumer negotiation tests (CN_C:01 to CN_C:03), with a
   test-only `tck` build feature that scripts decisions and adds the
   endpoint the TCK uses to start consumer tests.
+- A [Bruno](https://www.usebruno.com/) collection in `_http/` for manual
+  tests: metadata, catalog, provider-side negotiation and the management
+  API, with environments for one connector and for two (see
+  `docs/TESTING.md`).
 
 ### Changed
 - Minimum Rust version 1.89 (was 1.85), needed by `rusqlite`.
