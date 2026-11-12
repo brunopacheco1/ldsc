@@ -16,6 +16,8 @@ path = [
     "examples/*.json",
     "tck/*.json",
     "docs/api/*.json",
+    # Bruno API client collection (.bru and bruno.json have no comment syntax we rely on)
+    "_http/**",
 ]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "LDSC contributors"

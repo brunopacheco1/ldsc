@@ -1,0 +1,19 @@
+meta {
+  name: Get negotiation
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{mgmtUrl}}/v1/negotiations/{{mgmtConsumerPid}}
+  body: none
+  auth: inherit
+}
+
+assert {
+  res.status: eq 200
+}
+
+docs {
+  Within a second the state is FINALIZED and the negotiation holds the agreement.
+}

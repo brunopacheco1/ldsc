@@ -1,0 +1,43 @@
+meta {
+  name: Start negotiation (as consumer)
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{mgmtUrl}}/v1/negotiations
+  body: json
+  auth: inherit
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "providerAddress": "{{dsp}}",
+    "providerId": "{{providerId}}",
+    "datasetId": "{{datasetId}}",
+    "offer": {
+      "@id": "{{offerId}}",
+      "@type": "Offer",
+      "permission": [{"action": "use"}]
+    }
+  }
+}
+
+script:post-response {
+  if (res.body && res.body.consumerPid) {
+    bru.setVar("mgmtConsumerPid", res.body.consumerPid);
+  }
+}
+
+assert {
+  res.status: eq 201
+}
+
+docs {
+  Use the "two-connectors" environment (docs/TESTING.md, Two connectors).
+  The offer must be copied from the provider's catalog. Saves mgmtConsumerPid.
+}

@@ -1,0 +1,20 @@
+meta {
+  name: 2. Negotiation state
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{dsp}}/negotiations/{{providerPid}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+}
+
+docs {
+  DSP 2025-1 Contract Negotiation, HTTPS binding: GET /negotiations/:providerPid.
+  Expect state AGREED once the provider has sent the agreement to the callback.
+}

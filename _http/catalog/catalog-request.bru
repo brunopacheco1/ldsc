@@ -1,0 +1,33 @@
+meta {
+  name: Catalog request
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{dsp}}/catalog/request
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "@context": ["https://w3id.org/dspace/2025/1/context.jsonld"],
+    "@type": "CatalogRequestMessage",
+    "filter": []
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body["@type"]: eq Catalog
+}
+
+docs {
+  DSP 2025-1 Catalog Protocol, HTTPS binding: POST /catalog/request with a CatalogRequestMessage.
+  Debug: breakpoint in catalog_request (crates/ldsc-connector/src/lib.rs).
+}
