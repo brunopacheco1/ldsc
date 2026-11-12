@@ -12,6 +12,8 @@ versions may change behaviour and configuration.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-12
+
 ### Added
 - Contract negotiation (DSP 2025-1) in `portitor-dsp`: the six message types,
   the acknowledgement and error types, and the state machine as a pure
@@ -73,6 +75,8 @@ versions may change behaviour and configuration.
   tests: metadata, catalog, provider-side negotiation and the management
   API, with environments for one connector and for two (see
   `docs/TESTING.md`).
+- `scripts/demo.sh`: two connectors on one machine agree a contract and
+  refuse changed terms. CI runs it on every pull request.
 
 ### Changed
 - **The project is renamed from LDSC to Portitor** ([ADR 0008](docs/adr/0008-project-name.md)).
