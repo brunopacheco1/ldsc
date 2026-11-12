@@ -78,6 +78,21 @@ impl ConsumerStore for InMemoryConsumerNegotiations {
             _ => Ok(false),
         }
     }
+
+    fn list(
+        &self,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<ConsumerNegotiation>, StoreError> {
+        let map = self.map();
+        let range = match after {
+            Some(a) => {
+                map.range::<str, _>((std::ops::Bound::Excluded(a), std::ops::Bound::Unbounded))
+            }
+            None => map.range::<str, _>(..),
+        };
+        Ok(range.take(limit).map(|(_, n)| n.clone()).collect())
+    }
 }
 
 /// Any [`ConsumerStore`], chosen at start.
@@ -97,6 +112,13 @@ impl ConsumerStore for AnyConsumerStore {
         expected: NegotiationState,
     ) -> Result<bool, StoreError> {
         self.0.replace_if(n, expected)
+    }
+    fn list(
+        &self,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<ConsumerNegotiation>, StoreError> {
+        self.0.list(after, limit)
     }
 }
 
@@ -233,6 +255,21 @@ impl Consumer {
         self.in_flight.begin(&out.consumer_pid);
         tokio::spawn(Arc::clone(self).deliver(out));
         Ok(n)
+    }
+
+    pub(crate) fn negotiation(
+        &self,
+        consumer_pid: &str,
+    ) -> Result<ConsumerNegotiation, Box<Failure>> {
+        self.service.negotiation(consumer_pid).map_err(Box::new)
+    }
+
+    pub(crate) fn list(
+        &self,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<ConsumerNegotiation>, Box<Failure>> {
+        self.service.list(after, limit).map_err(Box::new)
     }
 
     /// Checks the message's shape with the guard, then reads it.
@@ -446,6 +483,12 @@ mod tests {
         let mut other = offered;
         other.consumer_pid = "d".into();
         assert!(!store.replace_if(&other, NegotiationState::Offered).unwrap());
+        store.insert(&other).unwrap();
+        let all = store.list(None, 10).unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(store.list(Some("c"), 10).unwrap()[0].consumer_pid, "d");
+        assert!(store.list(Some("d"), 10).unwrap().is_empty());
+        assert_eq!(store.list(None, 1).unwrap().len(), 1);
         assert_eq!(format!("{store:?}"), "AnyConsumerStore");
     }
 

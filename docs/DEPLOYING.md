@@ -36,6 +36,11 @@ Check each item and keep the answers in your own runbook.
 - [ ] **Datasets file.** A JSON file with the datasets you offer (see the
   [README](../README.md#interface)). The connector refuses to start if a
   definition breaks a DSP rule, so test the file before a rollout.
+- [ ] **Management API.** Needed only if this connector starts
+  negotiations as consumer. Create a key (`openssl rand -hex 32`), keep it
+  in your secret store, and mount it as a file
+  (`LDSC_MANAGEMENT_API_KEY_FILE`). Decide who may reach the management
+  port; never route it through the public proxy.
 - [ ] **Storage.** A persistent volume for `/data` (negotiations, SQLite).
 - [ ] **Network.** Inbound: partners reach the DSP endpoints, including
   the consumer callbacks under `/dsp/2025-1/callback`, through your proxy.
@@ -57,6 +62,8 @@ All configuration is by environment variable. The full table is in the
 | `LDSC_DATASETS_FILE` | path of the mounted datasets file |
 | `LDSC_DB_FILE` | leave the image default, `/data/ldsc.db` |
 | `LDSC_BIND` | leave the default, `0.0.0.0:8080` |
+| `LDSC_MANAGEMENT_API_KEY_FILE` | path of the mounted key file, or unset (management API off) |
+| `LDSC_MANAGEMENT_BIND` | `0.0.0.0:8081` in a container (publish it only on an internal interface); the default `127.0.0.1:8081` is unreachable from outside a container |
 | `LDSC_ALLOW_HTTP_CALLBACKS` | **unset** (never `true` in production) |
 | `RUST_LOG` | `info` (default); `debug` only while diagnosing |
 
@@ -83,6 +90,16 @@ docker run -d --name ldsc-connector --restart unless-stopped \
   ghcr.io/brunopacheco1/ldsc-connector@sha256:<digest>
 ```
 
+With the management API, add (the key file must be readable by user
+`65532`; the port is published on the host's loopback only):
+
+```sh
+  -p 127.0.0.1:8081:8081 \
+  -v /srv/ldsc/management-key:/run/secrets/ldsc-key:ro \
+  -e LDSC_MANAGEMENT_API_KEY_FILE=/run/secrets/ldsc-key \
+  -e LDSC_MANAGEMENT_BIND=0.0.0.0:8081 \
+```
+
 Rules:
 
 - **One container per database file.** Never run two replicas on the same
@@ -94,7 +111,8 @@ Rules:
   exits.
 - Kubernetes: one replica (`Deployment` with `strategy: Recreate`, or a
   `StatefulSet`), a `PersistentVolumeClaim` on `/data`, and `/health` as
-  liveness probe. There is no Helm chart yet.
+  liveness probe. Mount the management key from a `Secret`, and do not put
+  the management port in an `Ingress`. There is no Helm chart yet.
 
 Check after start:
 
@@ -105,6 +123,9 @@ curl -s  https://connector.example.com/.well-known/dspace-version
 
 The log line `ldsc-connector listening` shows the bind address, the number
 of datasets and the database file.
+`management API listening` shows its address; `management API off` means
+no key file is set. A missing, unreadable or too short key file stops the
+start with an error.
 
 ## 4. Security
 
@@ -117,6 +138,12 @@ of datasets and the database file.
   not blocked yet. Put the connector in a network zone where it cannot
   reach internal services it should not call (egress firewall or network
   policy).
+- **Management API.** It can start negotiations in your name, so treat its
+  key like a password: a file readable only by the connector, mounted from
+  your secret store, at least 32 characters. Only an HMAC of the key is
+  kept in memory, and keys are compared in constant time. The port speaks
+  plain HTTP: keep it on a private network or behind TLS, and never on the
+  public proxy. To change the key, replace the file and restart.
 - Do not set `LDSC_ALLOW_HTTP_CALLBACKS=true` outside development and tests.
 - Report vulnerabilities as described in [SECURITY.md](../SECURITY.md).
 

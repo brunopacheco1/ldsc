@@ -28,6 +28,7 @@ use ldsc_dsp::{
 use serde::Serialize;
 
 pub mod consumer;
+pub mod management;
 pub mod negotiation;
 pub mod store;
 #[cfg(feature = "tck")]
@@ -194,6 +195,32 @@ impl Negotiator {
         offer: ldsc_dsp::Offer,
     ) -> Result<ldsc_dsp::negotiation::consumer::ConsumerNegotiation, Box<Failure>> {
         self.0.start(provider_address, provider_id, offer)
+    }
+
+    /// The negotiation with this consumer pid.
+    ///
+    /// # Errors
+    ///
+    /// Unknown negotiation, or the store failed.
+    pub fn get(
+        &self,
+        consumer_pid: &str,
+    ) -> Result<ldsc_dsp::negotiation::consumer::ConsumerNegotiation, Box<Failure>> {
+        self.0.negotiation(consumer_pid)
+    }
+
+    /// Up to `limit` negotiations (at most 100) after the consumer pid
+    /// `after`, in consumer pid order.
+    ///
+    /// # Errors
+    ///
+    /// The store failed.
+    pub fn list(
+        &self,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<ldsc_dsp::negotiation::consumer::ConsumerNegotiation>, Box<Failure>> {
+        self.0.list(after, limit)
     }
 }
 
