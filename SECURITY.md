@@ -1,5 +1,5 @@
 <!--
-SPDX-FileCopyrightText: LDSC contributors
+SPDX-FileCopyrightText: Portitor contributors
 
 SPDX-License-Identifier: Apache-2.0
 -->
@@ -19,7 +19,7 @@ Fixes land on `main` and ship in a patch release.
 ## Reporting a vulnerability
 
 Please **do not** open a public issue. Report it privately through GitHub:
-[Security → Report a vulnerability](https://github.com/brunopacheco1/ldsc/security/advisories/new).
+[Security → Report a vulnerability](https://github.com/brunopacheco1/portitor/security/advisories/new).
 
 Include what is affected, how to reproduce it, and the impact you see.
 What to expect:
@@ -32,7 +32,7 @@ What to expect:
 ## Scope
 
 Of particular interest: parsing of DSP and DCP messages, token and
-signature verification (`crates/ldsc-dcp`), DID resolution, and anything
+signature verification (`crates/portitor-dcp`), DID resolution, and anything
 that lets a remote party read data or bypass a policy. The threat model is
 in the [security assurance case](docs/SECURITY-ASSURANCE.md).
 

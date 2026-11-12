@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: LDSC contributors
+// SPDX-FileCopyrightText: Portitor contributors
 //
 // SPDX-License-Identifier: Apache-2.0
 
@@ -6,7 +6,7 @@
 //! Parsing and validation must fail cleanly, never panic.
 #![no_main]
 
-use ldsc_dcp::{DidDocument, JtiCache, Jws, did_web_url, validate_self_issued};
+use portitor_dcp::{DidDocument, JtiCache, Jws, did_web_url, validate_self_issued};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {

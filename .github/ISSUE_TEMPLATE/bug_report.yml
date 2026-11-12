@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: LDSC contributors
+# SPDX-FileCopyrightText: Portitor contributors
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -28,6 +28,6 @@ body:
   - type: input
     id: version
     attributes:
-      label: LDSC version or commit
+      label: Portitor version or commit
     validations:
       required: true

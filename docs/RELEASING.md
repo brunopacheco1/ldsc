@@ -1,5 +1,5 @@
 <!--
-SPDX-FileCopyrightText: LDSC contributors
+SPDX-FileCopyrightText: Portitor contributors
 
 SPDX-License-Identifier: Apache-2.0
 -->
@@ -13,15 +13,15 @@ runs [`.github/workflows/release.yml`](../.github/workflows/release.yml), which:
    listed in `CHANGELOG.md`;
 2. tests the workspace and builds static musl binaries on native amd64 and
    arm64 runners;
-3. builds one multi-arch image per component (`ldsc-connector` today;
-   `ldsc-identity` and `ldsc-issuer` join later,
+3. builds one multi-arch image per component (`portitor-connector` today;
+   `portitor-identity` and `portitor-issuer` join later,
    [ADR 0003](adr/0003-component-split.md)) and pushes it to
    `ghcr.io/brunopacheco1/<component>:X.Y.Z`;
 4. signs each image with cosign (keyless, the workflow's identity);
 5. attaches build provenance (SLSA v1) and a CycloneDX SBOM to each image
    as GitHub attestations;
 6. creates a GitHub release with the changelog section, the binaries, the
-   SBOMs, the provenance bundle (`ldsc-X.Y.Z.intoto.jsonl`) and
+   SBOMs, the provenance bundle (`portitor-X.Y.Z.intoto.jsonl`) and
    `THIRD-PARTY-NOTICES.txt`.
 
 A pull request that changes the release workflow, the `Dockerfile` or the
@@ -36,7 +36,7 @@ notices script runs the same build as a dry run: nothing is pushed or signed.
    use the workflow's OIDC token. Images are pushed with the workflow's
    `GITHUB_TOKEN`.
 3. After the first release, make the package public: **Packages →
-   ldsc-connector → Package settings → Change visibility → Public**, and
+   portitor-connector → Package settings → Change visibility → Public**, and
    link it to this repository if GitHub did not.
 
 ## Releasing a version
@@ -46,12 +46,12 @@ notices script runs the same build as a dry run: nothing is pushed or signed.
    `## [X.Y.Z] - YYYY-MM-DD`, add a fresh empty `## [Unreleased]` above it,
    set `info.version` in `docs/api/openapi.json`, regenerate
    `docs/api/management-openapi.json`
-   (`LDSC_UPDATE_OPENAPI=1 cargo test -p ldsc-connector --test management_api`),
+   (`PORTITOR_UPDATE_OPENAPI=1 cargo test -p portitor-connector --test management_api`),
    and merge.
 2. Tag the merge commit with your personal key and push the tag:
    ```sh
    git switch main && git pull
-   git tag -s vX.Y.Z -m "LDSC X.Y.Z"
+   git tag -s vX.Y.Z -m "Portitor X.Y.Z"
    git push origin vX.Y.Z
    ```
 3. Watch **Actions → Release**. When it is green, the images and the GitHub
@@ -61,12 +61,12 @@ notices script runs the same build as a dry run: nothing is pushed or signed.
 
 - Signature:
   ```sh
-  cosign verify ghcr.io/brunopacheco1/ldsc-connector:X.Y.Z \
-    --certificate-identity-regexp '^https://github.com/brunopacheco1/ldsc/\.github/workflows/release\.yml@refs/tags/v' \
+  cosign verify ghcr.io/brunopacheco1/portitor-connector:X.Y.Z \
+    --certificate-identity-regexp '^https://github.com/brunopacheco1/portitor/\.github/workflows/release\.yml@refs/tags/v' \
     --certificate-oidc-issuer https://token.actions.githubusercontent.com
   ```
 - Provenance:
-  `gh attestation verify oci://ghcr.io/brunopacheco1/ldsc-connector:X.Y.Z --repo brunopacheco1/ldsc`
+  `gh attestation verify oci://ghcr.io/brunopacheco1/portitor-connector:X.Y.Z --repo brunopacheco1/portitor`
 - SBOM: attached to the GitHub release and to the image as an attestation.
 
 If the release fails after the tag is pushed, fix the cause, delete the tag

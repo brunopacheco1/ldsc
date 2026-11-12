@@ -1,12 +1,12 @@
 <!--
-SPDX-FileCopyrightText: LDSC contributors
+SPDX-FileCopyrightText: Portitor contributors
 
 SPDX-License-Identifier: Apache-2.0
 -->
 
 # Governance
 
-LDSC is a small project with a single maintainer. This document says who
+Portitor is a small project with a single maintainer. This document says who
 decides what, how to take part, and how the project would continue if the
 maintainer stopped.
 

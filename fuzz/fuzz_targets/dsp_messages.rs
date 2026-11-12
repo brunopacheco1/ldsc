@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: LDSC contributors
+// SPDX-FileCopyrightText: Portitor contributors
 //
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,8 +7,8 @@
 //! whatever parses must survive a serialize/parse round trip unchanged.
 #![no_main]
 
-use ldsc_dsp::catalog::prepare_datasets;
-use ldsc_dsp::{CatalogRequestMessage, Dataset};
+use portitor_dsp::catalog::prepare_datasets;
+use portitor_dsp::{CatalogRequestMessage, Dataset};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {

@@ -1,20 +1,26 @@
 <!--
-SPDX-FileCopyrightText: LDSC contributors
+SPDX-FileCopyrightText: Portitor contributors
 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# LDSC — Luxembourg Data Space Connector
+# Portitor — a Luxembourg Data Space Connector
 
 A small, fast connector for the Luxembourg data space that implements the
 Eclipse Dataspace Protocol (DSP) and the Decentralized Claims Protocol (DCP).
 
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/brunopacheco1/ldsc/badge)](https://scorecard.dev/viewer/?uri=github.com/brunopacheco1/ldsc)
+The name: in Latin a *portitor* is both the customs officer at a port, who
+checks goods against the rules, and the ferryman who carries them across.
+A connector does both: it checks every exchange against agreed policies and
+carries the data to the other side. The project was called LDSC until 0.3
+([ADR 0008](docs/adr/0008-project-name.md)).
+
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/brunopacheco1/portitor/badge)](https://scorecard.dev/viewer/?uri=github.com/brunopacheco1/portitor)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/16578/badge)](https://www.bestpractices.dev/projects/16578)
 
 Status: early prototype (0.x). Not for production use.
 
-Website: <https://brunopacheco1.github.io/ldsc/> (objectives, minimum functionality, components, roadmap).
+Website: <https://brunopacheco1.github.io/portitor/> (objectives, minimum functionality, components, roadmap).
 
 - What it is and how it is built: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - Plan: [docs/ROADMAP.md](docs/ROADMAP.md); decisions: [docs/adr/](docs/adr/)
@@ -26,7 +32,7 @@ Website: <https://brunopacheco1.github.io/ldsc/> (objectives, minimum functional
 
 ## Interface
 
-`ldsc-connector` serves HTTP on `LDSC_BIND` (default `0.0.0.0:8080`).
+`portitor-connector` serves HTTP on `PORTITOR_BIND` (default `0.0.0.0:8080`).
 The DSP endpoints follow the HTTPS bindings of
 [DSP 2025-1](https://eclipse-dataspace-protocol-base.github.io/DataspaceProtocol/2025-1-err1/).
 
@@ -52,14 +58,14 @@ Configuration (environment variables):
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `LDSC_BIND` | `0.0.0.0:8080` | Address to listen on |
-| `LDSC_PARTICIPANT_ID` | `did:web:localhost%3A8080` | Participant id (a DID) |
-| `LDSC_PUBLIC_URL` | `http://localhost:8080` | Public base URL; the DSP endpoint is this plus `/dsp/2025-1`, the consumer callback address this plus `/dsp/2025-1/callback` |
-| `LDSC_DATASETS_FILE` | none (empty catalog) | JSON file with the datasets to offer |
-| `LDSC_DB_FILE` | `ldsc.db` (`/data/ldsc.db` in the image) | SQLite file that keeps negotiations; one connector per file |
-| `LDSC_MANAGEMENT_API_KEY_FILE` | none (management API off) | File with the management API key (at least 32 characters, for example `openssl rand -hex 32`) |
-| `LDSC_MANAGEMENT_BIND` | `127.0.0.1:8081` | Address of the management API |
-| `LDSC_ALLOW_HTTP_CALLBACKS` | `false` | `true` allows `http://` addresses for consumers' callbacks and for providers; development and tests only |
+| `PORTITOR_BIND` | `0.0.0.0:8080` | Address to listen on |
+| `PORTITOR_PARTICIPANT_ID` | `did:web:localhost%3A8080` | Participant id (a DID) |
+| `PORTITOR_PUBLIC_URL` | `http://localhost:8080` | Public base URL; the DSP endpoint is this plus `/dsp/2025-1`, the consumer callback address this plus `/dsp/2025-1/callback` |
+| `PORTITOR_DATASETS_FILE` | none (empty catalog) | JSON file with the datasets to offer |
+| `PORTITOR_DB_FILE` | `portitor.db` (`/data/portitor.db` in the image) | SQLite file that keeps negotiations; one connector per file |
+| `PORTITOR_MANAGEMENT_API_KEY_FILE` | none (management API off) | File with the management API key (at least 32 characters, for example `openssl rand -hex 32`) |
+| `PORTITOR_MANAGEMENT_BIND` | `127.0.0.1:8081` | Address of the management API |
+| `PORTITOR_ALLOW_HTTP_CALLBACKS` | `false` | `true` allows `http://` addresses for consumers' callbacks and for providers; development and tests only |
 
 As provider, the connector agrees to a request for an offer in its
 catalog, then finalizes once the consumer verifies. It sends its messages
@@ -97,7 +103,7 @@ state before giving up. See
 
 Your own systems start and follow negotiations as consumer through the
 management API. It is not part of DSP, so it has its own port
-(`LDSC_MANAGEMENT_BIND`) and is off unless `LDSC_MANAGEMENT_API_KEY_FILE`
+(`PORTITOR_MANAGEMENT_BIND`) and is off unless `PORTITOR_MANAGEMENT_API_KEY_FILE`
 is set. Every call needs `Authorization: Bearer <key>`.
 
 | Method and path | What it does |
@@ -136,7 +142,7 @@ the host in the callback address; certificate checks cannot be turned off.
 Known gaps in this version:
 - **No caller authentication until 0.5 (DCP).** Anyone who can reach the
   DSP endpoints can negotiate, and agreements name the consumer as
-  `urn:ldsc:unauthenticated`. Do not expose the connector to untrusted
+  `urn:portitor:unauthenticated`. Do not expose the connector to untrusted
   networks.
 - The callback address is chosen by the consumer. Only `https://` is
   allowed by default, but internal addresses are not blocked yet; put the
@@ -148,7 +154,7 @@ offer (`hasPolicy`) and one distribution with a `format`. Leave
 `accessService` out: the connector sets it to its own data service. A file
 that breaks these rules stops the start with an error. Other properties,
 such as `dct:title` or `dcat:keyword`, are kept and served as written (the
-DSP context defines the `dct`, `dcat` and `odrl` prefixes); LDSC does not
+DSP context defines the `dct`, `dcat` and `odrl` prefixes); Portitor does not
 validate them yet. See
 [examples/datasets.json](examples/datasets.json).
 
@@ -157,9 +163,9 @@ Run the image with the example datasets:
 ```sh
 docker run --rm -p 8080:8080 \
   -v "$PWD/examples/datasets.json:/datasets.json:ro" \
-  -e LDSC_DATASETS_FILE=/datasets.json \
-  -v ldsc-data:/data \
-  ghcr.io/brunopacheco1/ldsc-connector:0.2.0
+  -e PORTITOR_DATASETS_FILE=/datasets.json \
+  -v portitor-data:/data \
+  ghcr.io/brunopacheco1/portitor-connector:0.2.0
 ```
 
 Licensed under [Apache-2.0](LICENSE).

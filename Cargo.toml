@@ -1,16 +1,16 @@
-# SPDX-FileCopyrightText: LDSC contributors
+# SPDX-FileCopyrightText: Portitor contributors
 #
 # SPDX-License-Identifier: Apache-2.0
 
 [workspace]
 resolver = "3"
-members = ["crates/ldsc-dsp", "crates/ldsc-dcp", "crates/ldsc-connector"]
+members = ["crates/portitor-dsp", "crates/portitor-dcp", "crates/portitor-connector"]
 
 [workspace.package]
 version = "0.2.0"
 edition = "2024"
 license = "Apache-2.0"
-repository = "https://github.com/brunopacheco1/ldsc"
+repository = "https://github.com/brunopacheco1/portitor"
 rust-version = "1.89"
 
 [workspace.dependencies]

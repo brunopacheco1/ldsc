@@ -1,5 +1,5 @@
 <!--
-SPDX-FileCopyrightText: LDSC contributors
+SPDX-FileCopyrightText: Portitor contributors
 
 SPDX-License-Identifier: Apache-2.0
 -->
@@ -75,14 +75,14 @@ repo (a crate in the Cargo workspace) and can ship as its **own image**.
 
 **The split is decided in [ADR 0003](adr/0003-component-split.md):**
 three images, split by who runs them and which keys they hold. PostgreSQL
-is an external dependency, not an LDSC image.
+is an external dependency, not a Portitor image.
 
 | # | Component (image) | Role | Mandatory? | Protocols |
 |---|---|---|---|---|
-| 1 | PostgreSQL (external, not built by LDSC) | State of negotiations, transfers, credentials | Mandatory | — |
-| 2 | `ldsc-identity` | Holds the participant's DID, keys and credentials (including Gaia-X credentials from 0.7); answers presentation queries | Mandatory for each participant, unless an external DCP wallet is used, or the participant uses Simpl-Open x509 only | DCP (credential service) |
-| 3 | `ldsc-connector` | Control plane: catalog, contract negotiation, transfer; verifies DCP presentations. The data plane is its own module, linked into the connector for 0.x (see below) | Mandatory | DSP, DCP (verifier) |
-| 4 | `ldsc-issuer` | Issues and revokes credentials (for example membership); builds and signs the schema and vocabulary bundle ([ADR 0005](adr/0005-schema-and-vocabulary-registry.md), proposed) | Optional: one per dataspace, run by the dataspace authority | DCP (issuance) |
+| 1 | PostgreSQL (external, not built by Portitor) | State of negotiations, transfers, credentials | Mandatory | — |
+| 2 | `portitor-identity` | Holds the participant's DID, keys and credentials (including Gaia-X credentials from 0.7); answers presentation queries | Mandatory for each participant, unless an external DCP wallet is used, or the participant uses Simpl-Open x509 only | DCP (credential service) |
+| 3 | `portitor-connector` | Control plane: catalog, contract negotiation, transfer; verifies DCP presentations. The data plane is its own module, linked into the connector for 0.x (see below) | Mandatory | DSP, DCP (verifier) |
+| 4 | `portitor-issuer` | Issues and revokes credentials (for example membership); builds and signs the schema and vocabulary bundle ([ADR 0005](adr/0005-schema-and-vocabulary-registry.md), proposed) | Optional: one per dataspace, run by the dataspace authority | DCP (issuance) |
 
 The website is a static site published by GitHub Pages; it is not deployed
 by participants.

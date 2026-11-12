@@ -1,5 +1,5 @@
 <!--
-SPDX-FileCopyrightText: LDSC contributors
+SPDX-FileCopyrightText: Portitor contributors
 
 SPDX-License-Identifier: Apache-2.0
 -->
@@ -68,7 +68,7 @@ Release (on signed tag):
   attached; GitHub release with changelog notes and third-party notices.
 
 Website:
-- Static site in `site/`, published by GitHub Pages: what LDSC is, its
+- Static site in `site/`, published by GitHub Pages: what Portitor is, its
   objectives, the minimum functionality, the component list and the
   deployment order, live badges.
 
@@ -116,7 +116,7 @@ all checks green, Scorecard published.
   with an API key; its OpenAPI description is generated from the code.
   The DSP endpoints keep the hand-written `docs/api/openapi.json`, which
   uses the official DSP schemas.
-- Exit: DSP TCK negotiation tests green; two LDSC instances agree a contract.
+- Exit: DSP TCK negotiation tests green; two Portitor instances agree a contract.
 
 ## 0.4 Transfer process and HTTP data plane
 
@@ -138,7 +138,7 @@ all checks green, Scorecard published.
   test runs with DCP against EDC's IdentityHub.
 - Spike: how to join a **Simpl-Open** dataspace. Simpl-Open uses EDC with
   DCP outside its agent, but x509/mTLS and attribute-based access inside it.
-  Decide whether LDSC needs an x509/mTLS authentication profile.
+  Decide whether Portitor needs an x509/mTLS authentication profile.
 
 ## 0.6 DCP: issuance and credential-based policies
 

@@ -1,8 +1,8 @@
-# SPDX-FileCopyrightText: LDSC contributors
+# SPDX-FileCopyrightText: Portitor contributors
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Runs the Eclipse DSP TCK (built from source at a pinned tag) against LDSC.
+# Runs the Eclipse DSP TCK (built from source at a pinned tag) against Portitor.
 # Must pass: metadata (MET), catalog (CAT) and contract negotiation as
 # provider (CN) and as consumer (CN_C). Transfer (TP) is expected to fail
 # until 0.4. The connector is built with the test-only `tck` feature, which
@@ -47,16 +47,16 @@ jobs:
       - name: Build TCK
         working-directory: dsp-tck
         run: ./gradlew -q shadowJar
-      - name: Start LDSC
+      - name: Start Portitor
         env:
-          LDSC_BIND: 127.0.0.1:8080
-          LDSC_PARTICIPANT_ID: did:web:localhost%3A8080
-          LDSC_PUBLIC_URL: http://127.0.0.1:8080
-          LDSC_DATASETS_FILE: tck/datasets.json
-          LDSC_ALLOW_HTTP_CALLBACKS: "true"
+          PORTITOR_BIND: 127.0.0.1:8080
+          PORTITOR_PARTICIPANT_ID: did:web:localhost%3A8080
+          PORTITOR_PUBLIC_URL: http://127.0.0.1:8080
+          PORTITOR_DATASETS_FILE: tck/datasets.json
+          PORTITOR_ALLOW_HTTP_CALLBACKS: "true"
         run: |
-          cargo build --locked -p ldsc-connector --features tck
-          nohup target/debug/ldsc-connector > ldsc.log 2>&1 &
+          cargo build --locked -p portitor-connector --features tck
+          nohup target/debug/portitor-connector > portitor.log 2>&1 &
           for _ in $(seq 50); do curl -sf http://127.0.0.1:8080/health && break; sleep 0.2; done
       - name: Run TCK
         run: |
@@ -69,5 +69,5 @@ jobs:
           name: dsp-tck-log
           path: |
             tck.log
-            ldsc.log
+            portitor.log
           retention-days: 14

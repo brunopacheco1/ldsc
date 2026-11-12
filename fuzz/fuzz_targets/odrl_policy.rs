@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: LDSC contributors
+// SPDX-FileCopyrightText: Portitor contributors
 //
 // SPDX-License-Identifier: Apache-2.0
 
@@ -7,8 +7,8 @@
 //! (fail closed).
 #![no_main]
 
-use ldsc_dsp::Offer;
-use ldsc_dsp::policy::{permissions_hold, same_terms, validate};
+use portitor_dsp::Offer;
+use portitor_dsp::policy::{permissions_hold, same_terms, validate};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {

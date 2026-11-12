@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: LDSC contributors
+# SPDX-FileCopyrightText: Portitor contributors
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -26,8 +26,8 @@ concurrency:
 env:
   RUST_TOOLCHAIN: "1.97.0"
   CARGO_TERM_COLOR: always
-  # one entry per image (ADR 0003); ldsc-identity and ldsc-issuer join when they exist
-  COMPONENTS: ldsc-connector
+  # one entry per image (ADR 0003); portitor-identity and portitor-issuer join when they exist
+  COMPONENTS: portitor-connector
 
 jobs:
   verify:
@@ -131,10 +131,10 @@ jobs:
       - name: SBOMs (CycloneDX) and third-party notices
         run: |
           cargo cyclonedx --format json --describe binaries --target x86_64-unknown-linux-musl
-          python3 scripts/third_party_notices.py "$VERSION" crates/ldsc-connector/ldsc-connector_bin.cdx.json > THIRD-PARTY-NOTICES.txt
+          python3 scripts/third_party_notices.py "$VERSION" crates/portitor-connector/portitor-connector_bin.cdx.json > THIRD-PARTY-NOTICES.txt
           wc -l THIRD-PARTY-NOTICES.txt
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - name: Build ldsc-connector (amd64, arm64)
+      - name: Build portitor-connector (amd64, arm64)
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -192,12 +192,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
       - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
-      # One image today. When ldsc-identity and ldsc-issuer exist, these steps become a matrix
+      # One image today. When portitor-identity and portitor-issuer exist, these steps become a matrix
       # over COMPONENTS, each with its own Dockerfile.
       - name: Image creation time (the tagged commit's time, so rebuilds match)
         id: created
         run: echo "time=$(git log -1 --format=%cI)" >> "$GITHUB_OUTPUT"
-      - name: Build and push ldsc-connector (amd64, arm64)
+      - name: Build and push portitor-connector (amd64, arm64)
         id: image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -205,7 +205,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           provenance: false # provenance is attested below, signed by GitHub
-          tags: ghcr.io/${{ github.repository_owner }}/ldsc-connector:${{ env.VERSION }}
+          tags: ghcr.io/${{ github.repository_owner }}/portitor-connector:${{ env.VERSION }}
           # the OCI labels live in the Dockerfile; these fill in the per-release values
           build-args: |
             VERSION=${{ env.VERSION }}
@@ -213,8 +213,8 @@ jobs:
             CREATED=${{ steps.created.outputs.time }}
           # the same keys on the multi-arch index, which registries such as GHCR display
           annotations: |
-            index:org.opencontainers.image.title=ldsc-connector
-            index:org.opencontainers.image.description=LDSC connector for the Dataspace Protocol (DSP 2025-1)
+            index:org.opencontainers.image.title=portitor-connector
+            index:org.opencontainers.image.description=Portitor connector for the Dataspace Protocol (DSP 2025-1)
             index:org.opencontainers.image.licenses=Apache-2.0
             index:org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             index:org.opencontainers.image.version=${{ env.VERSION }}
@@ -222,21 +222,21 @@ jobs:
             index:org.opencontainers.image.created=${{ steps.created.outputs.time }}
       - name: Sign the image (cosign, keyless)
         env:
-          IMAGE: ghcr.io/${{ github.repository_owner }}/ldsc-connector@${{ steps.image.outputs.digest }}
+          IMAGE: ghcr.io/${{ github.repository_owner }}/portitor-connector@${{ steps.image.outputs.digest }}
         run: cosign sign --yes "$IMAGE"
       - name: Build provenance
         id: provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-name: ghcr.io/${{ github.repository_owner }}/ldsc-connector
+          subject-name: ghcr.io/${{ github.repository_owner }}/portitor-connector
           subject-digest: ${{ steps.image.outputs.digest }}
           push-to-registry: true
       - name: SBOM attestation
         uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
-          subject-name: ghcr.io/${{ github.repository_owner }}/ldsc-connector
+          subject-name: ghcr.io/${{ github.repository_owner }}/portitor-connector
           subject-digest: ${{ steps.image.outputs.digest }}
-          sbom-path: ldsc-connector-${{ env.VERSION }}.cdx.json
+          sbom-path: portitor-connector-${{ env.VERSION }}.cdx.json
           push-to-registry: true
       - name: GitHub release
         env:
@@ -246,7 +246,7 @@ jobs:
           awk -v v="## [${VERSION}]" 'index($0, v) == 1 {on = 1; next} /^## \[/ || /^\[[^]]*\]: / {on = 0} on' CHANGELOG.md > notes.md
           {
             echo
-            echo "Image: \`ghcr.io/${GITHUB_REPOSITORY_OWNER}/ldsc-connector:${VERSION}\` (\`${{ steps.image.outputs.digest }}\`)"
+            echo "Image: \`ghcr.io/${GITHUB_REPOSITORY_OWNER}/portitor-connector:${VERSION}\` (\`${{ steps.image.outputs.digest }}\`)"
             echo "Verify it as described in docs/RELEASING.md."
           } >> notes.md
           files=(THIRD-PARTY-NOTICES.txt)
@@ -259,7 +259,7 @@ jobs:
           for c in $COMPONENTS; do files+=("$c-$VERSION.cdx.json"); done
           # the signed provenance bundle (Sigstore, SLSA v1), so it can be verified offline and found
           # by tools such as the OpenSSF Scorecard
-          cp "${{ steps.provenance.outputs.bundle-path }}" "ldsc-${VERSION}.intoto.jsonl"
-          files+=("ldsc-${VERSION}.intoto.jsonl")
-          gh release create "${GITHUB_REF_NAME}" --verify-tag --title "LDSC ${VERSION}" \
+          cp "${{ steps.provenance.outputs.bundle-path }}" "portitor-${VERSION}.intoto.jsonl"
+          files+=("portitor-${VERSION}.intoto.jsonl")
+          gh release create "${GITHUB_REF_NAME}" --verify-tag --title "Portitor ${VERSION}" \
             --notes-file notes.md "${files[@]}"

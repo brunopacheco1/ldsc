@@ -1,8 +1,8 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "LDSC management API",
-    "description": "Starts and follows contract negotiations in which this connector is the consumer. Served on its own port (LDSC_MANAGEMENT_BIND), never on the DSP port. Every call except this description needs the API key.",
+    "title": "Portitor management API",
+    "description": "Starts and follows contract negotiations in which this connector is the consumer. Served on its own port (PORTITOR_MANAGEMENT_BIND), never on the DSP port. Every call except this description needs the API key.",
     "license": {
       "name": "Apache-2.0",
       "identifier": "Apache-2.0"
@@ -326,7 +326,7 @@
       "api_key": {
         "type": "http",
         "scheme": "bearer",
-        "description": "The key from LDSC_MANAGEMENT_API_KEY_FILE: Authorization: Bearer <key>"
+        "description": "The key from PORTITOR_MANAGEMENT_API_KEY_FILE: Authorization: Bearer <key>"
       }
     }
   },

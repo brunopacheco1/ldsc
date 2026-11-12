@@ -1,12 +1,12 @@
 <!--
-SPDX-FileCopyrightText: LDSC contributors
+SPDX-FileCopyrightText: Portitor contributors
 
 SPDX-License-Identifier: Apache-2.0
 -->
 
 # AGENTS.md
 
-Instructions for AI coding agents working on LDSC (Luxembourg Data Space
+Instructions for AI coding agents working on Portitor (Luxembourg Data Space
 Connector). Humans should read `CONTRIBUTING.md`; this file adds what an
 agent needs to work safely and in line with the project.
 
@@ -28,12 +28,12 @@ Simpl-Open. Read these first:
 
 Mono repo, one version. Each component is a module (a crate in the Cargo
 workspace) and can ship as its own image. The split into images is
-decided in ADR 0003 (`ldsc-connector`, `ldsc-identity`, `ldsc-issuer`).
+decided in ADR 0003 (`portitor-connector`, `portitor-identity`, `portitor-issuer`).
 Today's crates:
 
-- `crates/ldsc-dsp`: DSP message types (plain JSON, schema-checked).
-- `crates/ldsc-dcp`: DCP self-issued tokens, did:web, JWS (ES256, PS256 only).
-- `crates/ldsc-connector`: the connector binary (HTTP adapter and routes), one image (ADR 0003).
+- `crates/portitor-dsp`: DSP message types (plain JSON, schema-checked).
+- `crates/portitor-dcp`: DCP self-issued tokens, did:web, JWS (ES256, PS256 only).
+- `crates/portitor-connector`: the connector binary (HTTP adapter and routes), one image (ADR 0003).
 - `docs/`: architecture, ADRs, roadmap, security assurance, releasing.
 - `site/`: the project website (added in 0.1).
 
