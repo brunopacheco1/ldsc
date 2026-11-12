@@ -27,6 +27,7 @@ use ldsc_dsp::{
 use serde::Serialize;
 
 pub mod negotiation;
+pub mod store;
 #[cfg(feature = "tck")]
 pub mod tck;
 
@@ -48,6 +49,8 @@ pub struct Config {
     /// the consumer chooses the address, so this widens what the connector
     /// can be made to call).
     pub allow_http_callbacks: bool,
+    /// The `SQLite` file that keeps negotiations.
+    pub db_file: std::path::PathBuf,
 }
 
 /// Why the configuration could not be read.
@@ -78,7 +81,8 @@ impl std::error::Error for ConfigError {}
 
 impl Config {
     /// Reads `LDSC_PARTICIPANT_ID`, `LDSC_PUBLIC_URL`,
-    /// `LDSC_ALLOW_HTTP_CALLBACKS` (`true` to allow) and, when set,
+    /// `LDSC_ALLOW_HTTP_CALLBACKS` (`true` to allow), `LDSC_DB_FILE`
+    /// (default `ldsc.db`) and, when set,
     /// `LDSC_DATASETS_FILE` from the environment. Without a datasets file
     /// the catalog is empty.
     ///
@@ -114,6 +118,7 @@ impl Config {
             datasets,
             allow_http_callbacks: var("LDSC_ALLOW_HTTP_CALLBACKS")
                 .is_some_and(|v| v.eq_ignore_ascii_case("true")),
+            db_file: var("LDSC_DB_FILE").map_or_else(|| "ldsc.db".into(), Into::into),
         })
     }
 }

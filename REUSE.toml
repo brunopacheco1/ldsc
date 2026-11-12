@@ -15,6 +15,7 @@ path = [
     # JSON has no comments
     "examples/*.json",
     "tck/*.json",
+    "docs/api/*.json",
 ]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "LDSC contributors"

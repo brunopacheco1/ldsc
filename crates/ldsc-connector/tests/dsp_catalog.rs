@@ -98,6 +98,7 @@ fn app() -> axum::Router {
             public_url: "https://provider.example".into(),
             datasets: tck_datasets(),
             allow_http_callbacks: false,
+            db_file: "unused.db".into(),
         },
         ports(),
     )
@@ -225,6 +226,7 @@ async fn example_datasets_file_is_valid() {
             public_url: "https://provider.example/".into(),
             datasets,
             allow_http_callbacks: false,
+            db_file: "unused.db".into(),
         },
         ports(),
     )
@@ -258,6 +260,7 @@ fn broken_definitions_stop_the_start() {
             public_url: "https://provider.example".into(),
             datasets,
             allow_http_callbacks: false,
+            db_file: "unused.db".into(),
         },
         ports(),
     )
@@ -301,14 +304,20 @@ fn config_from_variables() {
     assert_eq!(defaults.participant_id, "did:web:localhost%3A8080");
     assert_eq!(defaults.public_url, "http://localhost:8080");
     assert!(defaults.datasets.is_empty());
+    assert!(!defaults.allow_http_callbacks);
+    assert_eq!(defaults.db_file, std::path::PathBuf::from("ldsc.db"));
 
     let set = ldsc_connector::Config::from_vars(vars(&[
         ("LDSC_PARTICIPANT_ID", "did:web:p.example"),
         ("LDSC_PUBLIC_URL", "https://p.example"),
         ("LDSC_DATASETS_FILE", file),
+        ("LDSC_ALLOW_HTTP_CALLBACKS", "TRUE"),
+        ("LDSC_DB_FILE", "/data/x.db"),
     ]))
     .unwrap();
     assert_eq!(set.participant_id, "did:web:p.example");
+    assert!(set.allow_http_callbacks);
+    assert_eq!(set.db_file, std::path::PathBuf::from("/data/x.db"));
     assert_eq!(set.datasets.len(), 2);
 
     let removed = ldsc_connector::Config::from_vars(vars(&[("LDSC_DATASETS", "a,b")])).unwrap_err();
@@ -318,4 +327,37 @@ fn config_from_variables() {
         ldsc_connector::Config::from_vars(vars(&[("LDSC_DATASETS_FILE", "/nonexistent.json")]))
             .unwrap_err();
     assert!(missing.to_string().starts_with("cannot read datasets file"));
+}
+
+/// Every operation in docs/api/openapi.json is routed: the router answers
+/// neither 405 nor its own empty 404.
+#[tokio::test]
+async fn openapi_paths_are_served() {
+    let raw = include_str!("../../../docs/api/openapi.json");
+    let spec: Value = serde_json::from_str(raw).unwrap();
+    let app = app();
+    let mut count = 0;
+    for (path, ops) in spec["paths"].as_object().unwrap() {
+        let uri = path
+            .replace("{id}", "CAT0101")
+            .replace("{providerPid}", "urn:uuid:x");
+        for method in ops.as_object().unwrap().keys() {
+            let req = Request::builder()
+                .method(method.to_uppercase().as_str())
+                .uri(&uri)
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap();
+            let res = app.clone().oneshot(req).await.unwrap();
+            let status = res.status();
+            let bytes = to_bytes(res.into_body(), 1 << 20).await.unwrap();
+            assert_ne!(status, StatusCode::METHOD_NOT_ALLOWED, "{method} {path}");
+            assert!(
+                status != StatusCode::NOT_FOUND || !bytes.is_empty(),
+                "{method} {path} is not routed"
+            );
+            count += 1;
+        }
+    }
+    assert_eq!(count, 10);
 }

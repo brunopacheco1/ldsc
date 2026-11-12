@@ -109,9 +109,13 @@ all checks green, Scorecard published.
 
 ## 0.3 Contract negotiation
 
-- Provider and consumer state machines, persisted in PostgreSQL.
+- Provider and consumer state machines, persisted in a SQLite file
+  (ADR 0006); a PostgreSQL adapter follows later on the same port.
 - Minimal ODRL policy support: permit all, and one constraint type.
-- Management API to start a negotiation (consumer side).
+- Management API to start a negotiation (consumer side), on its own port
+  with an API key; its OpenAPI description is generated from the code.
+  The DSP endpoints keep the hand-written `docs/api/openapi.json`, which
+  uses the official DSP schemas.
 - Exit: DSP TCK negotiation tests green; two LDSC instances agree a contract.
 
 ## 0.4 Transfer process and HTTP data plane

@@ -11,7 +11,7 @@ version = "0.2.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/brunopacheco1/ldsc"
-rust-version = "1.85"
+rust-version = "1.89"
 
 [workspace.dependencies]
 axum = "0.8"
@@ -26,6 +26,8 @@ hyper = { version = "1", default-features = false, features = ["client", "http1"
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "tls12", "ring", "native-tokio", "logging"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "http1", "tokio"] }
 ring = "0.17"
+# SQLite compiled in (bundled), so the static musl binary needs no system library
+rusqlite = { version = "0.42", features = ["bundled"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
