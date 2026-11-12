@@ -1,0 +1,33 @@
+meta {
+  name: 3. Agreement verification
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{dsp}}/negotiations/{{providerPid}}/agreement/verification
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "@context": ["https://w3id.org/dspace/2025/1/context.jsonld"],
+    "@type": "ContractAgreementVerificationMessage",
+    "providerPid": "{{providerPid}}",
+    "consumerPid": "{{consumerPid}}"
+  }
+}
+
+assert {
+  res.status: lt 300
+}
+
+docs {
+  DSP 2025-1 Contract Negotiation, HTTPS binding: POST /negotiations/:providerPid/agreement/verification.
+  After this the provider sends the FINALIZED event; run "2. Negotiation state" again.
+}

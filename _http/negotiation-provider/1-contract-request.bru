@@ -1,0 +1,52 @@
+meta {
+  name: 1. Contract request (start)
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{dsp}}/negotiations/request
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "@context": ["https://w3id.org/dspace/2025/1/context.jsonld"],
+    "@type": "ContractRequestMessage",
+    "consumerPid": "{{consumerPid}}",
+    "offer": {
+      "@id": "{{offerId}}",
+      "@type": "Offer",
+      "target": "{{datasetId}}"
+    },
+    "callbackAddress": "{{callbackAddress}}"
+  }
+}
+
+script:pre-request {
+  // A new consumerPid for every run, so you can start as many negotiations as you like.
+  bru.setVar("consumerPid", "urn:uuid:bruno-" + Date.now());
+}
+
+script:post-response {
+  if (res.body && res.body.providerPid) {
+    bru.setVar("providerPid", res.body.providerPid);
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.body["@type"]: eq ContractNegotiation
+}
+
+docs {
+  DSP 2025-1 Contract Negotiation, HTTPS binding: POST /negotiations/request.
+  The provider calls back {{callbackAddress}}; start the fake consumer from docs/TESTING.md (port 9000) first.
+  A new consumerPid is generated on every run.
+  Saves providerPid for the next requests.
+}

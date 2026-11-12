@@ -149,7 +149,10 @@ LDSC_DB_FILE=/tmp/ldsc-manual.db cargo run -p ldsc-connector
 
 The endpoints are described in [docs/api/openapi.json](api/openapi.json)
 (OpenAPI 3.1). Any OpenAPI tool that resolves relative `$ref`s from the
-repository can show it and send requests. With `curl`:
+repository can show it and send requests. The [Bruno](https://www.usebruno.com/)
+collection in `_http/` has these requests ready, with the `single` and
+`two-connectors` environments for the setups below (put the management
+API key in the secret `apiKey` variable). With `curl`:
 
 ```sh
 curl -s localhost:8080/.well-known/dspace-version

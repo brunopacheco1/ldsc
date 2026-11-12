@@ -1,0 +1,19 @@
+meta {
+  name: List negotiations
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{mgmtUrl}}/v1/negotiations?limit=20
+  body: none
+  auth: inherit
+}
+
+params:query {
+  limit: 20
+}
+
+assert {
+  res.status: eq 200
+}

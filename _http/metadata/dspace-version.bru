@@ -1,0 +1,19 @@
+meta {
+  name: DSP version metadata
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{providerUrl}}/.well-known/dspace-version
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+}
+
+docs {
+  DSP 2025-1, Exposure of Versions: lists the protocol versions and their paths.
+}

@@ -1,0 +1,22 @@
+meta {
+  name: Dataset by id
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{dsp}}/catalog/datasets/{{datasetId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body["@type"]: eq Dataset
+}
+
+docs {
+  DSP 2025-1 Catalog Protocol, HTTPS binding: GET /catalog/datasets/:id.
+  Set datasetId in the environment (example ids: air-quality, weather-stations).
+  Debug: breakpoint in dataset (crates/ldsc-connector/src/lib.rs).
+}
