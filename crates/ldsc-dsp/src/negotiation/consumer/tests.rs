@@ -477,3 +477,42 @@ fn abort_blocks_other_steps_and_retries_lost_writes() {
     assert_eq!(status(svc.not_started(&n.consumer_pid).unwrap_err()), "400");
     assert_eq!(state(&store, &n.consumer_pid), NegotiationState::Requested);
 }
+
+/// ADR 0009: the consumer accepts only an offer whose constraints hold
+/// now, and verifies only an agreement with the terms it asked for.
+#[test]
+fn checks_offers_and_agreements() {
+    let store = Store::default();
+    let svc = ConsumerService::new(&store, AcceptAndVerify, Env::default(), CB.to_owned());
+
+    // an offer that expired before the test clock (2026-11-12)
+    let (n, req) = svc.start(PROVIDER, "did:web:p", offer()).unwrap();
+    let cpid = n.consumer_pid;
+    svc.delivered(&req, Some(&ack("p1", &cpid))).unwrap();
+    let mut expired = offer_msg("p1", &cpid);
+    expired.offer.permission[0].constraint = vec![
+        serde_json::from_value(json!(
+            {"leftOperand": "dateTime", "operator": "lt", "rightOperand": "2026-01-01"}
+        ))
+        .unwrap(),
+    ];
+    let (a, next) = svc.offer(&cpid, &expired).unwrap();
+    assert_eq!(a.state, NegotiationState::Offered);
+    let next = next.unwrap();
+    assert_eq!(next.transition, Transition::Terminate);
+    let why = next.body["reason"][0].as_str().unwrap();
+    assert!(why.contains("not satisfied"), "{why}");
+
+    // an agreement whose terms are not the ones we asked for
+    let (n, req) = svc.start(PROVIDER, "did:web:p", offer()).unwrap();
+    let cpid = n.consumer_pid;
+    svc.delivered(&req, Some(&ack("p1", &cpid))).unwrap();
+    let mut other = agreement_msg("p1", &cpid);
+    other.agreement.permission[0].action = "distribute".to_owned();
+    let (a, next) = svc.agreement(&cpid, &other).unwrap();
+    assert_eq!(a.state, NegotiationState::Agreed);
+    let next = next.unwrap();
+    assert_eq!(next.transition, Transition::Terminate);
+    let why = next.body["reason"][0].as_str().unwrap();
+    assert!(why.contains("differ"), "{why}");
+}

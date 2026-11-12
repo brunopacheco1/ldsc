@@ -29,6 +29,13 @@ versions may change behaviour and configuration.
   acceptance, verification and termination to the provider with retries.
   Consumer negotiations are kept in the same SQLite file (schema version 2;
   migrated at start).
+- Minimal ODRL policies (ADR 0009): the `dateTime` constraint with `eq`,
+  `neq`, `lt`, `lteq`, `gt`, `gteq` and the logical constraints; anything
+  else fails closed. The provider agrees only to an offer with the
+  catalog's terms whose constraints hold now, and terminates otherwise;
+  the consumer accepts only an offer whose constraints hold and verifies
+  only an agreement with the terms it asked for. A datasets file with a
+  constraint that is not understood stops the connector at start.
 - Each outgoing negotiation message is saved before it is sent (an
   outbox), on both sides, and sent again after a restart. A partner's
   message that arrives before its acknowledgement of ours is recorded is
@@ -67,6 +74,8 @@ versions may change behaviour and configuration.
 - Minimum Rust version 1.89 (was 1.85), needed by `rusqlite`.
 - A dataset definition whose offer has a `target` is refused at start;
   DSP forbids `target` on offers inside a catalog.
+- The example datasets file uses a `dateTime` constraint instead of
+  `spatial`, which is not understood yet.
 
 ## [0.2.0] - 2026-11-12
 

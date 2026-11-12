@@ -45,6 +45,14 @@ pub enum DatasetDefinitionError {
     OfferWithTarget(String),
     /// A distribution has an empty `format`.
     EmptyFormat(String),
+    /// An offer has a constraint this version does not understand, so the
+    /// provider could never agree to it (ADR 0009).
+    UnsupportedPolicy {
+        /// The dataset.
+        dataset: String,
+        /// What is not understood.
+        reason: String,
+    },
     /// A distribution names a data service this connector does not run.
     UnknownAccessService {
         /// The dataset.
@@ -65,6 +73,9 @@ impl std::fmt::Display for DatasetDefinitionError {
                 write!(f, "dataset {id:?} has an offer with a target; leave it out")
             }
             Self::EmptyFormat(id) => write!(f, "dataset {id:?} has a distribution without format"),
+            Self::UnsupportedPolicy { dataset, reason } => {
+                write!(f, "dataset {dataset:?} has an offer with an {reason}")
+            }
             Self::UnknownAccessService { dataset, service } => write!(
                 f,
                 "dataset {dataset:?} names accessService {service:?}; leave it out, the connector sets it"
@@ -77,7 +88,8 @@ impl std::error::Error for DatasetDefinitionError {}
 
 /// Checks a provider's dataset definitions against the DSP 2025-1 rules
 /// for a dataset in a catalog (at least one offer and one distribution,
-/// each distribution with a format) and makes every distribution point to
+/// each distribution with a format), checks that every offer's constraints
+/// are understood (ADR 0009), and makes every distribution point to
 /// this connector's data service, `service_id`.
 ///
 /// # Errors
@@ -103,6 +115,14 @@ pub fn prepare_datasets(
         }
         if d.has_policy.iter().any(|o| o.target.is_some()) {
             return Err(DatasetDefinitionError::OfferWithTarget(d.id.clone()));
+        }
+        for offer in &d.has_policy {
+            crate::policy::validate(offer).map_err(|e| {
+                DatasetDefinitionError::UnsupportedPolicy {
+                    dataset: d.id.clone(),
+                    reason: e.to_string(),
+                }
+            })?;
         }
         for dist in &mut d.distribution {
             if dist.format.is_empty() {
@@ -233,6 +253,13 @@ mod tests {
         other_service.distribution[0].access_service = "elsewhere".to_owned();
         let mut targeted = dataset("a");
         targeted.has_policy[0].target = Some("a".to_owned());
+        let mut spatial = dataset("a");
+        spatial.has_policy[0].permission[0].constraint = vec![
+            serde_json::from_value(serde_json::json!(
+                {"leftOperand": "spatial", "operator": "eq", "rightOperand": "LU"}
+            ))
+            .unwrap(),
+        ];
         let cases = [
             (vec![dataset("")], DatasetDefinitionError::EmptyId),
             (
@@ -254,6 +281,13 @@ mod tests {
             (
                 vec![targeted],
                 DatasetDefinitionError::OfferWithTarget("a".to_owned()),
+            ),
+            (
+                vec![spatial],
+                DatasetDefinitionError::UnsupportedPolicy {
+                    dataset: "a".to_owned(),
+                    reason: "unsupported policy: spatial eq \"LU\"".to_owned(),
+                },
             ),
             (
                 vec![other_service],

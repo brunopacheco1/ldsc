@@ -61,13 +61,30 @@ Configuration (environment variables):
 | `LDSC_MANAGEMENT_BIND` | `127.0.0.1:8081` | Address of the management API |
 | `LDSC_ALLOW_HTTP_CALLBACKS` | `false` | `true` allows `http://` addresses for consumers' callbacks and for providers; development and tests only |
 
-As provider, the connector agrees to any request for an offer in its
+As provider, the connector agrees to a request for an offer in its
 catalog, then finalizes once the consumer verifies. It sends its messages
 to the consumer's `callbackAddress` and retries 3 times; if the consumer
 cannot be reached, it terminates the negotiation.
 
 As consumer, the connector accepts the provider's offer and verifies its
 agreement. Providers send their messages to the callback endpoints above.
+
+Policies (minimal ODRL, [ADR 0009](docs/adr/0009-minimal-odrl-policies.md)):
+- A permission without constraints permits. One constraint is understood:
+  `dateTime` (when the action is exercised) with `eq`, `neq`, `lt`,
+  `lteq`, `gt` or `gteq`, and a date (`2030-12-31`, the whole day) or a
+  date and time with a time zone (`2030-12-31T23:59:59Z`). `and`,
+  `andSequence`, `or` and `xone` combine them.
+- Anything else is refused (fail closed): a datasets file that uses it
+  stops the connector at start.
+- As provider, the connector agrees only if the requested offer has the
+  same terms as the catalog offer with that `@id`, and its constraints
+  hold now. Otherwise it terminates the negotiation, saying why.
+- As consumer, it accepts a provider's offer only if its constraints hold
+  now, and verifies an agreement only if it has the terms it asked for or
+  accepted.
+- Prohibitions and duties are carried into the agreement but not enforced
+  yet.
 
 On both sides each outgoing message is saved before it is sent, and sent
 again after a restart. A partner's message that arrives before its
@@ -90,7 +107,8 @@ is set. Every call needs `Authorization: Bearer <key>`.
 | `GET /v1/negotiations?after=&limit=` | Lists negotiations, up to 100 at a time |
 | `GET /v1/openapi.json` | The OpenAPI description (no key needed); also in [docs/api/management-openapi.json](docs/api/management-openapi.json) |
 
-For example, with an offer copied from the provider's catalog:
+For example, with an offer copied unchanged from the provider's catalog
+(the provider agrees only to the catalog's terms, see below):
 
 ```sh
 curl -s -X POST localhost:8081/v1/negotiations \
@@ -98,8 +116,9 @@ curl -s -X POST localhost:8081/v1/negotiations \
   "providerAddress": "https://provider.example/dsp/2025-1",
   "providerId": "did:web:provider.example",
   "datasetId": "air-quality",
-  "offer": {"@id": "air-quality:offer:eu-only", "@type": "Offer",
-            "permission": [{"action": "use"}]}}'
+  "offer": {"@id": "air-quality:offer:until-2030", "@type": "Offer",
+            "permission": [{"action": "use", "constraint": [{"leftOperand": "dateTime",
+              "operator": "lteq", "rightOperand": "2030-12-31"}]}]}}'
 ```
 
 The image carries

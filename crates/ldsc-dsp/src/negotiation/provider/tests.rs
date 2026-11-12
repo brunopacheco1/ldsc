@@ -67,11 +67,24 @@ impl DatasetStore for Catalog {
         self.get("d1").into_iter().collect()
     }
     fn get(&self, id: &str) -> Option<Dataset> {
-        (id == "d1").then(|| Dataset {
+        // d2's offer expired before the test clock (2026-11-12)
+        let mut expired = offer(None);
+        expired.permission[0].constraint = vec![
+            serde_json::from_value(serde_json::json!(
+                {"leftOperand": "dateTime", "operator": "lt", "rightOperand": "2026-01-01"}
+            ))
+            .unwrap(),
+        ];
+        let policy = match id {
+            "d1" => offer(None),
+            "d2" => expired,
+            _ => return None,
+        };
+        Some(Dataset {
             context: None,
-            id: "d1".to_owned(),
+            id: id.to_owned(),
             kind: DatasetType,
-            has_policy: vec![offer(None)],
+            has_policy: vec![policy],
             distribution: vec![Distribution {
                 kind: DistributionType,
                 format: "HttpData-PULL".to_owned(),
@@ -309,7 +322,7 @@ fn refuses_bad_requests() {
     assert!(reason(&p.request(None, no_target, "c").unwrap_err()).contains("no target"));
 
     let mut other_dataset = request(None);
-    other_dataset.offer.target = Some("d2".to_owned());
+    other_dataset.offer.target = Some("d7".to_owned());
     assert!(p.request(None, other_dataset, "c").is_err());
 
     // unknown negotiation, and another consumer's negotiation: 404
@@ -453,4 +466,58 @@ fn proof_of_delivery_for_an_offer() {
     assert_eq!(ack.state, NegotiationState::Accepted);
     assert_eq!(out, None);
     assert!(p.pending().unwrap().is_empty());
+}
+
+/// ADR 0009: the provider agrees only to the catalog's terms, and only
+/// while their constraints hold; otherwise it terminates.
+#[test]
+fn agrees_only_to_catalog_terms_that_hold_now() {
+    let store = Store::default();
+    let p = service(&store, AgreeToCatalogOffers);
+
+    let mut expired = request(None);
+    expired.offer.target = Some("d2".to_owned());
+    expired.offer.permission[0].constraint = vec![
+        serde_json::from_value(serde_json::json!(
+            {"leftOperand": "dateTime", "operator": "lt", "rightOperand": "2026-01-01"}
+        ))
+        .unwrap(),
+    ];
+    let (_, out) = p.request(None, expired, "c").unwrap();
+    let out = out.unwrap();
+    assert_eq!(out.transition, Transition::Terminate);
+    let why = out.body["reason"][0].as_str().unwrap();
+    assert!(why.contains("not satisfied"), "{why}");
+
+    // the catalog offer's id, with its constraint left out
+    let mut altered = request(None);
+    altered.offer.target = Some("d2".to_owned());
+    let (_, out) = p.request(None, altered, "c").unwrap();
+    let out = out.unwrap();
+    assert_eq!(out.transition, Transition::Terminate);
+    let why = out.body["reason"][0].as_str().unwrap();
+    assert!(why.contains("differ"), "{why}");
+
+    // the dataset left the catalog while the consumer considered our offer
+    (&store)
+        .insert(&Negotiation {
+            provider_pid: "p9".to_owned(),
+            consumer_pid: "c1".to_owned(),
+            state: NegotiationState::Offered,
+            callback_address: "https://consumer.example/cb".to_owned(),
+            counter_party: "c".to_owned(),
+            offer: offer(Some("d9")),
+            agreement: None,
+            pending: None,
+            version: 0,
+        })
+        .unwrap();
+    let (ack, out) = p
+        .event("p9", &event("p9", NegotiationEvent::Accepted), "c")
+        .unwrap();
+    assert_eq!(ack.state, NegotiationState::Accepted);
+    let out = out.unwrap();
+    assert_eq!(out.transition, Transition::Terminate);
+    let why = out.body["reason"][0].as_str().unwrap();
+    assert!(why.contains("no longer in the catalog"), "{why}");
 }
