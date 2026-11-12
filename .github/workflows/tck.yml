@@ -3,10 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Runs the Eclipse DSP TCK (built from source at a pinned tag) against LDSC.
-# Must pass: metadata (MET), catalog (CAT) and provider negotiation (CN).
-# Consumer negotiation (CN_C) is expected to fail until the consumer side
-# lands in 0.3, and transfer (TP) until 0.4. The connector is built with the
-# test-only `tck` feature, which scripts provider decisions per dataset.
+# Must pass: metadata (MET), catalog (CAT) and contract negotiation as
+# provider (CN) and as consumer (CN_C). Transfer (TP) is expected to fail
+# until 0.4. The connector is built with the test-only `tck` feature, which
+# scripts decisions per dataset and adds the endpoint that starts consumer
+# tests.
 name: DSP TCK
 on:
   push:

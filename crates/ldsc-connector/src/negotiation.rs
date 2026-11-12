@@ -36,6 +36,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::InMemoryDatasets;
+pub use crate::consumer::{AnyConsumerDecider, AnyConsumerStore, InMemoryConsumerNegotiations};
 
 /// The identity of every caller until DSP requests are authenticated with
 /// DCP (release 0.5). It is the `assignee` of agreements until then.
@@ -182,8 +183,9 @@ impl std::fmt::Debug for AnyStore {
     }
 }
 
-/// What [`Sender::post`] returns.
-pub type SendFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+/// What [`Sender::post`] returns: the counter-party's JSON answer
+/// (`Value::Null` if it sent none or no JSON), or why the send failed.
+pub type SendFuture<'a> = Pin<Box<dyn Future<Output = Result<Value, String>> + Send + 'a>>;
 
 /// Port: sends a message to a counter-party and waits for its HTTP 2xx.
 pub trait Sender: Send + Sync {
@@ -191,8 +193,13 @@ pub trait Sender: Send + Sync {
     fn post<'a>(&'a self, url: &'a str, body: &'a Value) -> SendFuture<'a>;
 }
 
-/// How long one POST to a counter-party may take.
+/// How long one POST to a counter-party may take, answer included.
 const SEND_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The largest answer read from a counter-party. A `ContractNegotiation`
+/// is well under 1 KiB; the limit stops a counter-party from making the
+/// connector buffer an unbounded body.
+const MAX_ANSWER: usize = 64 * 1024;
 
 type HttpsClient = Client<hyper_rustls::HttpsConnector<HttpConnector>, Full<Bytes>>;
 
@@ -275,18 +282,32 @@ impl Sender for HttpSender {
                 .header(hyper::header::CONTENT_TYPE, "application/json")
                 .body(Full::new(Bytes::from(bytes)))
                 .map_err(|e| e.to_string())?;
-            let response = tokio::time::timeout(SEND_TIMEOUT, self.client.request(request))
+            tokio::time::timeout(SEND_TIMEOUT, self.exchange(request))
                 .await
                 .map_err(|_| format!("no answer within {}s", SEND_TIMEOUT.as_secs()))?
-                .map_err(|e| e.to_string())?;
-            // the body is not read: the counter-party controls its size
-            let status = response.status();
-            if status.is_success() {
-                Ok(())
-            } else {
-                Err(format!("HTTP {status}"))
-            }
         })
+    }
+}
+
+impl HttpSender {
+    async fn exchange(&self, request: hyper::Request<Full<Bytes>>) -> Result<Value, String> {
+        use http_body_util::BodyExt as _;
+        let response = self
+            .client
+            .request(request)
+            .await
+            .map_err(|e| e.to_string())?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(format!("HTTP {status}"));
+        }
+        // read at most MAX_ANSWER bytes: the counter-party controls the size
+        let body = http_body_util::Limited::new(response.into_body(), MAX_ANSWER)
+            .collect()
+            .await
+            .map_err(|e| format!("answer not read: {e}"))?
+            .to_bytes();
+        Ok(serde_json::from_slice(&body).unwrap_or(Value::Null))
     }
 }
 
@@ -338,6 +359,10 @@ pub struct Ports {
     pub guard: Arc<dyn MessageGuard + Send + Sync>,
     /// Retry policy for outgoing messages.
     pub retry: Retry,
+    /// Where the consumer side keeps its negotiations.
+    pub consumer_store: AnyConsumerStore,
+    /// The consumer's decisions.
+    pub consumer_decider: AnyConsumerDecider,
 }
 
 impl std::fmt::Debug for Ports {
@@ -349,10 +374,10 @@ impl std::fmt::Debug for Ports {
 }
 
 impl Ports {
-    /// In-memory store (tests and development), no extra message rules,
-    /// and the default decider:
-    /// agree to any offer from the catalog. With the `tck` feature the
-    /// decider follows the DSP TCK scripts instead.
+    /// In-memory stores (tests and development), no extra message rules,
+    /// and the default deciders: as provider, agree to any offer from the
+    /// catalog; as consumer, accept offers and verify agreements. With the
+    /// `tck` feature the deciders follow the DSP TCK scripts instead.
     #[must_use]
     pub fn new(sender: Arc<dyn Sender>) -> Self {
         Self {
@@ -361,6 +386,8 @@ impl Ports {
             sender,
             guard: Arc::new(AllowAll),
             retry: Retry::default(),
+            consumer_store: AnyConsumerStore(Arc::new(InMemoryConsumerNegotiations::default())),
+            consumer_decider: default_consumer_decider(),
         }
     }
 }
@@ -375,6 +402,16 @@ fn default_decider() -> AnyDecider {
     AnyDecider(Arc::new(
         ldsc_dsp::negotiation::provider::AgreeToCatalogOffers,
     ))
+}
+
+#[cfg(feature = "tck")]
+fn default_consumer_decider() -> AnyConsumerDecider {
+    AnyConsumerDecider(Arc::new(crate::tck::TckConsumerDecider))
+}
+
+#[cfg(not(feature = "tck"))]
+fn default_consumer_decider() -> AnyConsumerDecider {
+    AnyConsumerDecider(Arc::new(ldsc_dsp::negotiation::consumer::AcceptAndVerify))
 }
 
 type Service = ProviderService<AnyStore, AnyDecider, InMemoryDatasets, SystemEnvironment>;
@@ -435,7 +472,7 @@ impl Provider {
     async fn deliver(self: Arc<Self>, mut out: Outgoing) {
         loop {
             let next = match self.send(&out).await {
-                Ok(()) => self.service.delivered(&out),
+                Ok(_) => self.service.delivered(&out),
                 // DSP: errors answering a termination may be ignored
                 Err(error) if out.transition == Transition::Terminate => {
                     tracing::warn!(pid = %out.provider_pid, %error, "termination not acknowledged");
@@ -459,36 +496,51 @@ impl Provider {
         }
     }
 
-    async fn send(&self, out: &Outgoing) -> Result<(), String> {
-        let message_type = out
-            .body
-            .get("@type")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        self.guard
-            .check(Direction::Outbound, message_type, &out.body)
-            .map_err(|r| r.to_string())?;
-        let mut delay = self.retry.first_delay;
-        let mut last = String::from("not sent");
-        for attempt in 0..self.retry.attempts.max(1) {
-            if attempt > 0 {
-                tokio::time::sleep(delay).await;
-                delay = delay.saturating_mul(2);
-            }
-            match self.sender.post(&out.url, &out.body).await {
-                Ok(()) => return Ok(()),
-                Err(e) => last = e,
-            }
-        }
-        Err(last)
+    async fn send(&self, out: &Outgoing) -> Result<Value, String> {
+        send(&*self.sender, &*self.guard, self.retry, &out.url, &out.body).await
     }
 }
 
-fn invalid(provider_pid: &str, consumer_pid: &str, reason: &str) -> ContractNegotiationError {
+/// Checks `body` with the guard, then POSTs it to `url`, retrying as
+/// `retry` says. Returns the counter-party's answer.
+pub(crate) async fn send(
+    sender: &dyn Sender,
+    guard: &(dyn MessageGuard + Send + Sync),
+    retry: Retry,
+    url: &str,
+    body: &Value,
+) -> Result<Value, String> {
+    let message_type = body
+        .get("@type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    guard
+        .check(Direction::Outbound, message_type, body)
+        .map_err(|r| r.to_string())?;
+    let mut delay = retry.first_delay;
+    let mut last = String::from("not sent");
+    for attempt in 0..retry.attempts.max(1) {
+        if attempt > 0 {
+            tokio::time::sleep(delay).await;
+            delay = delay.saturating_mul(2);
+        }
+        match sender.post(url, body).await {
+            Ok(answer) => return Ok(answer),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
+pub(crate) fn invalid(
+    provider_pid: &str,
+    consumer_pid: &str,
+    reason: &str,
+) -> ContractNegotiationError {
     ContractNegotiationError::new(provider_pid, consumer_pid, "400", reason)
 }
 
-fn bad_request(e: ContractNegotiationError) -> Response {
+pub(crate) fn bad_request(e: ContractNegotiationError) -> Response {
     (StatusCode::BAD_REQUEST, Json(e)).into_response()
 }
 
@@ -510,7 +562,7 @@ fn finish(
     }
 }
 
-fn failed(failure: Failure) -> Response {
+pub(crate) fn failed(failure: Failure) -> Response {
     match failure {
         Failure::BadRequest(e) => (StatusCode::BAD_REQUEST, Json(e)).into_response(),
         Failure::NotFound(e) => (StatusCode::NOT_FOUND, Json(e)).into_response(),

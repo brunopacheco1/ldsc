@@ -20,12 +20,14 @@ use axum::{Json, Router};
 use ldsc_dsp::catalog::{
     CatalogService, DatasetDefinitionError, DatasetStore, Outcome, prepare_datasets,
 };
+use ldsc_dsp::negotiation::provider::Failure;
 use ldsc_dsp::{
     Binding, CatalogError, CatalogRequestMessage, Dataset, ProtocolVersion, VERSION,
     VersionResponse,
 };
 use serde::Serialize;
 
+pub mod consumer;
 pub mod negotiation;
 pub mod store;
 #[cfg(feature = "tck")]
@@ -35,6 +37,10 @@ pub use negotiation::{HttpSender, Ports};
 
 /// Path prefix of the DSP 2025-1 endpoints.
 pub const DSP_PATH: &str = "/dsp/2025-1";
+
+/// Path prefix of the consumer's callback endpoints (below [`DSP_PATH`]).
+/// Providers send their messages for our negotiations here.
+pub const CALLBACK_PATH: &str = "/dsp/2025-1/callback";
 
 /// Static configuration of one connector.
 #[derive(Debug, Clone)]
@@ -159,6 +165,38 @@ struct AppState {
     versions: VersionResponse,
 }
 
+/// Starts contract negotiations as consumer. Must be used inside the Tokio
+/// runtime: the messages are sent in the background.
+#[derive(Clone)]
+pub struct Negotiator(Arc<consumer::Consumer>);
+
+impl std::fmt::Debug for Negotiator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Negotiator")
+    }
+}
+
+impl Negotiator {
+    /// Starts a negotiation for `offer` (its `target` names the dataset)
+    /// with the provider whose DSP endpoint is `provider_address`, for
+    /// example `https://provider.example/dsp/2025-1`. Returns the new
+    /// negotiation in state `REQUESTED`; the request is sent in the
+    /// background.
+    ///
+    /// # Errors
+    ///
+    /// The address is not an allowed URL, the offer has no target or no
+    /// rules, or the store failed.
+    pub fn start(
+        &self,
+        provider_address: &str,
+        provider_id: &str,
+        offer: ldsc_dsp::Offer,
+    ) -> Result<ldsc_dsp::negotiation::consumer::ConsumerNegotiation, Box<Failure>> {
+        self.0.start(provider_address, provider_id, offer)
+    }
+}
+
 /// Builds the HTTP router (the HTTPS binding adapter), with the
 /// negotiation endpoints on `ports`.
 ///
@@ -169,10 +207,28 @@ struct AppState {
 ///
 /// A dataset definition breaks a DSP rule (see [`prepare_datasets`]).
 pub fn router(config: &Config, ports: Ports) -> Result<Router, DatasetDefinitionError> {
+    build(config, ports).map(|(router, _)| router)
+}
+
+/// Like [`router`], and also returns the handle that starts negotiations
+/// as consumer.
+///
+/// # Errors
+///
+/// A dataset definition breaks a DSP rule (see [`prepare_datasets`]).
+pub fn build(
+    config: &Config,
+    ports: Ports,
+) -> Result<(Router, Negotiator), DatasetDefinitionError> {
     let endpoint_url = format!("{}{DSP_PATH}", config.public_url.trim_end_matches('/'));
     let service_id = endpoint_url.clone();
     let datasets = prepare_datasets(config.datasets.clone(), &service_id)?;
     let datasets = InMemoryDatasets::new(datasets);
+    let consumer = Arc::new(consumer::Consumer::new(
+        &ports,
+        format!("{}{CALLBACK_PATH}", config.public_url.trim_end_matches('/')),
+        config.allow_http_callbacks,
+    ));
     let provider = Arc::new(negotiation::Provider::new(
         ports,
         datasets.clone(),
@@ -196,7 +252,8 @@ pub fn router(config: &Config, ports: Ports) -> Result<Router, DatasetDefinition
             auth: None,
         }],
     };
-    Ok(Router::new()
+    let negotiator = Negotiator(Arc::clone(&consumer));
+    let router = Router::new()
         .route("/.well-known/dspace-version", get(version))
         .route(
             &format!("{DSP_PATH}/catalog/request"),
@@ -205,7 +262,25 @@ pub fn router(config: &Config, ports: Ports) -> Result<Router, DatasetDefinition
         .route(&format!("{DSP_PATH}/catalog/datasets/{{id}}"), get(dataset))
         .route("/health", get(|| async { "ok" }))
         .with_state(Arc::new(AppState { catalog, versions }))
-        .merge(negotiation_routes(provider)))
+        .merge(negotiation_routes(provider))
+        .merge(callback_routes(consumer));
+    Ok((router, negotiator))
+}
+
+fn callback_routes(consumer: Arc<consumer::Consumer>) -> Router {
+    let n = format!("{CALLBACK_PATH}/negotiations");
+    let router = Router::new()
+        .route(&format!("{n}/{{pid}}"), get(consumer::get))
+        .route(&format!("{n}/{{pid}}/offers"), post(consumer::offer))
+        .route(&format!("{n}/{{pid}}/agreement"), post(consumer::agreement))
+        .route(&format!("{n}/{{pid}}/events"), post(consumer::event))
+        .route(
+            &format!("{n}/{{pid}}/termination"),
+            post(consumer::terminate),
+        );
+    #[cfg(feature = "tck")]
+    let router = router.route("/tck/negotiations", post(tck::initiate));
+    router.with_state(consumer)
 }
 
 fn negotiation_routes(provider: Arc<negotiation::Provider>) -> Router {

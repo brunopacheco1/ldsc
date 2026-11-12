@@ -30,9 +30,14 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: |
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo clippy -p ldsc-connector --features tck --all-targets --locked -- -D warnings
       - name: Test
-        run: cargo test --workspace --locked
+        run: |
+          cargo test --workspace --locked
+          # the TCK scripts (test-only feature, never in a release build)
+          cargo test -p ldsc-connector --features tck --locked
       - name: Domain crates have no I/O dependencies (ADR 0004)
         run: |
           for c in ldsc-dsp ldsc-dcp; do

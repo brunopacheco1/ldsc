@@ -40,7 +40,7 @@ impl Sender for FakeSender {
             if fail {
                 Err("unreachable".to_owned())
             } else {
-                Ok(())
+                Ok(Value::Null)
             }
         })
     }

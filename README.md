@@ -41,6 +41,11 @@ The DSP endpoints follow the HTTPS bindings of
 | `POST /dsp/2025-1/negotiations/{providerPid}/events` | Consumer accepts an offer |
 | `POST /dsp/2025-1/negotiations/{providerPid}/agreement/verification` | Consumer verifies the agreement |
 | `POST /dsp/2025-1/negotiations/{providerPid}/termination` | Consumer ends a negotiation |
+| `GET /dsp/2025-1/callback/negotiations/{consumerPid}` | Returns the state of a negotiation this connector started as consumer |
+| `POST /dsp/2025-1/callback/negotiations/{consumerPid}/offers` | Provider sends an offer |
+| `POST /dsp/2025-1/callback/negotiations/{consumerPid}/agreement` | Provider sends the agreement |
+| `POST /dsp/2025-1/callback/negotiations/{consumerPid}/events` | Provider finalizes |
+| `POST /dsp/2025-1/callback/negotiations/{consumerPid}/termination` | Provider ends a negotiation |
 | `GET /health` | Returns `ok` while the process runs |
 
 Configuration (environment variables):
@@ -49,15 +54,24 @@ Configuration (environment variables):
 |---|---|---|
 | `LDSC_BIND` | `0.0.0.0:8080` | Address to listen on |
 | `LDSC_PARTICIPANT_ID` | `did:web:localhost%3A8080` | Participant id (a DID) |
-| `LDSC_PUBLIC_URL` | `http://localhost:8080` | Public base URL; the DSP endpoint is this plus `/dsp/2025-1` |
+| `LDSC_PUBLIC_URL` | `http://localhost:8080` | Public base URL; the DSP endpoint is this plus `/dsp/2025-1`, the consumer callback address this plus `/dsp/2025-1/callback` |
 | `LDSC_DATASETS_FILE` | none (empty catalog) | JSON file with the datasets to offer |
 | `LDSC_DB_FILE` | `ldsc.db` (`/data/ldsc.db` in the image) | SQLite file that keeps negotiations; one connector per file |
-| `LDSC_ALLOW_HTTP_CALLBACKS` | `false` | `true` lets consumers give `http://` callback addresses; development and tests only |
+| `LDSC_ALLOW_HTTP_CALLBACKS` | `false` | `true` allows `http://` addresses for consumers' callbacks and for providers; development and tests only |
 
 As provider, the connector agrees to any request for an offer in its
 catalog, then finalizes once the consumer verifies. It sends its messages
 to the consumer's `callbackAddress` and retries 3 times; if the consumer
-cannot be reached, it terminates the negotiation. The image carries
+cannot be reached, it terminates the negotiation.
+
+As consumer, the connector accepts the provider's offer and verifies its
+agreement. Providers send their messages to the callback endpoints above.
+A message that does not fit the current state yet, because our own
+message is still being acknowledged, waits up to 3 seconds for it. The
+management API to start a negotiation as consumer comes in the next
+change of 0.3; until then only the test build starts one.
+
+The image carries
 Mozilla's CA certificate bundle (from Debian, MPL-2.0) to verify `https`
 callback addresses.
 

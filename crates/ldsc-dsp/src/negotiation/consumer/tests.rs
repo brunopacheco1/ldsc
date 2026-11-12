@@ -212,6 +212,7 @@ fn counter_offer_and_terminations() {
     let (_, counter) = svc.offer(&cpid, offer_msg("p1", &cpid)).unwrap();
     let counter = counter.unwrap();
     assert_eq!(counter.body["providerPid"], "p1");
+    assert!(counter.body.get("callbackAddress").is_none());
     assert_eq!(counter.body["offer"]["@id"], "o2");
     svc.delivered(&counter, None).unwrap();
     assert_eq!(state(&store, &cpid), NegotiationState::Requested);
@@ -307,6 +308,10 @@ fn invalid_provider_messages_are_refused() {
         "400"
     );
     assert_eq!(state(&store, &cpid), NegotiationState::Offered);
+    // an agreement for another dataset
+    let mut other = agreement_msg("p1", &cpid);
+    other.agreement.target = "d2".into();
+    assert_eq!(status(svc.agreement(&cpid, other).unwrap_err()), "400");
 }
 
 #[test]
@@ -315,6 +320,9 @@ fn bad_starts() {
     let svc = ConsumerService::new(&store, AcceptAndVerify, Env::default(), CB.to_owned());
     let mut o = offer();
     o.target = None;
+    assert_eq!(status(svc.start(PROVIDER, "p", o).unwrap_err()), "400");
+    let mut o = offer();
+    o.permission.clear();
     assert_eq!(status(svc.start(PROVIDER, "p", o).unwrap_err()), "400");
 
     let (n, req) = svc.start(PROVIDER, "p", offer()).unwrap();

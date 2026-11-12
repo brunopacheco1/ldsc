@@ -4,8 +4,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Fail unless the DSP TCK log shows the implemented test groups passing.
 
-Implemented: metadata (MET), catalog (CAT) and the provider side of
-contract negotiation (CN).
+Implemented: metadata (MET), catalog (CAT) and contract negotiation as
+provider (CN) and as consumer (CN_C).
 
 The TCK prints one line per test with its display name, for example
 "CAT:01-01: Verify catalog request". A line that names a required test and
@@ -16,9 +16,11 @@ import re
 import sys
 from pathlib import Path
 
-REQUIRED = ["MET:01-01", "CAT:01-01", "CAT:01-02", "CAT:01-03"] + [
-    f"CN:0{group}-0{test}" for group, count in ((1, 4), (2, 7), (3, 4)) for test in range(1, count + 1)
-]
+REQUIRED = (
+    ["MET:01-01", "CAT:01-01", "CAT:01-02", "CAT:01-03"]
+    + [f"CN:0{group}-0{test}" for group, count in ((1, 4), (2, 7), (3, 4)) for test in range(1, count + 1)]
+    + [f"CN_C:0{group}-0{test}" for group, count in ((1, 4), (2, 6), (3, 6)) for test in range(1, count + 1)]
+)
 FAILURE = re.compile(r"fail|error|exception", re.IGNORECASE)
 
 

@@ -37,9 +37,11 @@ Check each item and keep the answers in your own runbook.
   [README](../README.md#interface)). The connector refuses to start if a
   definition breaks a DSP rule, so test the file before a rollout.
 - [ ] **Storage.** A persistent volume for `/data` (negotiations, SQLite).
-- [ ] **Network.** Inbound: partners reach the DSP endpoints through your
-  proxy. Outbound: the connector calls the callback addresses partners
-  give it; allow only what it needs (see [Security](#4-security)).
+- [ ] **Network.** Inbound: partners reach the DSP endpoints, including
+  the consumer callbacks under `/dsp/2025-1/callback`, through your proxy.
+  Outbound: the connector calls the callback addresses partners give it
+  and, as consumer, the providers' DSP endpoints; allow only what it needs
+  (see [Security](#4-security)).
 - [ ] **Trust.** Partners' TLS certificates must chain to a CA in the
   image's bundle, or to a private CA you add (see [Private CAs](#private-cas)).
 
@@ -129,7 +131,8 @@ of datasets and the database file.
 
 | Log message (level) | Meaning | What to do |
 |---|---|---|
-| `consumer not reachable; terminating` (WARN) | A message to a partner failed after 4 tries (0.5 s, 1 s, 2 s apart); the negotiation is terminated | Check the partner's callback address, DNS, TLS trust and your egress rules |
+| `consumer not reachable; terminating` or `provider not reachable; terminating` (WARN) | A message to a partner failed after 4 tries (0.5 s, 1 s, 2 s apart); the negotiation is terminated | Check the partner's address, DNS, TLS trust and your egress rules |
+| `provider not reachable; negotiation not started` (WARN) | The first request of a negotiation we started as consumer failed after 4 tries; it ends without a message, as the provider never knew it | Same as above |
 | `termination not acknowledged` (WARN) | The partner did not take a termination; DSP allows this, the negotiation is terminated anyway | Nothing, unless it repeats for one partner |
 | `no CA certificates: https callbacks will fail` (WARN, at start) | The CA bundle was not found (for example `SSL_CERT_DIR` points to an empty folder) | Fix the mount or the variable |
 | `negotiation store failed` (ERROR) | The SQLite file could not be read or written; partners get HTTP 500 | Check disk space and the `/data` volume |

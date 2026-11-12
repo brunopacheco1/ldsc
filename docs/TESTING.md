@@ -49,7 +49,9 @@ Where the tests are:
 - **Connector** (`crates/ldsc-connector`): HTTP tests drive the real router
   in memory (`tower::ServiceExt::oneshot`), with fake adapters for what
   leaves the process. `tests/dsp_negotiation.rs`, for example, records the
-  messages the provider would send instead of sending them. The SQLite
+  messages the provider would send instead of sending them;
+  `tests/dsp_consumer.rs` does the same for the consumer side, with a fake
+  provider, and checks every message against the DSP JSON Schemas. The SQLite
   store is tested on an in-memory database and on a real file.
 - `tests/dsp_catalog.rs` also checks that every path in
   [docs/api/openapi.json](api/openapi.json) is served.
@@ -80,14 +82,16 @@ command above but not counted.
 The Eclipse DSP Technology Compatibility Kit (TCK) acts as the other
 connector and checks that LDSC follows DSP 2025-1. The `DSP TCK` workflow
 builds it from source at a pinned commit. Required today: metadata (MET),
-catalog (CAT) and provider negotiation (CN:01 to CN:03). Consumer
-negotiation (CN_C) and transfer (TP) are expected to fail until they are
-built.
+catalog (CAT) and contract negotiation as provider (CN:01 to CN:03) and
+as consumer (CN_C:01 to CN_C:03). Transfer (TP) is expected to fail until
+it is built.
 
 In remote mode the TCK expects the connector to act differently per
-dataset (for example, terminate instead of agree). LDSC does this only
+dataset (for example, terminate instead of agree), and starts each
+consumer test with a POST to `/tck/negotiations`. LDSC does both only
 when built with the test-only `tck` feature (`src/tck.rs`); release builds
-never contain it.
+never contain it. CI also runs `cargo test` and `cargo clippy` with that
+feature.
 
 To run it locally:
 

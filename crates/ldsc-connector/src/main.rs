@@ -32,10 +32,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     if config.allow_http_callbacks {
         tracing::warn!("http callback addresses allowed (LDSC_ALLOW_HTTP_CALLBACKS)");
     }
-    let store = ldsc_connector::store::SqliteNegotiations::open(&config.db_file)
-        .map_err(|e| format!("cannot open {}: {e}", config.db_file.display()))?;
+    let store = Arc::new(
+        ldsc_connector::store::SqliteNegotiations::open(&config.db_file)
+            .map_err(|e| format!("cannot open {}: {e}", config.db_file.display()))?,
+    );
     let mut ports = ldsc_connector::Ports::new(Arc::new(sender));
-    ports.store = ldsc_connector::negotiation::AnyStore(Arc::new(store));
+    ports.store = ldsc_connector::negotiation::AnyStore(Arc::clone(&store) as _);
+    ports.consumer_store = ldsc_connector::consumer::AnyConsumerStore(store);
     let app = ldsc_connector::router(&config, ports)?;
     let bind = std::env::var("LDSC_BIND").unwrap_or_else(|_| "0.0.0.0:8080".to_owned());
     let listener = tokio::net::TcpListener::bind(&bind).await?;

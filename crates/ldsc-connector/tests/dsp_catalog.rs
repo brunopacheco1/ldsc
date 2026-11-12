@@ -340,7 +340,8 @@ async fn openapi_paths_are_served() {
     for (path, ops) in spec["paths"].as_object().unwrap() {
         let uri = path
             .replace("{id}", "CAT0101")
-            .replace("{providerPid}", "urn:uuid:x");
+            .replace("{providerPid}", "urn:uuid:x")
+            .replace("{consumerPid}", "urn:uuid:y");
         for method in ops.as_object().unwrap().keys() {
             let req = Request::builder()
                 .method(method.to_uppercase().as_str())
@@ -359,5 +360,5 @@ async fn openapi_paths_are_served() {
             count += 1;
         }
     }
-    assert_eq!(count, 10);
+    assert_eq!(count, 15);
 }

@@ -173,7 +173,8 @@ impl<S: ConsumerStore, D: ConsumerDecider, E: Environment> ConsumerService<S, D,
     ///
     /// # Errors
     ///
-    /// The offer has no target, or the store failed.
+    /// The offer has no target, no permission and no prohibition, or the
+    /// store failed.
     pub fn start(
         &self,
         provider_address: &str,
@@ -182,6 +183,11 @@ impl<S: ConsumerStore, D: ConsumerDecider, E: Environment> ConsumerService<S, D,
     ) -> Result<(ConsumerNegotiation, Outgoing), Failure> {
         if offer.target.as_deref().is_none_or(str::is_empty) {
             return Err(bad("", "", "the offer has no target"));
+        }
+        // DSP 2025-1 JSON Schema (contract-schema.json, MessageOffer): an
+        // offer in a message has a permission or a prohibition
+        if offer.permission.is_empty() && offer.prohibition.is_empty() {
+            return Err(bad("", "", "the offer has no permission or prohibition"));
         }
         let state = next_state(None, Transition::Request, Role::Consumer)
             .map_err(|e| bad("", "", &e.to_string()))?;
@@ -247,6 +253,13 @@ impl<S: ConsumerStore, D: ConsumerDecider, E: Environment> ConsumerService<S, D,
     pub fn agreement(&self, consumer_pid: &str, msg: ContractAgreementMessage) -> Handled {
         let mut n = self.load(consumer_pid)?;
         check_ids(&mut n, &msg.provider_pid, Some(&msg.consumer_pid))?;
+        if msg.agreement.target != n.dataset_id() {
+            return Err(bad(
+                &msg.provider_pid,
+                &n.consumer_pid,
+                "the agreement is for another dataset",
+            ));
+        }
         let from = n.state;
         n.state = transit(&n, Transition::Agree)?;
         n.agreement = Some(msg.agreement);
@@ -369,7 +382,7 @@ impl<S: ConsumerStore, D: ConsumerDecider, E: Environment> ConsumerService<S, D,
             ConsumerDecision::Terminate => Self::termination(n, "terminated by the consumer"),
             ConsumerDecision::Accept => Self::accept(n),
             ConsumerDecision::Verify => Self::verification(n),
-            ConsumerDecision::Request => self.counter_offer(n),
+            ConsumerDecision::Request => Self::counter_offer(n),
         }
     }
 
@@ -395,14 +408,16 @@ impl<S: ConsumerStore, D: ConsumerDecider, E: Environment> ConsumerService<S, D,
         outgoing(n, "agreement/verification", &msg, Transition::Verify)
     }
 
-    fn counter_offer(&self, n: &ConsumerNegotiation) -> Option<Outgoing> {
+    fn counter_offer(n: &ConsumerNegotiation) -> Option<Outgoing> {
         let msg = ContractRequestMessage {
             context: Context::default(),
             kind: ContractRequestMessageType,
             consumer_pid: n.consumer_pid.clone(),
             provider_pid: n.provider_pid.clone(),
             offer: n.offer.clone(),
-            callback_address: Some(self.callback_address.clone()),
+            // DSP 2025-1 JSON Schema: a request has a callbackAddress or a
+            // providerPid, never both; the provider knows the address
+            callback_address: None,
         };
         outgoing(n, "request", &msg, Transition::Request)
     }
