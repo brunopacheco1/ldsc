@@ -12,6 +12,11 @@ versions may change behaviour and configuration.
 
 ## [Unreleased]
 
+### Added
+- VS Code debugging: shared `.vscode/launch.json` (CodeLLDB) for the connector
+  and every test target, tasks, and recommended extensions. See
+  [TESTING.md](docs/TESTING.md#debugging-in-vs-code).
+
 ## [0.3.0] - 2026-11-12
 
 ### Added

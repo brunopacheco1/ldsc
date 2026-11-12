@@ -1,0 +1,4 @@
+{
+  // Rust language support, and the LLDB debugger used by launch.json.
+  "recommendations": ["rust-lang.rust-analyzer", "vadimcn.vscode-lldb"]
+}
