@@ -23,7 +23,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use portitor_dcp::credential::Profile;
-use portitor_dcp::holder::{AccessToken, Validity, sign_presentation};
+use portitor_dcp::holder::{AccessToken, TokenFrame, sign_presentation};
 use portitor_dcp::message::{PresentationQueryMessage, PresentationResponseMessage, QueryError};
 use portitor_dcp::scope::Scope;
 use portitor_runtime::api_key::problem;
@@ -160,15 +160,15 @@ fn presentations(
         if of_profile.is_empty() {
             continue;
         }
-        let validity = Validity {
+        let frame = TokenFrame {
             audience: verifier,
-            id: &new_uuid(),
+            jti: &new_uuid(),
             issued_at: now,
             expires_at: now + TOKEN_SECONDS,
         };
         jwts.push(sign_presentation(
             identity.signer(),
-            validity,
+            frame,
             profile,
             &of_profile,
         )?);

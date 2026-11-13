@@ -371,7 +371,7 @@ impl Presentation {
                 "envelope around a VC 1.1 presentation",
             ));
         }
-        let (envelope_validity, envelope_audience) = Self::claims_of(&claims);
+        let (envelope_validity, envelope_audience) = Self::validity_and_audience(&claims);
         presentation.validity = presentation.validity.narrow(envelope_validity);
         presentation.audience.extend(envelope_audience);
         presentation.signed.push(jwt.to_owned());
@@ -401,7 +401,7 @@ impl Presentation {
         if credentials.iter().any(|c| c.profile != profile) {
             return Err(CredentialError::Invalid("credentials of another profile"));
         }
-        let (validity, audience) = Self::claims_of(&claims);
+        let (validity, audience) = Self::validity_and_audience(&claims);
         Ok(Self {
             profile,
             holder: holder.to_owned(),
@@ -413,7 +413,7 @@ impl Presentation {
     }
 
     /// `nbf`, `exp` and `aud` of a presentation JWT.
-    fn claims_of(claims: &Map<String, Value>) -> (Validity, Vec<String>) {
+    fn validity_and_audience(claims: &Map<String, Value>) -> (Validity, Vec<String>) {
         let validity = Validity {
             from: number(claims, "nbf"),
             until: number(claims, "exp"),

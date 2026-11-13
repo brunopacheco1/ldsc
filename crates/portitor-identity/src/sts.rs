@@ -31,7 +31,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::{Form, Json};
 use portitor_dcp::Claims;
-use portitor_dcp::holder::{AccessToken, Validity};
+use portitor_dcp::holder::{AccessToken, TokenFrame};
 use portitor_dcp::scope::Scope;
 use portitor_runtime::system::{new_uuid, now_secs};
 use serde::{Deserialize, Serialize};
@@ -132,9 +132,9 @@ fn issue(identity: &Identity, request: TokenRequest) -> Result<TokenResponse, Re
         ));
     };
     let now = now_secs();
-    let validity = Validity {
+    let frame = TokenFrame {
         audience: &audience,
-        id: &new_uuid(),
+        jti: &new_uuid(),
         issued_at: now,
         expires_at: now + TOKEN_SECONDS,
     };
@@ -146,7 +146,7 @@ fn issue(identity: &Identity, request: TokenRequest) -> Result<TokenResponse, Re
                 "send bearer_access_scope or token, not both".to_owned(),
             ));
         }
-        (Some(scopes), None) => Some(access_token(identity, validity, &scopes)?),
+        (Some(scopes), None) => Some(access_token(identity, frame, &scopes)?),
         (None, Some(token)) => Some(token),
         (None, None) => None,
     };
@@ -154,8 +154,8 @@ fn issue(identity: &Identity, request: TokenRequest) -> Result<TokenResponse, Re
         iss: identity.did.clone(),
         sub: identity.did.clone(),
         aud: audience.clone(),
-        jti: validity.id.to_owned(),
-        exp: validity.expires_at,
+        jti: frame.jti.to_owned(),
+        exp: frame.expires_at,
         iat: now,
         nbf: None,
         token: inner,
@@ -172,12 +172,12 @@ fn issue(identity: &Identity, request: TokenRequest) -> Result<TokenResponse, Re
     })
 }
 
-/// An access token for `validity.audience` that allows the
+/// An access token for `frame.audience` that allows the
 /// space-separated `scopes`, each of which must be a scope this
 /// component understands.
 fn access_token(
     identity: &Identity,
-    validity: Validity<'_>,
+    frame: TokenFrame<'_>,
     scopes: &str,
 ) -> Result<String, Refusal> {
     let scopes: Vec<&str> = scopes.split_whitespace().collect();
@@ -193,9 +193,9 @@ fn access_token(
     }
     AccessToken::new(
         &identity.did,
-        Validity {
-            id: &new_uuid(),
-            ..validity
+        TokenFrame {
+            jti: &new_uuid(),
+            ..frame
         },
         &scopes,
     )
