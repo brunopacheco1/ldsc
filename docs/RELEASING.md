@@ -13,16 +13,30 @@ runs [`.github/workflows/release.yml`](../.github/workflows/release.yml), which:
    listed in `CHANGELOG.md`;
 2. tests the workspace and builds static musl binaries on native amd64 and
    arm64 runners;
-3. builds one multi-arch image per component (`portitor-connector` today;
-   `portitor-identity` and `portitor-issuer` join later,
-   [ADR 0003](adr/0003-component-split.md)) and pushes it to
-   `ghcr.io/brunopacheco1/<component>:X.Y.Z`;
+3. builds one multi-arch image per component and pushes it to
+   `ghcr.io/brunopacheco1/<component>:X.Y.Z`. From 0.5 there are two:
+
+   | Image | Ports | State |
+   |---|---|---|
+   | `ghcr.io/brunopacheco1/portitor-connector` | 8080 DSP, 8081 management | `/data/portitor.db` |
+   | `ghcr.io/brunopacheco1/portitor-identity` | 8090 DID document, STS, credential service; 8091 management | `/data/portitor-identity.db` |
+
+   `portitor-issuer` joins in 0.6 ([ADR 0003](adr/0003-component-split.md));
 4. signs each image with cosign (keyless, the workflow's identity);
 5. attaches build provenance (SLSA v1) and a CycloneDX SBOM to each image
    as GitHub attestations;
-6. creates a GitHub release with the changelog section, the binaries, the
-   SBOMs, the provenance bundle (`portitor-X.Y.Z.intoto.jsonl`) and
-   `THIRD-PARTY-NOTICES.txt`.
+6. creates a GitHub release with the changelog section, both image
+   digests, the binaries, one SBOM and one provenance bundle per component
+   (`<component>-X.Y.Z.cdx.json`, `<component>-X.Y.Z.intoto.jsonl`) and
+   `THIRD-PARTY-NOTICES.txt` (all components).
+
+The components are listed once, in `COMPONENTS` at the top of the
+workflow; each one is a build target of the same name in the single
+`Dockerfile` (`docker build --target portitor-identity .`). The image
+steps (build, push, sign, attest) run as a matrix over that list, one job
+per image, and the GitHub release is created only when every image job
+succeeded. Adding a component means: a binary crate, a target in the
+`Dockerfile`, a line in `.dockerignore`, and its name in `COMPONENTS`.
 
 A pull request that changes the release workflow, the `Dockerfile` or the
 notices script runs the same build as a dry run: nothing is pushed or signed.
@@ -31,13 +45,16 @@ notices script runs the same build as a dry run: nothing is pushed or signed.
 
 1. **Settings → Environments → New environment** `release`. Restrict it to
    tags matching `v*`. Optionally require yourself as a reviewer, so every
-   release waits for a click.
+   release waits for a click. Each image job uses the environment; one
+   **Review deployments** approval covers all images of a run.
 2. No signing secrets are needed: cosign keyless signing and attestations
    use the workflow's OIDC token. Images are pushed with the workflow's
    `GITHUB_TOKEN`.
-3. After the first release, make the package public: **Packages →
-   portitor-connector → Package settings → Change visibility → Public**, and
-   link it to this repository if GitHub did not.
+3. After the first release of each image, make its package public:
+   **Packages → portitor-connector** (and, from 0.5, **portitor-identity**)
+   **→ Package settings → Change visibility → Public**, and link it to this
+   repository if GitHub did not. A new package starts private, so pulling
+   it fails until this is done.
 
 ## Releasing a version
 
@@ -59,15 +76,26 @@ notices script runs the same build as a dry run: nothing is pushed or signed.
 
 ## Checking a release
 
-- Signature:
-  ```sh
-  cosign verify ghcr.io/brunopacheco1/portitor-connector:X.Y.Z \
+Check every image of the release the same way:
+
+```sh
+for image in portitor-connector portitor-identity; do
+  # signature: signed by this repository's release workflow, from a tag
+  cosign verify "ghcr.io/brunopacheco1/$image:X.Y.Z" \
     --certificate-identity-regexp '^https://github.com/brunopacheco1/portitor/\.github/workflows/release\.yml@refs/tags/v' \
     --certificate-oidc-issuer https://token.actions.githubusercontent.com
-  ```
-- Provenance:
-  `gh attestation verify oci://ghcr.io/brunopacheco1/portitor-connector:X.Y.Z --repo brunopacheco1/portitor`
-- SBOM: attached to the GitHub release and to the image as an attestation.
+  # build provenance (SLSA v1)
+  gh attestation verify "oci://ghcr.io/brunopacheco1/$image:X.Y.Z" --repo brunopacheco1/portitor
+  # SBOM attestation (CycloneDX)
+  gh attestation verify "oci://ghcr.io/brunopacheco1/$image:X.Y.Z" --repo brunopacheco1/portitor \
+    --predicate-type https://cyclonedx.org/bom
+done
+```
+
+- The digests printed by `cosign verify` must match the ones in the
+  release notes.
+- SBOMs: attached to the GitHub release (one per component) and to each
+  image as an attestation.
 
 If the release fails after the tag is pushed, fix the cause, delete the tag
 (locally and with `git push origin :refs/tags/vX.Y.Z`), and tag again,

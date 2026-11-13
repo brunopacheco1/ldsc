@@ -4,3 +4,4 @@
 
 *
 !dist/*/portitor-connector
+!dist/*/portitor-identity

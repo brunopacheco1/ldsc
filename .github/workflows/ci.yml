@@ -33,11 +33,13 @@ jobs:
         run: |
           cargo clippy --workspace --all-targets --locked -- -D warnings
           cargo clippy -p portitor-connector --features tck --all-targets --locked -- -D warnings
+          cargo clippy -p portitor-identity --features tck --all-targets --locked -- -D warnings
       - name: Test
         run: |
           cargo test --workspace --locked
           # the TCK scripts (test-only feature, never in a release build)
           cargo test -p portitor-connector --features tck --locked
+          cargo test -p portitor-identity --features tck --locked
       - name: Domain crates have no I/O dependencies (ADR 0004)
         run: |
           for c in portitor-dsp portitor-dcp portitor-dps portitor-time; do
@@ -45,17 +47,22 @@ jobs:
               echo "::error::$c depends on an I/O crate"; exit 1
             fi
           done
-      - name: Build static binary
+      - name: Build static binaries
         run: |
           start=$(date +%s)
-          cargo build --release --locked --target x86_64-unknown-linux-musl -p portitor-connector
+          cargo build --release --locked --target x86_64-unknown-linux-musl -p portitor-connector -p portitor-identity
           echo "release build seconds (with cache): $(( $(date +%s) - start ))" >> "$GITHUB_STEP_SUMMARY"
       - name: Two connectors agree a contract and transfer a file
         run: scripts/demo.sh target/x86_64-unknown-linux-musl/release/portitor-connector
-      - name: Build image
+      - name: Build images
         run: |
-          mkdir -p dist/amd64 && cp target/x86_64-unknown-linux-musl/release/portitor-connector dist/amd64/
-          docker build -t portitor-connector:ci .
+          mkdir -p dist/amd64
+          cp target/x86_64-unknown-linux-musl/release/portitor-{connector,identity} dist/amd64/
+          docker build --target portitor-connector -t portitor-connector:ci .
+          docker build --target portitor-identity -t portitor-identity:ci .
+          docker image inspect portitor-identity:ci --format 'identity image bytes: {{.Size}}' >> "$GITHUB_STEP_SUMMARY"
+      - name: Connector image starts
+        run: |
           # https callbacks need the CA bundle in the image
           id=$(docker create portitor-connector:ci)
           docker cp "$id:/etc/ssl/certs/ca-certificates.crt" ca.crt
@@ -67,13 +74,39 @@ jobs:
           curl -sf http://127.0.0.1:8080/health
           docker logs smoke
           docker rm -f smoke
-          docker image inspect portitor-connector:ci --format 'image bytes: {{.Size}}' >> "$GITHUB_STEP_SUMMARY"
+          docker image inspect portitor-connector:ci --format 'connector image bytes: {{.Size}}' >> "$GITHUB_STEP_SUMMARY"
+      - name: Identity image starts
+        run: |
+          # the key and the STS secret as read-only files, as in docs/DEPLOYING.md;
+          # readable by the image's user 65532
+          mkdir -p identity-secrets
+          openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out identity-secrets/identity-key.pem
+          openssl rand -hex 32 > identity-secrets/sts-client-secret
+          chmod 644 identity-secrets/*
+          docker run -d --name smoke-identity -p 8090:8090 \
+            -v "$PWD/identity-secrets:/run/secrets/portitor:ro" \
+            -e PORTITOR_PARTICIPANT_ID=did:web:localhost%3A8090 \
+            -e PORTITOR_IDENTITY_KEY_FILE=/run/secrets/portitor/identity-key.pem \
+            -e PORTITOR_CREDENTIAL_SERVICE_URL=http://localhost:8090 \
+            -e PORTITOR_STS_CLIENT_SECRET_FILE=/run/secrets/portitor/sts-client-secret \
+            -e PORTITOR_TRUSTED_ISSUERS=did:web:issuer.example \
+            -e PORTITOR_ALLOW_HTTP_CALLBACKS=true \
+            portitor-identity:ci
+          # did:web:localhost%3A8090 resolves to http://localhost:8090/.well-known/did.json
+          for _ in $(seq 50); do curl -sf http://127.0.0.1:8090/.well-known/did.json > did.json && break; sleep 0.2; done
+          docker logs smoke-identity
+          jq -e '.id == "did:web:localhost%3A8090"' did.json
+          # the non-root user created the SQLite file in /data
+          docker cp smoke-identity:/data/portitor-identity.db - > /dev/null
+          docker rm -f smoke-identity
       - name: The same in Docker Compose (0.4 exit check)
         run: scripts/demo-compose.sh portitor-connector:ci
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: portitor-connector-musl
-          path: target/x86_64-unknown-linux-musl/release/portitor-connector
+          name: portitor-musl
+          path: |
+            target/x86_64-unknown-linux-musl/release/portitor-connector
+            target/x86_64-unknown-linux-musl/release/portitor-identity
           retention-days: 7
 
   reuse:

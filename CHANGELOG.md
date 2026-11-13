@@ -35,6 +35,17 @@ versions may change behaviour and configuration.
   shutdown) move out of the connector, with a new `did:web` resolver
   that caches documents for 5 minutes (ADR 0016).
 - `portitor-identity`: the new identity component's crate (ADR 0015).
+- Release pipeline: a second image, `ghcr.io/brunopacheco1/portitor-identity`
+  (ports 8090 and 8091, state in `/data/portitor-identity.db`), built,
+  signed and attested like the connector's. One `Dockerfile` with a build
+  target per image; the image jobs run as a matrix over the components.
+  CI builds and starts both images.
+
+### Changed
+- Release assets: one provenance bundle per image,
+  `<component>-X.Y.Z.intoto.jsonl`, instead of `portitor-X.Y.Z.intoto.jsonl`.
+  `docker build` needs `--target portitor-connector` or
+  `--target portitor-identity` (without it, the connector is built).
 
 ### Security
 - Status lists are GZIP data from other parties: decompression is capped
