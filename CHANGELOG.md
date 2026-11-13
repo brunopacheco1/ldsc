@@ -95,6 +95,17 @@ versions may change behaviour and configuration.
 - Fuzz target `dcp_did_document`: DID document parsing and key selection.
 
 ### Changed
+- Readability pass for the maintainer's review (no behaviour change
+  apart from the bearer rule above): `portitor-dcp`'s `lib.rs` is split
+  into `jws.rs`, `keys.rs`, `did.rs` and `id_token.rs` (same public
+  paths); `holder::Validity` is now `holder::TokenFrame` (field `jti`);
+  `Credential::verify` and `Presentation::verify` take `u64` seconds;
+  new `Credential::is_only_about`; the unused `DidResolver` trait is
+  gone. In `portitor-runtime`: `BoxFuture` replaces `SendFuture` (and the
+  identity component's `Lookup`), `callback_allowed` is
+  `outbound_url_allowed`, and `settings::comma_list` and
+  `api_key::internal_error` are shared. `docs/RUST-IDIOMS.md` covers the
+  patterns the 0.5 code uses.
 - One rule reads `Authorization: Bearer <token>` everywhere
   (`portitor_runtime::http::bearer_token`): DSP requests, the data plane,
   the identity component's STS callers and both management APIs now all
