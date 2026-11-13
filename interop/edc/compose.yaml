@@ -1,0 +1,133 @@
+# SPDX-FileCopyrightText: Portitor contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# The EDC interop test (docs/TESTING.md): a Portitor participant
+# (portitor-connector + portitor-identity) and an EDC participant (control
+# plane, data plane, IdentityHub with its STS) in one data space whose
+# MembershipCredentials come from a demo authority (the test-issuer
+# example). Test-only: plain HTTP between the containers, a Vault in dev
+# mode, fixed test keys. scripts/edc-interop.sh runs it and checks the
+# results; it writes the run/ directory first (keys, the authority's site).
+#
+# PORTITOR_IMAGE and PORTITOR_IDENTITY_IMAGE pick the Portitor images
+# (default: the ones CI builds, portitor-connector:ci, portitor-identity:ci).
+# The EDC images are built from runtimes/ (EDC v1.0.0-RC7 from Maven
+# Central).
+
+name: portitor-edc-interop
+
+services:
+  # The demo authority's did:web site: DID document, JWKS and status list
+  # (did:web:authority, http://authority/...), written by test-issuer init.
+  authority:
+    image: nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
+    volumes:
+      - ./run/authority:/usr/share/nginx/html:ro
+    ports:
+      - 127.0.0.1:18300:80
+
+  # the files both providers share
+  data:
+    image: nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
+    volumes:
+      - ./data:/usr/share/nginx/html:ro
+
+  # EDC keeps its secrets (the STS client secret, the participant's key) in
+  # a Vault, shared by the IdentityHub and the control plane, as in EDC's
+  # Minimum Viable Dataspace
+  vault:
+    image: hashicorp/vault:2.2.1@sha256:962a92876e168d68eaaa24b0b8b49bbce1cb63024060a67bba95cd158a366fc2
+    command: ["server", "-dev"]
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: root
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+      SKIP_SETCAP: "true"
+
+  edc-identityhub:
+    image: portitor-interop/edc-identityhub:1.0.0-RC7
+    build:
+      context: ./runtimes
+      target: identityhub
+    volumes:
+      - ./config/edc-identityhub.properties:/config/runtime.properties:ro
+    ports:
+      - 127.0.0.1:18281:7081 # Identity API, for scripts/edc-interop.sh
+    depends_on: [vault, authority]
+
+  edc-controlplane:
+    image: portitor-interop/edc-controlplane:1.0.0-RC7
+    build:
+      context: ./runtimes
+      target: controlplane
+    volumes:
+      - ./config/edc-controlplane.properties:/config/runtime.properties:ro
+    ports:
+      - 127.0.0.1:18181:8081 # management API
+    depends_on: [vault, edc-identityhub]
+
+  edc-dataplane:
+    image: portitor-interop/edc-dataplane:1.0.0-RC7
+    build:
+      context: ./runtimes
+      target: dataplane
+    volumes:
+      - ./config/edc-dataplane.properties:/config/runtime.properties:ro
+    ports:
+      - 127.0.0.1:18180:8080 # signaling, and what the EDC consumer received
+    depends_on: [data]
+
+  portitor-identity:
+    image: ${PORTITOR_IDENTITY_IMAGE:-portitor-identity:ci}
+    environment:
+      PORTITOR_PARTICIPANT_ID: did:web:portitor-identity%3A8090
+      PORTITOR_IDENTITY_KEY_FILE: /config/identity-key.pem
+      PORTITOR_CREDENTIAL_SERVICE_URL: http://portitor-identity:8090/cs
+      PORTITOR_MANAGEMENT_BIND: 0.0.0.0:8091
+      PORTITOR_MANAGEMENT_API_KEY_FILE: /config/identity-management.key
+      PORTITOR_STS_CLIENT_SECRET_FILE: /config/sts-client-secret
+      PORTITOR_TRUSTED_ISSUERS: did:web:authority
+      PORTITOR_ALLOW_HTTP_CALLBACKS: "true"
+    volumes:
+      - ./run/portitor/identity-key.pem:/config/identity-key.pem:ro
+      - ./run/portitor/identity-management.key:/config/identity-management.key:ro
+      - ./run/portitor/sts-client-secret:/config/sts-client-secret:ro
+      - portitor-identity-data:/data
+    ports:
+      - 127.0.0.1:18190:8090 # DID document, STS, credential service
+      - 127.0.0.1:18191:8091 # management API
+    depends_on: [authority]
+
+  portitor-connector:
+    image: ${PORTITOR_IMAGE:-portitor-connector:ci}
+    environment:
+      PORTITOR_PARTICIPANT_ID: did:web:portitor-identity%3A8090
+      PORTITOR_PUBLIC_URL: http://portitor-connector:8080
+      PORTITOR_DATASETS_FILE: /config/datasets.json
+      PORTITOR_ALLOW_HTTP_CALLBACKS: "true"
+      PORTITOR_MANAGEMENT_BIND: 0.0.0.0:8081
+      PORTITOR_MANAGEMENT_API_KEY_FILE: /config/connector-management.key
+      PORTITOR_STS_URL: http://portitor-identity:8090/sts/token
+      PORTITOR_STS_CLIENT_SECRET_FILE: /config/sts-client-secret
+      PORTITOR_TRUSTED_ISSUERS: did:web:authority
+      # the same scope as the EDC control plane's (config/edc-controlplane.properties)
+      PORTITOR_DCP_SCOPES: org.eclipse.dspace.dcp.vc.type:MembershipCredential:read
+    volumes:
+      - ./config/portitor-datasets.json:/config/datasets.json:ro
+      - ./run/portitor/connector-management.key:/config/connector-management.key:ro
+      - ./run/portitor/sts-client-secret:/config/sts-client-secret:ro
+      - portitor-connector-data:/data
+    ports:
+      - 127.0.0.1:18080:8080 # DSP
+      - 127.0.0.1:18081:8081 # management API
+    depends_on: [portitor-identity, data]
+
+  # `docker compose run --rm fetch <url>`: fetches inside the network, where
+  # the data planes' addresses resolve
+  fetch:
+    image: curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69
+    profiles: [tools]
+
+volumes:
+  portitor-identity-data:
+  portitor-connector-data:

@@ -21,3 +21,9 @@ __pycache__/
 
 # the demo's management API key (scripts/demo-compose.sh makes one)
 /examples/compose/management.key
+
+# the EDC interop test's generated keys, secrets and authority site
+# (scripts/edc-interop.sh writes them), and its Gradle outputs
+/interop/edc/run/
+/interop/edc/runtimes/**/build/
+/interop/edc/runtimes/.gradle/

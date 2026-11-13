@@ -13,6 +13,20 @@ versions may change behaviour and configuration.
 ## [Unreleased]
 
 ### Added
+- EDC interop test (`scripts/edc-interop.sh`, workflow `EDC interop`):
+  Portitor's connector and identity against an EDC v1.0.0-RC7 control
+  plane, data plane and IdentityHub in Docker Compose. Credentials
+  checked, catalog, negotiation and pull transfer, both ways, and
+  revocation both ways. Runs on pull requests that touch the code and
+  nightly. The EDC runtimes are built from Maven Central
+  (`interop/edc/runtimes`).
+- `test-issuer`, a test-only demo authority (an example of
+  `portitor-identity`, never in a release image; ADR 0015): writes its
+  `did:web` site and a 16 KiB Bitstring Status List, signs
+  `MembershipCredential`s in both DCP profiles, delivers them to an
+  identity component through its management and Storage APIs, and
+  revokes them. `portitor-dcp` gains `status_list::set_bit` and
+  `MIN_LIST_BYTES`.
 - ADR 0017 (proposed): how to join a Simpl-Open data space. No
   x509/mTLS profile in Portitor; Simpl-Open's connector speaks DSP
   2025-1 but not DCP, and its agents authenticate at a Tier 2 gateway.
