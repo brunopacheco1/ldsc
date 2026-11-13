@@ -794,20 +794,17 @@ dependencies = [
  "base64",
  "http-body-util",
  "hyper",
- "hyper-rustls",
- "hyper-util",
  "jsonschema",
  "portitor-dps",
  "portitor-dsp",
+ "portitor-runtime",
  "ring",
  "rusqlite",
- "rustls",
  "serde",
  "serde_json",
  "tokio",
  "tower",
  "tracing",
- "tracing-subscriber",
  "utoipa",
 ]
 
@@ -843,6 +840,37 @@ dependencies = [
  "portitor-time",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "portitor-identity"
+version = "0.4.0"
+dependencies = [
+ "axum",
+ "portitor-dcp",
+ "portitor-runtime",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "portitor-runtime"
+version = "0.4.0"
+dependencies = [
+ "axum",
+ "http-body-util",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
+ "portitor-dcp",
+ "ring",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "utoipa",
 ]
 
 [[package]]

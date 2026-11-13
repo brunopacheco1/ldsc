@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: Portitor contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "portitor-identity"
+description = "Portitor identity component: DID document, STS and credential service (Decentralized Claims Protocol 1.0)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+axum.workspace = true
+portitor-dcp = { path = "../portitor-dcp" }
+portitor-runtime = { path = "../portitor-runtime" }
+tokio.workspace = true
+tracing.workspace = true
+
+[features]
+# Test settings for the DCP TCK (for example plain-HTTP DIDs). Test builds
+# only; the release image is built without it.
+tck = []
+
+[lints]
+workspace = true

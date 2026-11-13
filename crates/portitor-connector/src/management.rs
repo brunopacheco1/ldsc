@@ -12,12 +12,12 @@
 //! is a copy that a test keeps in step.
 
 use std::ffi::OsString;
-use std::path::{Path as FsPath, PathBuf};
+use std::path::PathBuf;
 
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path, Query, Request, State};
-use axum::http::{HeaderValue, StatusCode, header};
-use axum::middleware::{self, Next};
+use axum::extract::{Path, Query, State};
+use axum::http::{StatusCode, header};
+use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -32,10 +32,7 @@ use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
 
 use crate::Negotiator;
-
-/// The shortest API key accepted, in bytes. 32 random bytes, as made by
-/// `openssl rand -hex 32`, give 64.
-pub const MIN_KEY_LEN: usize = 32;
+pub use portitor_runtime::api_key::{ApiKey, MIN_KEY_LEN, Problem, problem, require_key};
 
 /// Where the management API listens, and its key.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,80 +61,6 @@ impl ManagementConfig {
     pub fn from_env() -> Option<Self> {
         Self::from_vars(|k| std::env::var_os(k))
     }
-}
-
-/// The API key. Only an HMAC tag of it is kept; requests are checked with
-/// `ring::hmac::verify`, which compares in constant time.
-pub struct ApiKey {
-    mac_key: ring::hmac::Key,
-    tag: ring::hmac::Tag,
-}
-
-impl std::fmt::Debug for ApiKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("ApiKey(..)")
-    }
-}
-
-impl ApiKey {
-    /// Reads the key from `path` (surrounding whitespace removed).
-    ///
-    /// # Errors
-    ///
-    /// The file cannot be read, or the key is shorter than
-    /// [`MIN_KEY_LEN`] bytes.
-    pub fn read(path: &FsPath) -> Result<Self, String> {
-        let raw = std::fs::read_to_string(path)
-            .map_err(|e| format!("cannot read API key file {}: {e}", path.display()))?;
-        Self::new(raw.trim())
-    }
-
-    /// Builds the key from its text.
-    ///
-    /// # Errors
-    ///
-    /// The key is shorter than [`MIN_KEY_LEN`] bytes.
-    pub fn new(key: &str) -> Result<Self, String> {
-        if key.len() < MIN_KEY_LEN {
-            return Err(format!(
-                "the management API key must have at least {MIN_KEY_LEN} characters"
-            ));
-        }
-        let rng = ring::rand::SystemRandom::new();
-        let mac_key = ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &rng)
-            .map_err(|_| "no randomness for the API key check".to_owned())?;
-        let tag = ring::hmac::sign(&mac_key, key.as_bytes());
-        Ok(Self { mac_key, tag })
-    }
-
-    fn matches(&self, presented: &[u8]) -> bool {
-        ring::hmac::verify(&self.mac_key, presented, self.tag.as_ref()).is_ok()
-    }
-}
-
-/// An error, as RFC 9457 problem details.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct Problem {
-    /// Short summary of the problem type.
-    title: String,
-    /// The HTTP status code.
-    status: u16,
-    /// What went wrong in this case.
-    detail: String,
-}
-
-fn problem(status: StatusCode, detail: &str) -> Response {
-    let body = Problem {
-        title: status.canonical_reason().unwrap_or("Error").to_owned(),
-        status: status.as_u16(),
-        detail: detail.to_owned(),
-    };
-    let mut res = (status, Json(body)).into_response();
-    res.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("application/problem+json"),
-    );
-    res
 }
 
 /// 400 with the DSP error's reasons as the detail.
@@ -644,25 +567,6 @@ pub fn openapi_json() -> String {
     let mut doc = ManagementApi::openapi();
     env!("CARGO_PKG_VERSION").clone_into(&mut doc.info.version);
     doc.to_pretty_json().unwrap_or_default()
-}
-
-async fn require_key(
-    State(key): State<std::sync::Arc<ApiKey>>,
-    req: Request,
-    next: Next,
-) -> Response {
-    let presented = req
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.as_bytes().strip_prefix(b"Bearer "));
-    if presented.is_some_and(|p| key.matches(p)) {
-        next.run(req).await
-    } else {
-        let mut res = problem(StatusCode::UNAUTHORIZED, "missing or wrong API key");
-        res.headers_mut()
-            .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
-        res
-    }
 }
 
 /// The management API router. Every route except `GET /v1/openapi.json`

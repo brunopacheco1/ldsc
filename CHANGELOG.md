@@ -30,6 +30,11 @@ versions may change behaviour and configuration.
   Fuzz target `dcp_credentials`.
 - `portitor-time`: the `xsd:date` and `xsd:dateTime` parser moves out
   of the ODRL code, so credentials can use it too.
+- `portitor-runtime`: the adapters the connector and the identity
+  component share (outbound HTTP client, API key check, logging,
+  shutdown) move out of the connector, with a new `did:web` resolver
+  that caches documents for 5 minutes (ADR 0016).
+- `portitor-identity`: the new identity component's crate (ADR 0015).
 
 ### Security
 - Status lists are GZIP data from other parties: decompression is capped

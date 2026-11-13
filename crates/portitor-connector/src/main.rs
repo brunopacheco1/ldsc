@@ -7,16 +7,11 @@
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use tracing_subscriber::EnvFilter;
+use portitor_runtime::serve::{init_logging, shutdown, wait};
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    tracing_subscriber::fmt()
-        .json()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
+    init_logging();
     match run().await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -86,34 +81,4 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         management.await??;
     }
     Ok(())
-}
-
-/// Resolves once the stop signal was sent.
-async fn wait(mut stopped: tokio::sync::watch::Receiver<bool>) {
-    let _ = stopped.wait_for(|s| *s).await;
-}
-
-/// Ctrl-C, or SIGTERM from `docker stop` and Kubernetes. As PID 1 in a
-/// container the process gets no default SIGTERM handling, so without this
-/// it would only stop when killed.
-async fn shutdown() {
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{SignalKind, signal};
-        match signal(SignalKind::terminate()) {
-            Ok(mut term) => {
-                tokio::select! {
-                    _ = tokio::signal::ctrl_c() => {}
-                    _ = term.recv() => {}
-                }
-            }
-            Err(error) => {
-                tracing::warn!(%error, "cannot listen for SIGTERM");
-                let _ = tokio::signal::ctrl_c().await;
-            }
-        }
-    }
-    #[cfg(not(unix))]
-    let _ = tokio::signal::ctrl_c().await;
-    tracing::info!("shutting down");
 }

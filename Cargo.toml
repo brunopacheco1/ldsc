@@ -4,7 +4,7 @@
 
 [workspace]
 resolver = "3"
-members = ["crates/portitor-dsp", "crates/portitor-dcp", "crates/portitor-dps", "crates/portitor-time", "crates/portitor-connector"]
+members = ["crates/portitor-dsp", "crates/portitor-dcp", "crates/portitor-dps", "crates/portitor-time", "crates/portitor-runtime", "crates/portitor-connector", "crates/portitor-identity"]
 
 [workspace.package]
 version = "0.4.0"
