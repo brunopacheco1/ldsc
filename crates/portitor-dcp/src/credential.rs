@@ -20,9 +20,9 @@
 //! or the holder's DID); the caller resolves that DID, then `verify`
 //! checks the signature and the dates.
 
-use serde::Deserialize;
 use serde_json::{Map, Value};
 
+use self::json::{Body, agree, date, first_context, number, payload_of, text, types};
 use crate::status_list::StatusEntry;
 use crate::{DidDocument, Error, Jws, Purpose};
 
@@ -415,85 +415,6 @@ impl Presentation {
     }
 }
 
-/// The fields both credential versions share.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RawBody {
-    #[serde(default)]
-    id: Option<String>,
-    #[serde(rename = "type")]
-    types: OneOrMany<String>,
-    #[serde(default)]
-    issuer: Option<Issuer>,
-    credential_subject: OneOrMany<Map<String, Value>>,
-    #[serde(default)]
-    credential_status: Option<OneOrMany<StatusEntry>>,
-}
-
-struct Body {
-    id: Option<String>,
-    types: Vec<String>,
-    issuer: Option<String>,
-    subjects: Vec<Map<String, Value>>,
-    status: Vec<StatusEntry>,
-}
-
-impl Body {
-    fn read(vc: &Value) -> Result<Self, CredentialError> {
-        let raw = RawBody::deserialize(vc)
-            .map_err(|_| CredentialError::Unsupported("credential fields missing or malformed"))?;
-        let types = raw.types.into_vec();
-        if !types.iter().any(|t| t == "VerifiableCredential") {
-            return Err(CredentialError::Unsupported(
-                "type lacks VerifiableCredential",
-            ));
-        }
-        Ok(Self {
-            id: raw.id,
-            types,
-            issuer: raw.issuer.map(Issuer::into_id),
-            subjects: raw.credential_subject.into_vec(),
-            status: raw
-                .credential_status
-                .map(OneOrMany::into_vec)
-                .unwrap_or_default(),
-        })
-    }
-}
-
-/// `issuer`: a DID, or an object with the DID as `id`.
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum Issuer {
-    Id(String),
-    Object { id: String },
-}
-
-impl Issuer {
-    fn into_id(self) -> String {
-        match self {
-            Self::Id(id) | Self::Object { id } => id,
-        }
-    }
-}
-
-/// JSON-LD lets a single value stand for a list of one.
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum OneOrMany<T> {
-    One(T),
-    Many(Vec<T>),
-}
-
-impl<T> OneOrMany<T> {
-    fn into_vec(self) -> Vec<T> {
-        match self {
-            Self::One(one) => vec![one],
-            Self::Many(many) => many,
-        }
-    }
-}
-
 /// The credentials in a presentation's `verifiableCredential`: plain JWT
 /// strings for VC 1.1, `EnvelopedVerifiableCredential` objects for 2.0.
 fn credentials_of(vp: &Value, profile: Profile) -> Result<Vec<Credential>, CredentialError> {
@@ -535,63 +456,7 @@ fn verify_signature(jwt: &str, doc: &DidDocument, purpose: Purpose) -> Result<()
     Ok(())
 }
 
-fn payload_of(jwt: &str) -> Result<Map<String, Value>, CredentialError> {
-    let jws = Jws::parse(jwt)?;
-    serde_json::from_slice(jws.payload())
-        .map_err(|_| CredentialError::Unsupported("payload is not a JSON object"))
-}
-
-fn types(object: &Map<String, Value>) -> Vec<&str> {
-    match object.get("type") {
-        Some(Value::String(one)) => vec![one.as_str()],
-        Some(Value::Array(many)) => many.iter().filter_map(Value::as_str).collect(),
-        _ => Vec::new(),
-    }
-}
-
-fn first_context(value: &Value) -> Option<&str> {
-    match value.get("@context")? {
-        Value::Array(entries) => entries.first()?.as_str(),
-        Value::String(one) => Some(one),
-        _ => None,
-    }
-}
-
-fn text<'a>(object: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
-    object.get(key).and_then(Value::as_str)
-}
-
-fn number(object: &Map<String, Value>, key: &str) -> Option<i64> {
-    object.get(key).and_then(Value::as_i64)
-}
-
-/// A date field, if present; present but not a date with a time zone is
-/// an error, so a credential whose dates cannot be read is refused.
-fn date(vc: &Value, key: &str) -> Result<Option<i64>, CredentialError> {
-    match vc.get(key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(text)) => {
-            portitor_time::timestamp_seconds(text)
-                .map(Some)
-                .ok_or(CredentialError::Unsupported(
-                    "a date is not a date and time with a time zone",
-                ))
-        }
-        Some(_) => Err(CredentialError::Unsupported("a date is not a string")),
-    }
-}
-
-/// One value given in two places: they must agree when both are present.
-fn agree<'a>(
-    a: Option<&'a str>,
-    b: Option<&'a str>,
-    differ: &'static str,
-) -> Result<Option<&'a str>, CredentialError> {
-    match (a, b) {
-        (Some(a), Some(b)) if a != b => Err(CredentialError::Invalid(differ)),
-        (a, b) => Ok(a.or(b)),
-    }
-}
+mod json;
 
 #[cfg(test)]
 mod tests;
