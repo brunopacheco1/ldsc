@@ -124,9 +124,10 @@ pub trait Agreements {
 /// implements it with Data Plane Signaling (`portitor-dps`). Each call is
 /// safe to repeat: a change the data plane already made counts as done.
 pub trait DataFlows {
-    /// Whether the data plane can serve `format` (for example
-    /// `HttpData-PULL`).
-    fn supports(&self, format: &str) -> bool;
+    /// Whether the data plane can serve dataset `dataset_id` in `format`
+    /// (for example `HttpData-PULL`): it supports the format and knows
+    /// where the dataset's data is.
+    fn supports(&self, dataset_id: &str, format: &str) -> bool;
 
     /// Starts the data flow for `transfer` and returns where the consumer
     /// fetches the data, with its access token.
@@ -330,8 +331,12 @@ where
         if !offered {
             return Err(bad("", cpid, "the dataset is not offered in this format"));
         }
-        if !self.flows.supports(&msg.format) {
-            return Err(bad("", cpid, "this connector cannot transfer this format"));
+        if !self.flows.supports(&agreement.target, &msg.format) {
+            return Err(bad(
+                "",
+                cpid,
+                "this connector cannot transfer this dataset in this format",
+            ));
         }
         Ok(agreement)
     }

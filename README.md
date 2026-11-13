@@ -52,6 +52,13 @@ The DSP endpoints follow the HTTPS bindings of
 | `POST /dsp/2025-1/callback/negotiations/{consumerPid}/agreement` | Provider sends the agreement |
 | `POST /dsp/2025-1/callback/negotiations/{consumerPid}/events` | Provider finalizes |
 | `POST /dsp/2025-1/callback/negotiations/{consumerPid}/termination` | Provider ends a negotiation |
+| `POST /dsp/2025-1/transfers/request` | Starts a transfer process (provider side) |
+| `GET /dsp/2025-1/transfers/{providerPid}` | Returns the state of a transfer |
+| `POST /dsp/2025-1/transfers/{providerPid}/start` | Consumer starts a suspended transfer again |
+| `POST /dsp/2025-1/transfers/{providerPid}/suspension` | Consumer suspends a transfer |
+| `POST /dsp/2025-1/transfers/{providerPid}/completion` | Consumer completes a transfer |
+| `POST /dsp/2025-1/transfers/{providerPid}/termination` | Consumer ends a transfer |
+| `GET /data/{flowId}` | The data of a started transfer, for the bearer token in its data address |
 | `GET /health` | Returns `ok` while the process runs |
 
 Configuration (environment variables):
@@ -66,6 +73,7 @@ Configuration (environment variables):
 | `PORTITOR_MANAGEMENT_API_KEY_FILE` | none (management API off) | File with the management API key (at least 32 characters, for example `openssl rand -hex 32`) |
 | `PORTITOR_MANAGEMENT_BIND` | `127.0.0.1:8081` | Address of the management API |
 | `PORTITOR_ALLOW_HTTP_CALLBACKS` | `false` | `true` allows `http://` addresses for consumers' callbacks and for providers; development and tests only |
+| `PORTITOR_DATA_TOKEN_SECONDS` | `3600` | How long a data access token is valid after the transfer starts |
 
 As provider, the connector agrees to a request for an offer in its
 catalog, then finalizes once the consumer verifies. It sends its messages
@@ -74,6 +82,22 @@ cannot be reached, it terminates the negotiation.
 
 As consumer, the connector accepts the provider's offer and verifies its
 agreement. Providers send their messages to the callback endpoints above.
+
+Transfers ([ADR 0013](docs/adr/0013-transfer-and-data-plane.md)): pull
+only (`HttpData-PULL`). Give each dataset you want to transfer its data
+with `portitor:source`, an HTTP URL that the connector fetches for the
+consumer. It is taken out of the dataset and never shown in the catalog:
+
+```json
+{ "@id": "weather-stations", "@type": "Dataset", "portitor:source": "https://data.internal.example/weather.csv", ... }
+```
+
+The connector accepts a transfer request under a finalized agreement held
+by the caller, starts it at once and sends the consumer a data address:
+`{PORTITOR_PUBLIC_URL}/data/{flowId}` with a bearer token. The token works
+while the transfer is started and for `PORTITOR_DATA_TOKEN_SECONDS` after
+the start; the connector then streams the source's answer (2xx only, with
+its `Content-Type`). A request for a dataset without a source is refused.
 
 Policies (minimal ODRL, [ADR 0009](docs/adr/0009-minimal-odrl-policies.md)):
 - A permission without constraints permits. One constraint is understood:

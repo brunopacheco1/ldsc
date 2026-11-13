@@ -20,9 +20,16 @@ versions may change behaviour and configuration.
   The provider then starts the data flow and sends the data address. The
   consumer may suspend, start again, complete or terminate; the data plane
   is told first, then the transfer is saved. Transfers are kept in the
-  SQLite file with the same outbox as negotiations (new migration). Until
-  the HTTP data plane lands (0.4 PR 4) every request is refused with "this
-  connector cannot transfer this format".
+  SQLite file with the same outbox as negotiations (new migration).
+- Built-in HTTP pull data plane (ADR 0013): each dataset may name its data
+  with `portitor:source` in the datasets file (an HTTP URL, never shown in
+  the catalog). A started transfer gets the address
+  `{PORTITOR_PUBLIC_URL}/data/{flowId}` with a random bearer token; the
+  connector streams the source's answer while the transfer is started and
+  the token is fresh (`PORTITOR_DATA_TOKEN_SECONDS`, default 3600). Data
+  flows and token hashes are kept in the SQLite file (new migration). A
+  request for a dataset without a source is refused. Cargo feature
+  `data-plane`, on by default.
 - Bridge from the transfer process to Data Plane Signaling
   (`data_flows.rs`): repeated signals are harmless.
 - Transfer process (DSP 2025-1) in `portitor-dsp`: the five message types,

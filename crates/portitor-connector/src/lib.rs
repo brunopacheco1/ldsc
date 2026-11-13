@@ -29,6 +29,7 @@ use serde::Serialize;
 
 pub mod consumer;
 pub mod data_flows;
+pub mod data_plane;
 pub mod management;
 pub mod negotiation;
 pub mod store;
@@ -60,7 +61,22 @@ pub struct Config {
     pub allow_http_callbacks: bool,
     /// The `SQLite` file that keeps negotiations.
     pub db_file: std::path::PathBuf,
+    /// Where the data plane fetches each dataset's data: dataset id to
+    /// upstream URL (`portitor:source` in the datasets file, ADR 0013).
+    /// Never shown in the catalog.
+    pub sources: BTreeMap<String, String>,
+    /// How long a data access token stays valid, in seconds
+    /// (`PORTITOR_DATA_TOKEN_SECONDS`, default one hour).
+    pub data_token_seconds: u64,
 }
+
+/// The key, in a dataset of the datasets file, that names the upstream
+/// URL of its data. Removed before the dataset is read, so it never
+/// reaches the catalog.
+pub const SOURCE_KEY: &str = "portitor:source";
+
+/// Default lifetime of a data access token: one hour.
+pub const DEFAULT_DATA_TOKEN_SECONDS: u64 = 3_600;
 
 /// Why the configuration could not be read.
 #[derive(Debug)]
@@ -71,6 +87,8 @@ pub enum ConfigError {
     Parse(String, serde_json::Error),
     /// `PORTITOR_DATASETS` was removed in 0.2.
     Removed(&'static str),
+    /// A variable has a value that cannot be used.
+    Invalid(&'static str, String),
 }
 
 impl std::fmt::Display for ConfigError {
@@ -82,6 +100,7 @@ impl std::fmt::Display for ConfigError {
                 "datasets file {p} is not a JSON array of DSP datasets: {e}"
             ),
             Self::Removed(msg) => f.write_str(msg),
+            Self::Invalid(name, value) => write!(f, "{name} has an invalid value {value:?}"),
         }
     }
 }
@@ -91,9 +110,9 @@ impl std::error::Error for ConfigError {}
 impl Config {
     /// Reads `PORTITOR_PARTICIPANT_ID`, `PORTITOR_PUBLIC_URL`,
     /// `PORTITOR_ALLOW_HTTP_CALLBACKS` (`true` to allow), `PORTITOR_DB_FILE`
-    /// (default `portitor.db`) and, when set,
-    /// `PORTITOR_DATASETS_FILE` from the environment. Without a datasets file
-    /// the catalog is empty.
+    /// (default `portitor.db`), `PORTITOR_DATA_TOKEN_SECONDS` (default
+    /// 3600) and, when set, `PORTITOR_DATASETS_FILE` from the environment.
+    /// Without a datasets file the catalog is empty.
     ///
     /// # Errors
     ///
@@ -106,8 +125,8 @@ impl Config {
     ///
     /// # Errors
     ///
-    /// The datasets file cannot be read or parsed, or the removed
-    /// `PORTITOR_DATASETS` variable is set.
+    /// The datasets file cannot be read or parsed, a number is not a
+    /// number, or the removed `PORTITOR_DATASETS` variable is set.
     pub fn from_vars(var: impl Fn(&str) -> Option<OsString>) -> Result<Self, ConfigError> {
         let text = |k: &str, d: &str| {
             var(k).map_or_else(|| d.to_owned(), |v| v.to_string_lossy().into_owned())
@@ -117,9 +136,19 @@ impl Config {
                 "PORTITOR_DATASETS was removed in 0.2; define datasets in a JSON file and set PORTITOR_DATASETS_FILE",
             ));
         }
-        let datasets = match var("PORTITOR_DATASETS_FILE") {
-            Some(path) => read_datasets(FsPath::new(&path))?,
-            None => Vec::new(),
+        let (datasets, sources) = match var("PORTITOR_DATASETS_FILE") {
+            Some(path) => read_datasets_and_sources(FsPath::new(&path))?,
+            None => (Vec::new(), BTreeMap::new()),
+        };
+        let data_token_seconds = match var("PORTITOR_DATA_TOKEN_SECONDS") {
+            None => DEFAULT_DATA_TOKEN_SECONDS,
+            Some(v) => {
+                let v = v.to_string_lossy().into_owned();
+                match v.parse::<u64>() {
+                    Ok(n) if n > 0 => n,
+                    _ => return Err(ConfigError::Invalid("PORTITOR_DATA_TOKEN_SECONDS", v)),
+                }
+            }
         };
         Ok(Self {
             participant_id: text("PORTITOR_PARTICIPANT_ID", "did:web:localhost%3A8080"),
@@ -128,6 +157,8 @@ impl Config {
             allow_http_callbacks: var("PORTITOR_ALLOW_HTTP_CALLBACKS")
                 .is_some_and(|v| v.eq_ignore_ascii_case("true")),
             db_file: var("PORTITOR_DB_FILE").map_or_else(|| "portitor.db".into(), Into::into),
+            sources,
+            data_token_seconds,
         })
     }
 }
@@ -139,9 +170,42 @@ impl Config {
 ///
 /// The file cannot be read or is not such an array.
 pub fn read_datasets(path: &FsPath) -> Result<Vec<Dataset>, ConfigError> {
+    read_datasets_and_sources(path).map(|(datasets, _)| datasets)
+}
+
+/// Like [`read_datasets`], and also returns each dataset's upstream URL
+/// ([`SOURCE_KEY`]), which is taken out of the dataset.
+///
+/// # Errors
+///
+/// The file cannot be read or is not such an array, or a source is not an
+/// `http://` or `https://` URL.
+pub fn read_datasets_and_sources(
+    path: &FsPath,
+) -> Result<(Vec<Dataset>, BTreeMap<String, String>), ConfigError> {
     let shown = path.display().to_string();
     let raw = std::fs::read(path).map_err(|e| ConfigError::Read(shown.clone(), e))?;
-    serde_json::from_slice(&raw).map_err(|e| ConfigError::Parse(shown, e))
+    let parse = |e| ConfigError::Parse(shown.clone(), e);
+    let mut items: Vec<serde_json::Value> = serde_json::from_slice(&raw).map_err(parse)?;
+    let mut sources = BTreeMap::new();
+    for item in &mut items {
+        let Some(source) = item.as_object_mut().and_then(|o| o.remove(SOURCE_KEY)) else {
+            continue;
+        };
+        let id = item
+            .get("@id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let url = source
+            .as_str()
+            .filter(|u| u.starts_with("https://") || u.starts_with("http://"))
+            .ok_or_else(|| {
+                ConfigError::Invalid(SOURCE_KEY, format!("{source} (dataset {id:?})"))
+            })?;
+        sources.insert(id.to_owned(), url.to_owned());
+    }
+    let datasets = serde_json::from_value(serde_json::Value::Array(items)).map_err(parse)?;
+    Ok((datasets, sources))
 }
 
 /// Adapter: the provider's datasets, kept in memory.
@@ -281,6 +345,8 @@ pub fn build(
         format!("{}{CALLBACK_PATH}", config.public_url.trim_end_matches('/')),
         config.allow_http_callbacks,
     ));
+    let mut ports = ports;
+    let data_plane = start_data_plane(config, &mut ports);
     let transfers = Arc::new(transfer::TransferProvider::new(
         &ports,
         datasets.clone(),
@@ -325,6 +391,7 @@ pub fn build(
         .with_state(Arc::new(AppState { catalog, versions }))
         .merge(negotiation_routes(provider))
         .merge(transfer_routes(transfers))
+        .merge(data_routes(data_plane))
         .merge(callback_routes(consumer));
     Ok((router, negotiator))
 }
@@ -364,6 +431,57 @@ fn negotiation_routes(provider: Arc<negotiation::Provider>) -> Router {
             post(negotiation::terminate),
         )
         .with_state(provider)
+}
+
+/// Builds the built-in HTTP pull data plane, if the `data-plane` feature
+/// is on and `ports` has a flow store, and makes transfers use it.
+fn start_data_plane(config: &Config, ports: &mut Ports) -> Option<Arc<data_plane::HttpDataPlane>> {
+    if !cfg!(feature = "data-plane") {
+        return None;
+    }
+    let store = ports.flow_store.clone()?;
+    let plane = match data_plane::HttpDataPlane::new(
+        store,
+        config.sources.clone(),
+        &config.public_url,
+        config.data_token_seconds,
+    ) {
+        Ok(plane) => plane,
+        Err(e) => {
+            tracing::error!(error = %e, "no data plane: transfers will be refused");
+            return None;
+        }
+    };
+    for id in config.sources.keys() {
+        if !config.datasets.iter().any(|d| &d.id == id) {
+            tracing::warn!(dataset = %id, "a source names a dataset that is not in the datasets file");
+        }
+    }
+    for d in &config.datasets {
+        if !config.sources.contains_key(&d.id) {
+            tracing::warn!(dataset = %d.id, "a dataset has no source: its transfers will be refused");
+        }
+    }
+    let flows = data_flows::SignalingDataFlows::new(
+        plane.clone(),
+        &config.participant_id,
+        "default",
+        config.sources.keys().cloned(),
+    );
+    ports.transfers.flows = transfer::Shared(Arc::new(flows));
+    Some(Arc::new(plane))
+}
+
+fn data_routes(plane: Option<Arc<data_plane::HttpDataPlane>>) -> Router {
+    let Some(plane) = plane else {
+        return Router::new();
+    };
+    Router::new()
+        .route(
+            &format!("{}/{{id}}", data_plane::DATA_PATH),
+            get(data_plane::serve),
+        )
+        .with_state(plane)
 }
 
 fn transfer_routes(provider: Arc<transfer::TransferProvider>) -> Router {

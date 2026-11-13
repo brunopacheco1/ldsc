@@ -44,6 +44,8 @@ fn app() -> Router {
         datasets: Vec::new(),
         allow_http_callbacks: false,
         db_file: "unused.db".into(),
+        sources: std::collections::BTreeMap::new(),
+        data_token_seconds: 3_600,
     };
     let (_, negotiator) =
         portitor_connector::build(&config, Ports::new(Arc::new(Provider))).unwrap();

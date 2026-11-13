@@ -10,6 +10,8 @@
 //! refuses because the flow is already where the signal leads counts as
 //! done, and so does ending a flow that never started.
 
+use std::collections::BTreeSet;
+
 use portitor_dps::message::{DataFlowBaseMessage, DataFlowStartMessage, HTTP_PULL, ReasonMessage};
 use portitor_dps::port::{DataPlane, SignalError};
 use portitor_dps::state::DataFlowState;
@@ -36,16 +38,25 @@ pub struct SignalingDataFlows<P> {
     plane: P,
     participant_id: String,
     dataspace_context: String,
+    /// The datasets the data plane has data for.
+    datasets: BTreeSet<String>,
 }
 
 impl<P: DataPlane> SignalingDataFlows<P> {
     /// Signals `plane` on behalf of provider `participant_id`, in the
-    /// dataspace named `dataspace_context`.
-    pub fn new(plane: P, participant_id: &str, dataspace_context: &str) -> Self {
+    /// dataspace named `dataspace_context`. `datasets`: the ids of the
+    /// datasets `plane` has data for; a request for any other is refused.
+    pub fn new(
+        plane: P,
+        participant_id: &str,
+        dataspace_context: &str,
+        datasets: impl IntoIterator<Item = String>,
+    ) -> Self {
         Self {
             plane,
             participant_id: participant_id.to_owned(),
             dataspace_context: dataspace_context.to_owned(),
+            datasets: datasets.into_iter().collect(),
         }
     }
 
@@ -78,8 +89,8 @@ impl<P: DataPlane> SignalingDataFlows<P> {
 }
 
 impl<P: DataPlane> DataFlows for SignalingDataFlows<P> {
-    fn supports(&self, format: &str) -> bool {
-        profile_of(format).is_some()
+    fn supports(&self, dataset_id: &str, format: &str) -> bool {
+        profile_of(format).is_some() && self.datasets.contains(dataset_id)
     }
 
     fn start(&self, t: &Transfer) -> Result<DataAddress, String> {
@@ -247,6 +258,10 @@ mod tests {
         }
     }
 
+    fn flows_over(plane: &Plane) -> SignalingDataFlows<&Plane> {
+        SignalingDataFlows::new(plane, "did:web:p", "default", ["d".to_owned()])
+    }
+
     fn transfer(format: &str) -> Transfer {
         Transfer {
             provider_pid: "p".to_owned(),
@@ -263,18 +278,19 @@ mod tests {
     }
 
     #[test]
-    fn supports_http_pull_only() {
+    fn supports_http_pull_of_known_datasets_only() {
         let plane = Plane::default();
-        let flows = SignalingDataFlows::new(&plane, "did:web:p", "default");
-        assert!(flows.supports("HttpData-PULL"));
-        assert!(!flows.supports("HttpData-PUSH"));
+        let flows = flows_over(&plane);
+        assert!(flows.supports("d", "HttpData-PULL"));
+        assert!(!flows.supports("d", "HttpData-PUSH"));
+        assert!(!flows.supports("other", "HttpData-PULL"), "no data for it");
         assert!(flows.start(&transfer("HttpData-PUSH")).is_err());
     }
 
     #[test]
     fn a_full_flow_and_repeated_signals() {
         let plane = Plane::default();
-        let flows = SignalingDataFlows::new(&plane, "did:web:p", "default");
+        let flows = flows_over(&plane);
         let address = flows.start(&transfer("HttpData-PULL")).unwrap();
         assert_eq!(address.endpoint.as_deref(), Some("https://p.example/data"));
         flows.suspend("p").unwrap();
@@ -291,7 +307,7 @@ mod tests {
     #[test]
     fn ending_a_flow_that_never_started_is_done() {
         let plane = Plane::default();
-        let flows = SignalingDataFlows::new(&plane, "did:web:p", "default");
+        let flows = flows_over(&plane);
         flows.terminate("never").unwrap();
         assert!(flows.suspend("never").is_err());
     }
@@ -300,7 +316,7 @@ mod tests {
     fn only_an_immediate_start_is_supported() {
         let plane = Plane::default();
         *plane.1.borrow_mut() = Some(DataFlowState::Starting);
-        let flows = SignalingDataFlows::new(&plane, "did:web:p", "default");
+        let flows = flows_over(&plane);
         assert!(
             flows
                 .start(&transfer("HttpData-PULL"))

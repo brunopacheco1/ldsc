@@ -776,6 +776,7 @@ name = "portitor-connector"
 version = "0.3.0"
 dependencies = [
  "axum",
+ "base64",
  "http-body-util",
  "hyper",
  "hyper-rustls",

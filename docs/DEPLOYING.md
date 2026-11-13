@@ -38,6 +38,12 @@ Check each item and keep the answers in your own runbook.
   definition breaks a DSP rule or an offer uses a constraint it does not
   understand (only `dateTime` for now, ADR 0009), so test the file before
   a rollout.
+- [ ] **Data sources.** For each dataset you transfer, the URL the
+  connector fetches its data from (`portitor:source` in the datasets file,
+  see the README). Partners never see it. It must be reachable from the
+  connector, should be internal, and must not need credentials (none are
+  sent). Plain `http://` is accepted here, since you set it; prefer
+  `https://`. The log warns at start about a dataset without a source.
 - [ ] **Clock.** Offer constraints such as a date limit are checked
   against the host clock (ADR 0009). Keep it synchronised (NTP); a
   container uses the host's clock.
@@ -70,6 +76,7 @@ All configuration is by environment variable. The full table is in the
 | `PORTITOR_MANAGEMENT_API_KEY_FILE` | path of the mounted key file, or unset (management API off) |
 | `PORTITOR_MANAGEMENT_BIND` | `0.0.0.0:8081` in a container (publish it only on an internal interface); the default `127.0.0.1:8081` is unreachable from outside a container |
 | `PORTITOR_ALLOW_HTTP_CALLBACKS` | **unset** (never `true` in production) |
+| `PORTITOR_DATA_TOKEN_SECONDS` | leave the default, `3600`, unless consumers need longer to fetch |
 | `RUST_LOG` | `info` (default); `debug` only while diagnosing |
 
 ### Private CAs
@@ -215,3 +222,7 @@ In this version (see also [SECURITY-ASSURANCE.md](SECURITY-ASSURANCE.md)):
 - Policies: only the `dateTime` constraint is understood; prohibitions
   and duties are carried into agreements but not enforced (ADR 0009).
 - No metrics endpoint yet.
+- Transfers: pull only. A data access token ends `PORTITOR_DATA_TOKEN_SECONDS`
+  after the transfer starts and is not renewed; the consumer then asks for
+  a new transfer. Only `GET` of the whole source; no credentials are sent
+  to it.

@@ -58,7 +58,9 @@ Where the tests are:
   `tests/dsp_consumer.rs` does the same for the consumer side, with a fake
   provider, and checks every message against the DSP JSON Schemas.
   `tests/dsp_transfer.rs` does the same for transfers as provider, with a
-  fake data plane and a fixed agreement. The SQLite
+  fake data plane and a fixed agreement; its last tests use the built-in
+  data plane and fetch data from an upstream served on a local port (no
+  network needed). The SQLite
   store is tested on an in-memory database and on a real file.
 - `tests/dsp_catalog.rs` also checks that every path in
   [docs/api/openapi.json](api/openapi.json) is served.
