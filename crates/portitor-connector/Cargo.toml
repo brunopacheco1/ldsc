@@ -15,6 +15,7 @@ publish = false
 [dependencies]
 axum.workspace = true
 portitor-dsp = { path = "../portitor-dsp" }
+portitor-dps = { path = "../portitor-dps" }
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-rustls.workspace = true

@@ -28,11 +28,13 @@ use portitor_dsp::{
 use serde::Serialize;
 
 pub mod consumer;
+pub mod data_flows;
 pub mod management;
 pub mod negotiation;
 pub mod store;
 #[cfg(feature = "tck")]
 pub mod tck;
+pub mod transfer;
 
 pub use negotiation::{HttpSender, Ports};
 
@@ -173,6 +175,7 @@ struct AppState {
 pub struct Negotiator {
     consumer: Arc<consumer::Consumer>,
     provider: Arc<negotiation::Provider>,
+    transfers: Arc<transfer::TransferProvider>,
 }
 
 impl std::fmt::Debug for Negotiator {
@@ -228,14 +231,21 @@ impl Negotiator {
     }
 
     /// Sends again, in the background, every message that was saved but
-    /// not acknowledged (as provider and as consumer), for example after a
-    /// restart. Call it once at start. Returns how many.
+    /// not acknowledged (negotiations as provider and as consumer,
+    /// transfers as provider), for example after a restart. Call it once
+    /// at start. Returns how many.
     ///
     /// # Errors
     ///
     /// The store failed.
     pub fn resume(&self) -> Result<usize, Box<Failure>> {
-        Ok(self.provider.resume()? + self.consumer.resume()?)
+        let transfers = self.transfers.resume().map_err(|f| {
+            // reported like a negotiation store failure: both are the same file
+            Box::new(Failure::Store(
+                portitor_dsp::negotiation::provider::StoreError(format!("{f:?}")),
+            ))
+        })?;
+        Ok(self.provider.resume()? + self.consumer.resume()? + transfers)
     }
 }
 
@@ -271,6 +281,11 @@ pub fn build(
         format!("{}{CALLBACK_PATH}", config.public_url.trim_end_matches('/')),
         config.allow_http_callbacks,
     ));
+    let transfers = Arc::new(transfer::TransferProvider::new(
+        &ports,
+        datasets.clone(),
+        config.allow_http_callbacks,
+    ));
     let provider = Arc::new(negotiation::Provider::new(
         ports,
         datasets.clone(),
@@ -297,6 +312,7 @@ pub fn build(
     let negotiator = Negotiator {
         consumer: Arc::clone(&consumer),
         provider: Arc::clone(&provider),
+        transfers: Arc::clone(&transfers),
     };
     let router = Router::new()
         .route("/.well-known/dspace-version", get(version))
@@ -308,6 +324,7 @@ pub fn build(
         .route("/health", get(|| async { "ok" }))
         .with_state(Arc::new(AppState { catalog, versions }))
         .merge(negotiation_routes(provider))
+        .merge(transfer_routes(transfers))
         .merge(callback_routes(consumer));
     Ok((router, negotiator))
 }
@@ -345,6 +362,27 @@ fn negotiation_routes(provider: Arc<negotiation::Provider>) -> Router {
         .route(
             &format!("{n}/{{pid}}/termination"),
             post(negotiation::terminate),
+        )
+        .with_state(provider)
+}
+
+fn transfer_routes(provider: Arc<transfer::TransferProvider>) -> Router {
+    let t = format!("{DSP_PATH}/transfers");
+    Router::new()
+        .route(&format!("{t}/request"), post(transfer::request))
+        .route(&format!("{t}/{{pid}}"), get(transfer::get))
+        .route(&format!("{t}/{{pid}}/start"), post(transfer::start))
+        .route(
+            &format!("{t}/{{pid}}/suspension"),
+            post(transfer::suspension),
+        )
+        .route(
+            &format!("{t}/{{pid}}/completion"),
+            post(transfer::completion),
+        )
+        .route(
+            &format!("{t}/{{pid}}/termination"),
+            post(transfer::termination),
         )
         .with_state(provider)
 }

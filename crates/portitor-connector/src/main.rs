@@ -37,8 +37,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             .map_err(|e| format!("cannot open {}: {e}", config.db_file.display()))?,
     );
     let mut ports = portitor_connector::Ports::new(Arc::new(sender));
-    ports.store = portitor_connector::negotiation::AnyStore(Arc::clone(&store) as _);
-    ports.consumer_store = portitor_connector::consumer::AnyConsumerStore(store);
+    ports.use_sqlite(&store);
     let (app, negotiator) = portitor_connector::build(&config, ports)?;
     // messages saved but not acknowledged before the last stop
     match negotiator.resume() {

@@ -57,18 +57,20 @@ pub fn validate(offer: &Offer) -> Result<(), PolicyError> {
     Ok(())
 }
 
-/// Whether every permission of `offer` holds at `now` (an `xsd:dateTime`
-/// with a time zone, as [`crate::negotiation::provider::Environment::now`]
-/// returns). The constraints of one rule must all hold.
+/// Whether every permission of `policy` (an offer or an agreement) holds
+/// at `now` (an `xsd:dateTime` with a time zone, as
+/// [`crate::negotiation::provider::Environment::now`] returns). The
+/// constraints of one rule must all hold.
 ///
 /// # Errors
 ///
 /// A constraint is not understood, or does not hold at `now`.
-pub fn permissions_hold(offer: &Offer, now: &str) -> Result<(), PolicyError> {
+pub fn permissions_hold<'a>(policy: impl Into<Terms<'a>>, now: &str) -> Result<(), PolicyError> {
+    let terms = policy.into();
     let now = parse_time(now)
         .ok_or_else(|| PolicyError::Unsupported(format!("current time {now:?}")))?
         .start;
-    for c in offer.permission.iter().flat_map(|r| &r.constraint) {
+    for c in terms.permission.iter().flat_map(|r| &r.constraint) {
         if !check(c, Some(now))? {
             return Err(PolicyError::NotSatisfied(describe(c)));
         }

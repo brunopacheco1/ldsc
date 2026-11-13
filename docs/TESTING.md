@@ -56,7 +56,9 @@ Where the tests are:
   leaves the process. `tests/dsp_negotiation.rs`, for example, records the
   messages the provider would send instead of sending them;
   `tests/dsp_consumer.rs` does the same for the consumer side, with a fake
-  provider, and checks every message against the DSP JSON Schemas. The SQLite
+  provider, and checks every message against the DSP JSON Schemas.
+  `tests/dsp_transfer.rs` does the same for transfers as provider, with a
+  fake data plane and a fixed agreement. The SQLite
   store is tested on an in-memory database and on a real file.
 - `tests/dsp_catalog.rs` also checks that every path in
   [docs/api/openapi.json](api/openapi.json) is served.

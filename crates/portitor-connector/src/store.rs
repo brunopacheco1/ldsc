@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Adapter: negotiations (as provider and as consumer) kept in a `SQLite`
-//! file.
+//! Adapter: negotiations (as provider and as consumer) and transfers (as
+//! provider) kept in a `SQLite` file. Transfers are in `store/transfers.rs`.
 //!
 //! One connector process owns one file (no sharing between replicas). The
 //! SQL is kept portable (plain `CREATE TABLE`, `INSERT`, `UPDATE ... WHERE`)
@@ -17,7 +17,10 @@ use portitor_dsp::negotiation::consumer::{self, ConsumerNegotiation, ConsumerSto
 use portitor_dsp::negotiation::provider::{self, Negotiation, NegotiationStore, StoreError};
 use portitor_dsp::negotiation::{NegotiationState, Transition};
 use rusqlite::{Connection, Row, params};
+
+mod transfers;
 use serde::{Deserialize, Serialize};
+pub use transfers::finalized_agreement;
 
 /// Schema migrations, applied in order. The schema version is the number
 /// of migrations applied (`PRAGMA user_version`). Never edit a migration
@@ -49,6 +52,20 @@ const MIGRATIONS: &[&str] = &[
      ALTER TABLE negotiation ADD COLUMN version INTEGER NOT NULL DEFAULT 0;
      ALTER TABLE consumer_negotiation ADD COLUMN pending TEXT;
      ALTER TABLE consumer_negotiation ADD COLUMN version INTEGER NOT NULL DEFAULT 0",
+    // 0.4: transfers as provider (ADR 0013), with the same outbox and
+    // version as negotiations
+    "CREATE TABLE transfer (
+        provider_pid     TEXT PRIMARY KEY,
+        consumer_pid     TEXT NOT NULL,
+        state            TEXT NOT NULL,
+        callback_address TEXT NOT NULL,
+        counter_party    TEXT NOT NULL,
+        agreement_id     TEXT NOT NULL,
+        dataset_id       TEXT NOT NULL,
+        format           TEXT NOT NULL,
+        pending          TEXT,
+        version          INTEGER NOT NULL DEFAULT 0
+    )",
 ];
 
 /// Adapter: negotiations in a `SQLite` file.
@@ -171,38 +188,41 @@ fn parsed_version(v: i64) -> Result<u64, StoreError> {
 }
 
 /// How a pending message is stored (JSON in the `pending` column). The
-/// negotiation it belongs to is the row.
+/// negotiation or transfer it belongs to is the row; `S` is its state type.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct StoredMessage {
+struct StoredMessage<S> {
     url: String,
     status_url: String,
     body: serde_json::Value,
+    /// The transition's stable name (`Transition::name`).
     transition: String,
-    to: NegotiationState,
+    to: S,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     initial: bool,
 }
 
-impl StoredMessage {
+impl<S> StoredMessage<S> {
     fn new(
         url: &str,
         status_url: &str,
         body: &serde_json::Value,
-        t: Transition,
-        to: NegotiationState,
+        transition: &str,
+        to: S,
         initial: bool,
     ) -> Self {
         Self {
             url: url.to_owned(),
             status_url: status_url.to_owned(),
             body: body.clone(),
-            transition: t.name().to_owned(),
+            transition: transition.to_owned(),
             to,
             initial,
         }
     }
+}
 
+impl StoredMessage<NegotiationState> {
     fn transition(&self) -> Result<Transition, StoreError> {
         Transition::from_name(&self.transition)
             .ok_or_else(|| StoreError(format!("stored transition {}", self.transition)))
@@ -215,7 +235,7 @@ fn provider_pending(o: Option<&provider::Outgoing>) -> Result<Option<String>, St
             &o.url,
             &o.status_url,
             &o.body,
-            o.transition,
+            o.transition.name(),
             o.to,
             false,
         ))
@@ -229,7 +249,7 @@ fn consumer_pending(o: Option<&consumer::Outgoing>) -> Result<Option<String>, St
             &o.url,
             &o.status_url,
             &o.body,
-            o.transition,
+            o.transition.name(),
             o.to,
             o.initial,
         ))
@@ -244,7 +264,7 @@ fn negotiation(r: &Row<'_>) -> Result<Negotiation, StoreError> {
     let provider_pid: String = col(r, 0)?;
     let pending = col::<Option<String>>(r, 7)?
         .map(|p| -> Result<provider::Outgoing, StoreError> {
-            let m: StoredMessage = parsed("pending message", &p)?;
+            let m: StoredMessage<NegotiationState> = parsed("pending message", &p)?;
             Ok(provider::Outgoing {
                 provider_pid: provider_pid.clone(),
                 transition: m.transition()?,
@@ -346,7 +366,7 @@ fn consumer_negotiation(r: &Row<'_>) -> Result<ConsumerNegotiation, StoreError> 
     let consumer_pid: String = col(r, 0)?;
     let pending = col::<Option<String>>(r, 7)?
         .map(|p| -> Result<consumer::Outgoing, StoreError> {
-            let m: StoredMessage = parsed("pending message", &p)?;
+            let m: StoredMessage<NegotiationState> = parsed("pending message", &p)?;
             Ok(consumer::Outgoing {
                 consumer_pid: consumer_pid.clone(),
                 transition: m.transition()?,
@@ -683,7 +703,7 @@ mod tests {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, i64::try_from(MIGRATIONS.len()).unwrap());
         let store = SqliteNegotiations::setup(conn).unwrap();
         let n = NegotiationStore::get(&store, "p").unwrap().unwrap();
         assert_eq!((n.pending, n.version), (None, 0));

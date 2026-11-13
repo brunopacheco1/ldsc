@@ -271,6 +271,13 @@
       }
     },
     {
+      "name": "Tests: portitor-connector dsp_transfer",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": ["test", "-p", "portitor-connector", "--test", "dsp_transfer"]
+      },
+    {
       "name": "Tests: portitor-connector management_api",
       "type": "lldb",
       "request": "launch",

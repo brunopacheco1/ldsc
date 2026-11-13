@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::Context;
 
+pub mod provider;
+
 type_tag!(
     /// `@type: TransferRequestMessage`
     TransferRequestMessageType,

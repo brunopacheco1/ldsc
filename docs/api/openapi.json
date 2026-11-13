@@ -451,6 +451,378 @@
         }
       }
     },
+    "/dsp/2025-1/transfers/request": {
+      "post": {
+        "tags": [
+          "Transfer process (provider)"
+        ],
+        "summary": "Request a transfer",
+        "description": "The consumer asks for a dataset under a finalized agreement it holds, in a format the dataset offers (ADR 0013). Only pull transfers (format HttpData-PULL) are supported. The provider answers with its acknowledgement, then sends a TransferStartMessage with the data address (or a termination) to the consumer's callbackAddress.",
+        "operationId": "transferRequest",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-request-message-schema.json"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Transfer created (state REQUESTED)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-process-schema.json"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid message, no finalized agreement for the caller, format not offered or not supported, push requested, or refused callback address",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-error-schema.json"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dsp/2025-1/transfers/{providerPid}": {
+      "get": {
+        "tags": [
+          "Transfer process (provider)"
+        ],
+        "summary": "State of a transfer",
+        "operationId": "transfer",
+        "parameters": [
+          {
+            "name": "providerPid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The provider's id for the transfer"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The transfer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-process-schema.json"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown transfer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-error-schema.json"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dsp/2025-1/transfers/{providerPid}/start": {
+      "post": {
+        "tags": [
+          "Transfer process (provider)"
+        ],
+        "summary": "Consumer starts a suspended transfer again",
+        "operationId": "transferStart",
+        "parameters": [
+          {
+            "name": "providerPid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The provider's id for the transfer"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-start-message-schema.json"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Accepted (state STARTED)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-process-schema.json"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid message or transition",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-error-schema.json"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown transfer (also answered for another consumer's transfer)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-error-schema.json"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The data plane or the store failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-error-schema.json"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dsp/2025-1/transfers/{providerPid}/suspension": {
+      "post": {
+        "tags": [
+          "Transfer process (provider)"
+        ],
+        "summary": "Consumer suspends the transfer",
+        "operationId": "transferSuspension",
+        "parameters": [
+          {
+            "name": "providerPid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The provider's id for the transfer"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-suspension-message-schema.json"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Accepted (state SUSPENDED)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-process-schema.json"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid message or transition",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-error-schema.json"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown transfer (also answered for another consumer's transfer)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-error-schema.json"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The data plane or the store failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-error-schema.json"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dsp/2025-1/transfers/{providerPid}/completion": {
+      "post": {
+        "tags": [
+          "Transfer process (provider)"
+        ],
+        "summary": "Consumer completes the transfer",
+        "operationId": "transferCompletion",
+        "parameters": [
+          {
+            "name": "providerPid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The provider's id for the transfer"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-completion-message-schema.json"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Accepted (state COMPLETED)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-process-schema.json"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid message or transition",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-error-schema.json"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown transfer (also answered for another consumer's transfer)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-error-schema.json"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The data plane or the store failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-error-schema.json"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dsp/2025-1/transfers/{providerPid}/termination": {
+      "post": {
+        "tags": [
+          "Transfer process (provider)"
+        ],
+        "summary": "Consumer ends the transfer",
+        "operationId": "transferTermination",
+        "parameters": [
+          {
+            "name": "providerPid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The provider's id for the transfer"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-termination-message-schema.json"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Accepted (state TERMINATED)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-process-schema.json"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid message or transition",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-error-schema.json"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown transfer (also answered for another consumer's transfer)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-error-schema.json"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The data plane or the store failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-error-schema.json"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/dsp/2025-1/callback/negotiations/{consumerPid}": {
       "get": {
         "tags": [
