@@ -62,11 +62,11 @@ steps 3 and 5, including revocation.
 
 ### What a provider (or consumer) requires in 0.5
 
-- One credential of type `MembershipCredential`, profile `vc20-bssl/jwt`,
+- One credential of type `MembershipCredential`, in either DCP profile,
   issued by a DID in `PORTITOR_TRUSTED_ISSUERS` (a list of DIDs). No
   trusted issuers configured means the connector does not start.
 - Scopes are configuration, with a default of
-  `org.eclipse.dspace.dcp.vc.type:MembershipCredential:read` (the TCK's
+  `org.eclipse.dspace.dcp.vc.type:MembershipCredential` (the TCK's
   default; EDC uses its own alias, so the EDC test sets it explicitly).
   DCP leaves scope values to the dataspace.
 - The consumer side checks the provider the same way on callbacks, so a

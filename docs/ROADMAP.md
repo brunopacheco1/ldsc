@@ -172,7 +172,8 @@ TCK v1.2.1 are the targets (latest releases, checked 2026-11-13).
   did:web document, one P-256 key from a mounted file, Secure Token
   Service (the DCP TCK and EDC need one), presentation API, storage API
   and credential offers (holder side), credentials in SQLite. Profile
-  `vc20-bssl/jwt` only. Its own signed image.
+  both DCP profiles, `vc11-sl2021/jwt` (what the DCP TCK uses) and
+  `vc20-bssl/jwt` (what Gaia-X needs in 0.7). Its own signed image.
 - The connector authenticates every DSP request with DCP
   ([ADR 0016](adr/0016-dsp-caller-authentication.md)): the caller's DID
   is proven, it must hold a `MembershipCredential` from a trusted issuer,

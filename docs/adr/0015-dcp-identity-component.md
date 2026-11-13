@@ -10,12 +10,14 @@ SPDX-License-Identifier: Apache-2.0
 - Date: 2026-11-13
 - Scope: release 0.5. Builds on ADR 0003 (three images; the identity
   image ships in 0.5) and ADR 0004 (hexagonal architecture).
-- Decisions already taken by the maintainer (2026-11-13, 0.5 plan): one
-  DCP profile, `vc20-bssl/jwt`; the identity component signs every token
+- Decisions already taken by the maintainer (2026-11-13, 0.5 plan): the
+  identity component signs every token
   for its participant, so the private key lives only there; one P-256
   key in a mounted PEM file, no Vault or HSM in 0.5; a test-only tool,
   not shipped in any image, signs credentials for the demo and the EDC
-  test until the issuer arrives in 0.6.
+  test until the issuer arrives in 0.6. Both DCP profiles,
+  `vc11-sl2021/jwt` and `vc20-bssl/jwt` (maintainer, 2026-11-13, after
+  the TCK finding below; the plan first said `vc20-bssl/jwt` only).
 
 ## Context
 
@@ -55,8 +57,19 @@ What EDC does (IdentityHub and Connector, tag v1.0.0-RC7, 2026-11-13):
   credentials (`edc.iam.sts.oauth.token.url`, `...client.id`), reads
   enveloped presentations, and checks BitstringStatusList revocation.
 
-So `vc20-bssl/jwt` alone is enough to talk to EDC, and it is the format
-Gaia-X Danube needs in 0.7 (VCDM 2.0, VC-JWT).
+IdentityHub's default VCDM 2.0 presentation is a JWT of type
+`EnvelopedVerifiablePresentation` whose `id` is
+`data:application/vp+jwt,<VP JWT>`; the EDC connector accepts that and a
+plain `VerifiablePresentation` JWT
+(`JwtToVerifiablePresentationTransformer`).
+
+The DCP TCK v1.2.1 itself only uses **VCDM 1.1**: its credentials are
+JWTs with a `vc` claim, the `https://www.w3.org/2018/credentials/v1`
+context and `issuanceDate`, and its presentations are JWTs with a `vp`
+claim (`JwtCredentialGenerator`, `JwtPresentationGenerator`). Its
+verifier tests put a BitstringStatusList entry on those 1.1 credentials.
+So `vc20-bssl/jwt` alone cannot pass the TCK, while Gaia-X Danube needs
+VCDM 2.0 in 0.7.
 
 ## Decision
 
@@ -66,7 +79,7 @@ Gaia-X Danube needs in 0.7 (VCDM 2.0, VC-JWT).
 |---|---|---|
 | DID document | did:web | Served at `/.well-known/did.json` or under a path. One verification method (the P-256 key) in `authentication`, `assertionMethod` and `capabilityInvocation`, and a `CredentialService` service entry. |
 | Secure Token Service | DCP `identity-trust-sts-api.yaml` (non-normative) | OAuth client credentials. Creates self-issued ID tokens for the connector, with `aud`, and with a `token` claim (access token) when asked for `bearer_access_scope`. One client: the participant's connector. |
-| Presentation API | DCP section 5 | `PresentationQueryMessage` with `scope`; answers with one enveloped VP (JWT) per profile. Checks the caller's ID token and the access token in it, and returns only credentials the access token allows. |
+| Presentation API | DCP section 5 | `PresentationQueryMessage` with `scope`; answers with one VP (JWT) per profile, as DCP's homogeneity rule requires. Checks the caller's ID token and the access token in it, and returns only credentials the access token allows. |
 | Storage API | DCP section 6.5 | Accepts `CredentialMessage` only from a trusted issuer DID, only for a known pending request, and only after checking each credential's proof. |
 | Credential offer | DCP section 6.6 | Accepts and records `CredentialOfferMessage`. Asking the issuer for the offered credentials (`CredentialRequestMessage`) comes in 0.6, with the issuer. |
 | Management API | none (ours) | On its own port with an API key, like the connector's. List credentials; create a pending credential request (`holderPid`), which the TCK and the test tool need; delete a credential. OpenAPI generated with utoipa. |
@@ -74,15 +87,25 @@ Gaia-X Danube needs in 0.7 (VCDM 2.0, VC-JWT).
 ### What it does not do in 0.5
 
 - No issuing (0.6, `portitor-issuer`). No Gaia-X credentials (0.7).
-- No `vc11-sl2021/jwt`. A credential in that profile is refused at the
-  Storage API. Adding it later is a new presentation creator behind the
-  same port.
+- No JSON-LD credentials with embedded proofs (Data Integrity); JWT
+  only, in both profiles.
 - No presentation definitions (DIF Presentation Exchange). A query with
   only a `presentationDefinition` gets an error. The TCK does not test it
   yet.
 - No key rotation API. Rotation is manual and documented: add the new key
   to the DID document, switch, remove the old key.
 - One participant per process. Multi-tenant hosting is not a goal.
+
+### Credential formats (profiles)
+
+| Profile | Credential | Presentation | Status list |
+|---|---|---|---|
+| `vc11-sl2021/jwt` | JWT, VC in the `vc` claim | JWT, VP in the `vp` claim | StatusList2021, and BitstringStatusList (as the TCK uses) |
+| `vc20-bssl/jwt` | `vc+jwt`, the VC is the payload | `vp+jwt` with `EnvelopedVerifiableCredential` entries; an `EnvelopedVerifiablePresentation` wrapper is accepted | BitstringStatusList |
+
+Both are stored, presented and verified. A presentation holds credentials
+of one profile only. The status list check accepts either list type on
+either profile, because the TCK mixes them.
 
 ### Keys
 
@@ -107,8 +130,9 @@ Gaia-X Danube needs in 0.7 (VCDM 2.0, VC-JWT).
 ### Crates
 
 - `portitor-dcp` (domain, no I/O) grows: credential and presentation
-  types for `vc20-bssl/jwt`, the DCP messages, scopes, BitstringStatusList
-  bit checks, token rules. The connector uses the same crate as verifier.
+  types for both profiles (VCDM 1.1 JWT with `vc`/`vp` claims; VCDM 2.0
+  JOSE with `vc+jwt`/`vp+jwt`, plain or enveloped), the DCP messages,
+  scopes, BitstringStatusList and StatusList2021 bit checks, token rules. The connector uses the same crate as verifier.
 - `portitor-identity`: new binary crate and image, with the HTTP and
   SQLite adapters. Shared HTTP and SQLite helpers move out of the
   connector only where both binaries need them, to keep Sonar duplication
