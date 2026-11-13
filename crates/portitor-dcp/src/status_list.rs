@@ -31,6 +31,8 @@ use base64::alphabet;
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use serde::{Deserialize, Serialize};
 
+use crate::credential::Credential;
+
 /// The largest uncompressed list Portitor reads: 16 MiB, that is about
 /// 134 million entries, a thousand times the spec's minimum.
 pub const MAX_LIST_BYTES: usize = 16 * 1024 * 1024;
@@ -70,6 +72,10 @@ pub enum StatusError {
     /// bit each, are supported).
     #[error("status size {0} is not supported")]
     UnsupportedSize(u64),
+    /// The credential at `statusListCredential` is not a status list of
+    /// the entry's kind.
+    #[error("not a status list credential for this entry: {0}")]
+    NotAList(&'static str),
 }
 
 /// The `credentialStatus` of a credential: where to look up its status.
@@ -179,6 +185,37 @@ fn bit_is_set(bits: &[u8], index: u64) -> Result<bool, StatusError> {
     Ok(byte & (1 << shift) != 0)
 }
 
+/// The list kept in `credential`, the status list credential that
+/// `entry` points to. The kinds must match: a `BitstringStatusListEntry`
+/// needs a `BitstringStatusListCredential` (Bitstring Status List v1.0,
+/// section 2.2), a `StatusList2021Entry` a `StatusList2021Credential`.
+/// The caller checks the credential's signature, issuer and dates first.
+///
+/// # Errors
+/// Another kind of credential, or its subject is not one status list.
+pub fn list_in(
+    credential: &Credential,
+    entry: &StatusEntry,
+) -> Result<StatusListSubject, StatusError> {
+    let (credential_type, subject_type) = match entry.kind.as_str() {
+        "BitstringStatusListEntry" => ("BitstringStatusListCredential", "BitstringStatusList"),
+        "StatusList2021Entry" => ("StatusList2021Credential", "StatusList2021"),
+        _ => return Err(StatusError::NotAList("unknown status entry type")),
+    };
+    if !credential.has_type(credential_type) {
+        return Err(StatusError::NotAList("wrong credential type"));
+    }
+    let [subject] = credential.subjects.as_slice() else {
+        return Err(StatusError::NotAList("not exactly one subject"));
+    };
+    let list = StatusListSubject::deserialize(serde_json::Value::Object(subject.clone()))
+        .map_err(|_| StatusError::NotAList("subject is not a status list"))?;
+    if list.kind != subject_type {
+        return Err(StatusError::NotAList("wrong subject type"));
+    }
+    Ok(list)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -272,5 +309,38 @@ mod tests {
         let huge = encoded(MAX_LIST_BYTES + 1024 * 1024, &[]);
         assert!(huge.len() < 100_000);
         assert_eq!(decode_list(&huge), Err(StatusError::TooLarge));
+    }
+
+    #[test]
+    fn reads_the_list_of_a_status_list_credential() {
+        let key = crate::SigningKey::generate().unwrap();
+        let payload = serde_json::json!({
+            "@context": [crate::credential::VC2_CONTEXT],
+            "type": ["VerifiableCredential", "BitstringStatusListCredential"],
+            "issuer": "did:web:issuer.example",
+            "credentialSubject": {"id": "urn:uuid:list", "type": "BitstringStatusList",
+                "statusPurpose": "revocation", "encodedList": encoded(16, &[1])}
+        });
+        let jwt = key.sign_json("#key-1", "vc+jwt", &payload).unwrap();
+        let credential = Credential::parse(&jwt).unwrap();
+        let found = list_in(&credential, &entry("1")).unwrap();
+        assert_eq!(check(&entry("1"), &found).unwrap(), Status::Set);
+        let mut other = entry("1");
+        other.kind = "StatusList2021Entry".to_owned();
+        assert_eq!(
+            list_in(&credential, &other),
+            Err(StatusError::NotAList("wrong credential type"))
+        );
+        other.kind = "Unknown".to_owned();
+        assert!(list_in(&credential, &other).is_err());
+        let mut two = credential.clone();
+        two.subjects.push(serde_json::Map::new());
+        assert!(list_in(&two, &entry("1")).is_err());
+        let mut wrong = credential;
+        wrong.subjects[0].insert("type".into(), "StatusList2021".into());
+        assert_eq!(
+            list_in(&wrong, &entry("1")),
+            Err(StatusError::NotAList("wrong subject type"))
+        );
     }
 }

@@ -162,6 +162,18 @@ fn vc11_credential_from_the_tck_shape() {
         credential.verify(&issuer.doc, NOW + 300, 0),
         Err(CredentialError::Invalid("expired"))
     );
+    // the TCK writes a fresh UUID as jti next to the credential's own id:
+    // the id wins
+    let with_id = issuer.sign(
+        "JWT",
+        &json!({"iss": ISSUER, "sub": ALICE, "jti": "6f1c", "exp": NOW + 300,
+            "vc": {"@context": [VC1_CONTEXT], "id": "urn:uuid:c-9",
+                "type": ["VerifiableCredential", "MembershipCredential"],
+                "issuer": ISSUER, "issuanceDate": "2026-11-13T16:59:00Z",
+                "credentialSubject": {"id": ALICE}}}),
+    );
+    let credential = Credential::parse(&with_id).unwrap();
+    assert_eq!(credential.id.as_deref(), Some("urn:uuid:c-9"));
     assert_eq!(
         credential.verify(&issuer.doc, NOW - 120, 0),
         Err(CredentialError::Invalid("not yet valid"))
