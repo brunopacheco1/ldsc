@@ -31,8 +31,8 @@ use serde_json::Value;
 use utoipa::{IntoParams, OpenApi, ToSchema};
 
 use crate::Negotiator;
-use portitor_runtime::api_key::BearerKey;
 pub use portitor_runtime::api_key::{ApiKey, MIN_KEY_LEN, Problem, problem, require_key};
+use portitor_runtime::api_key::{BearerKey, internal_error};
 
 /// Where the management API listens, and its key.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,16 +69,11 @@ fn refused(reason: &[Value]) -> Response {
     problem(StatusCode::BAD_REQUEST, &reasons.join("; "))
 }
 
-fn internal(what: &str, error: &dyn std::fmt::Display) -> Response {
-    tracing::error!(%error, "{what} failed");
-    problem(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
-}
-
 fn failed(failure: &Failure) -> Response {
     match failure {
         Failure::BadRequest(e) => refused(&e.reason),
         Failure::NotFound(_) => problem(StatusCode::NOT_FOUND, "no such negotiation"),
-        Failure::Store(e) => internal("negotiation store", e),
+        Failure::Store(e) => internal_error("negotiation store", e),
     }
 }
 
@@ -86,8 +81,8 @@ fn transfer_failed(failure: &TransferFailure) -> Response {
     match failure {
         TransferFailure::BadRequest(e) => refused(&e.reason),
         TransferFailure::NotFound(_) => problem(StatusCode::NOT_FOUND, "no such transfer"),
-        TransferFailure::Store(e) => internal("transfer store", e),
-        TransferFailure::DataPlane(e) => internal("data plane", e),
+        TransferFailure::Store(e) => internal_error("transfer store", e),
+        TransferFailure::DataPlane(e) => internal_error("data plane", e),
     }
 }
 

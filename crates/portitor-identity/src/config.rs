@@ -8,6 +8,8 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+use portitor_runtime::settings::comma_list;
+
 /// The default scope aliases that mean "credentials of this type", on top
 /// of DCP's own `org.eclipse.dspace.dcp.vc.type`: EDC's (`portitor_dcp::scope`).
 pub const DEFAULT_TYPE_ALIASES: &str = "org.eclipse.edc.vc.type";
@@ -102,7 +104,7 @@ impl Config {
                 "not an http(s) URL",
             ));
         }
-        let trusted_issuers = list(&required("PORTITOR_TRUSTED_ISSUERS")?);
+        let trusted_issuers = comma_list(&required("PORTITOR_TRUSTED_ISSUERS")?);
         if trusted_issuers.is_empty() {
             return Err(invalid("PORTITOR_TRUSTED_ISSUERS", "required"));
         }
@@ -138,7 +140,7 @@ impl Config {
             sts_client_id,
             sts_client_secret_file,
             trusted_issuers,
-            scope_type_aliases: list(&scope_type_aliases),
+            scope_type_aliases: comma_list(&scope_type_aliases),
             allow_http: text("PORTITOR_ALLOW_HTTP_CALLBACKS")
                 .is_some_and(|v| v.eq_ignore_ascii_case("true")),
         })
@@ -150,15 +152,6 @@ fn invalid(name: &'static str, problem: &str) -> ConfigError {
         name,
         problem: problem.to_owned(),
     }
-}
-
-/// A comma-separated list, without empty entries.
-fn list(text: &str) -> Vec<String> {
-    text.split(',')
-        .map(str::trim)
-        .filter(|entry| !entry.is_empty())
-        .map(str::to_owned)
-        .collect()
 }
 
 /// The path part of an `http(s)` URL, without a trailing `/`: `""` for

@@ -98,6 +98,14 @@ pub fn problem(status: StatusCode, detail: &str) -> Response {
     res
 }
 
+/// HTTP 500 with a problem body that says only "internal error"; the
+/// `error` itself goes to the log as "`what` failed", never to the
+/// caller.
+pub fn internal_error(what: &str, error: &dyn std::fmt::Display) -> Response {
+    tracing::error!(%error, "{what} failed");
+    problem(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+}
+
 /// Middleware: lets a request through only with `Authorization: Bearer
 /// <the key>` (read by [`crate::http::bearer_token_in`]); otherwise
 /// answers 401 with a problem body. The key is compared in constant time

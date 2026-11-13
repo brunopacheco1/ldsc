@@ -32,6 +32,7 @@ use portitor_dsp::CatalogError;
 use portitor_dsp::negotiation::ContractNegotiationError;
 use portitor_dsp::transfer::TransferError;
 use portitor_runtime::BoxFuture;
+use portitor_runtime::settings::comma_list;
 
 pub mod dcp;
 pub mod sts;
@@ -234,12 +235,16 @@ impl AuthSettings {
         if sts_client_secret.is_empty() {
             return Err(format!("the STS client secret file {secret_file} is empty"));
         }
-        let trusted_issuers = list(text("PORTITOR_TRUSTED_ISSUERS").as_deref());
+        let trusted_issuers = comma_list(
+            text("PORTITOR_TRUSTED_ISSUERS")
+                .as_deref()
+                .unwrap_or_default(),
+        );
         if trusted_issuers.is_empty() {
             return Err("PORTITOR_TRUSTED_ISSUERS is required: the DIDs trusted to issue MembershipCredential".to_owned());
         }
         let scopes = match text("PORTITOR_DCP_SCOPES") {
-            Some(scopes) => list(Some(&scopes)),
+            Some(scopes) => comma_list(&scopes),
             None => vec![DEFAULT_SCOPE.to_owned()],
         };
         if scopes.is_empty() {
@@ -263,18 +268,6 @@ impl AuthSettings {
             allow_http,
         }))
     }
-}
-
-/// The non-empty, trimmed items of a comma-separated list.
-fn list(text: Option<&str>) -> Vec<String> {
-    let mut items = Vec::new();
-    for item in text.unwrap_or_default().split(',') {
-        let item = item.trim();
-        if !item.is_empty() {
-            items.push(item.to_owned());
-        }
-    }
-    items
 }
 
 /// The DCP adapters for `settings`: the verifier and the prover, both
