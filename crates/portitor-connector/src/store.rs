@@ -77,9 +77,8 @@ const MIGRATIONS: &[&str] = &[
         token_hash TEXT NOT NULL,
         expires_at INTEGER NOT NULL
     )",
-    // 0.4: transfers as consumer (ADR 0014); `data_address` holds the
-    // provider's data address with its access token, only while the
-    // transfer can still be used
+    // 0.4: transfers as consumer (ADR 0014). The provider's data address
+    // and its access token are not stored: they are kept in memory only.
     "CREATE TABLE consumer_transfer (
         consumer_pid     TEXT PRIMARY KEY,
         provider_pid     TEXT,
@@ -88,15 +87,19 @@ const MIGRATIONS: &[&str] = &[
         provider_id      TEXT NOT NULL,
         agreement_id     TEXT NOT NULL,
         format           TEXT NOT NULL,
-        data_address     TEXT,
         pending          TEXT,
         version          INTEGER NOT NULL DEFAULT 0
     )",
 ];
 
-/// Adapter: negotiations in a `SQLite` file.
+/// Adapter: negotiations and transfers in a `SQLite` file.
 #[derive(Debug)]
-pub struct SqliteNegotiations(Mutex<Connection>);
+pub struct SqliteNegotiations {
+    conn: Mutex<Connection>,
+    /// The data addresses of our transfers as consumer, in memory only
+    /// (ADR 0014).
+    addresses: consumer_transfers::Addresses,
+}
 
 impl SqliteNegotiations {
     /// Opens (or creates) the database file and brings its schema up to
@@ -129,12 +132,15 @@ impl SqliteNegotiations {
         conn.busy_timeout(std::time::Duration::from_secs(5))
             .map_err(err)?;
         migrate(&mut conn)?;
-        Ok(Self(Mutex::new(conn)))
+        Ok(Self {
+            conn: Mutex::new(conn),
+            addresses: consumer_transfers::Addresses::default(),
+        })
     }
 
     fn conn(&self) -> MutexGuard<'_, Connection> {
         // SQLite keeps the file consistent even if a holder panicked
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        self.conn.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn query<T>(

@@ -17,7 +17,8 @@
 //! The provider's start message carries the data address: where to fetch
 //! the data and the access token. It is kept while the transfer can still
 //! be used (STARTED or SUSPENDED) and dropped when the transfer ends, so an
-//! ended transfer keeps no token.
+//! ended transfer keeps no token. Portitor's store keeps it in memory only,
+//! never on disk (ADR 0014).
 //!
 //! As everywhere (ADR 0007): a message is saved as `pending` before it is
 //! sent, a provider message that fits only the state our pending message
