@@ -90,6 +90,8 @@ impl ConsumerDecider for Fixed {
 
 const CB: &str = "https://consumer.example/dsp/2025-1/callback";
 const PROVIDER: &str = "https://provider.example/dsp/2025-1/";
+/// Our participant id, the assignee of the agreements.
+const ME: &str = "did:web:c";
 
 fn offer() -> Offer {
     serde_json::from_value(json!({"@id": "o1", "@type": "Offer", "target": "d1",
@@ -154,7 +156,13 @@ fn status(f: Failure) -> &'static str {
 #[test]
 fn request_offer_accept_agree_verify_finalize() {
     let store = Store::default();
-    let svc = ConsumerService::new(&store, AcceptAndVerify, Env::default(), CB.to_owned());
+    let svc = ConsumerService::new(
+        &store,
+        AcceptAndVerify,
+        Env::default(),
+        CB.to_owned(),
+        ME.to_owned(),
+    );
     let (n, req) = svc.start(PROVIDER, "did:web:p", offer()).unwrap();
     let cpid = n.consumer_pid.clone();
     assert_eq!(n.state, NegotiationState::Requested);
@@ -182,6 +190,25 @@ fn request_offer_accept_agree_verify_finalize() {
     assert_eq!(svc.delivered(&accept, None).unwrap(), None);
     assert_eq!(state(&store, &cpid), NegotiationState::Accepted);
 
+    // agreements from another provider, or for another consumer, are
+    // refused for that reason and change nothing
+    for (field, reason) in [
+        ("assigner", "the agreement's assigner is not the provider"),
+        ("assignee", "the agreement's assignee is not this consumer"),
+    ] {
+        let mut wrong = agreement_msg("p1", &cpid);
+        if field == "assigner" {
+            wrong.agreement.assigner = "did:web:x".to_owned();
+        } else {
+            wrong.agreement.assignee = "did:web:x".to_owned();
+        }
+        let Failure::BadRequest(error) = svc.agreement(&cpid, &wrong).unwrap_err() else {
+            panic!("{field}: not a 400");
+        };
+        assert_eq!(error.reason, [json!(reason)], "{field}");
+        assert_eq!(state(&store, &cpid), NegotiationState::Accepted);
+    }
+
     let (a, verify) = svc.agreement(&cpid, &agreement_msg("p1", &cpid)).unwrap();
     assert_eq!(a.state, NegotiationState::Agreed);
     let verify = verify.unwrap();
@@ -205,7 +232,13 @@ fn request_offer_accept_agree_verify_finalize() {
 #[test]
 fn provider_message_before_the_acknowledgement() {
     let store = Store::default();
-    let svc = ConsumerService::new(&store, AcceptAndVerify, Env::default(), CB.to_owned());
+    let svc = ConsumerService::new(
+        &store,
+        AcceptAndVerify,
+        Env::default(),
+        CB.to_owned(),
+        ME.to_owned(),
+    );
     let (n, req) = svc.start(PROVIDER, "did:web:p", offer()).unwrap();
     let cpid = n.consumer_pid;
     let (_, accept) = svc.offer(&cpid, &offer_msg("p1", &cpid)).unwrap();
@@ -226,6 +259,7 @@ fn counter_offer_and_terminations() {
         Fixed(ConsumerDecision::Request),
         Env::default(),
         CB.to_owned(),
+        ME.to_owned(),
     );
     let (n, req) = svc.start(PROVIDER, "did:web:p", offer()).unwrap();
     let cpid = n.consumer_pid;
@@ -264,6 +298,7 @@ fn consumer_terminates_and_aborts() {
         Fixed(ConsumerDecision::Terminate),
         Env::default(),
         CB.to_owned(),
+        ME.to_owned(),
     );
     let (n, req) = svc.start(PROVIDER, "did:web:p", offer()).unwrap();
     let cpid = n.consumer_pid;
@@ -287,6 +322,7 @@ fn invalid_provider_messages_are_refused() {
         Fixed(ConsumerDecision::Wait),
         Env::default(),
         CB.to_owned(),
+        ME.to_owned(),
     );
     let (n, req) = svc.start(PROVIDER, "did:web:p", offer()).unwrap();
     let cpid = n.consumer_pid;
@@ -344,7 +380,13 @@ fn invalid_provider_messages_are_refused() {
 #[test]
 fn bad_starts() {
     let store = Store::default();
-    let svc = ConsumerService::new(&store, AcceptAndVerify, Env::default(), CB.to_owned());
+    let svc = ConsumerService::new(
+        &store,
+        AcceptAndVerify,
+        Env::default(),
+        CB.to_owned(),
+        ME.to_owned(),
+    );
     let mut o = offer();
     o.target = None;
     assert_eq!(status(svc.start(PROVIDER, "p", o).unwrap_err()), "400");
@@ -371,7 +413,13 @@ fn bad_starts() {
 #[test]
 fn reads_and_pages() {
     let store = Store::default();
-    let svc = ConsumerService::new(&store, AcceptAndVerify, Env::default(), CB.to_owned());
+    let svc = ConsumerService::new(
+        &store,
+        AcceptAndVerify,
+        Env::default(),
+        CB.to_owned(),
+        ME.to_owned(),
+    );
     let mut pids = Vec::new();
     for _ in 0..3 {
         pids.push(svc.start(PROVIDER, "p", offer()).unwrap().0.consumer_pid);
@@ -393,7 +441,13 @@ fn reads_and_pages() {
 #[test]
 fn a_reply_proves_the_pending_message_arrived() {
     let store = Store::default();
-    let svc = ConsumerService::new(&store, AcceptAndVerify, Env::default(), CB.to_owned());
+    let svc = ConsumerService::new(
+        &store,
+        AcceptAndVerify,
+        Env::default(),
+        CB.to_owned(),
+        ME.to_owned(),
+    );
     let (n, req) = svc.start(PROVIDER, "did:web:p", offer()).unwrap();
     let cpid = n.consumer_pid;
     assert_eq!(svc.pending().unwrap(), vec![req.clone()]);
@@ -435,6 +489,7 @@ fn not_started_only_before_the_provider_answers() {
         Fixed(ConsumerDecision::Wait),
         Env::default(),
         CB.to_owned(),
+        ME.to_owned(),
     );
     let (n, _) = svc.start(PROVIDER, "did:web:p", offer()).unwrap();
     let cpid = n.consumer_pid;
@@ -447,7 +502,13 @@ fn not_started_only_before_the_provider_answers() {
 #[test]
 fn abort_blocks_other_steps_and_retries_lost_writes() {
     let store = Store::default();
-    let svc = ConsumerService::new(&store, AcceptAndVerify, Env::default(), CB.to_owned());
+    let svc = ConsumerService::new(
+        &store,
+        AcceptAndVerify,
+        Env::default(),
+        CB.to_owned(),
+        ME.to_owned(),
+    );
     let (n, req) = svc.start(PROVIDER, "did:web:p", offer()).unwrap();
     let cpid = n.consumer_pid;
     // two other writes come first: the third try succeeds
@@ -483,7 +544,13 @@ fn abort_blocks_other_steps_and_retries_lost_writes() {
 #[test]
 fn checks_offers_and_agreements() {
     let store = Store::default();
-    let svc = ConsumerService::new(&store, AcceptAndVerify, Env::default(), CB.to_owned());
+    let svc = ConsumerService::new(
+        &store,
+        AcceptAndVerify,
+        Env::default(),
+        CB.to_owned(),
+        ME.to_owned(),
+    );
 
     // an offer that expired before the test clock (2026-11-12)
     let (n, req) = svc.start(PROVIDER, "did:web:p", offer()).unwrap();
@@ -521,7 +588,13 @@ fn checks_offers_and_agreements() {
 fn only_the_provider_it_was_started_with_may_answer() {
     // ADR 0016: the caller's proven DID must be the negotiation's provider
     let store = Store::default();
-    let svc = ConsumerService::new(&store, AcceptAndVerify, Env::default(), CB.to_owned());
+    let svc = ConsumerService::new(
+        &store,
+        AcceptAndVerify,
+        Env::default(),
+        CB.to_owned(),
+        ME.to_owned(),
+    );
     let (n, req) = svc.start(PROVIDER, "did:web:p", offer()).unwrap();
     let cpid = n.consumer_pid.clone();
     assert_eq!(req.counter_party, "did:web:p");

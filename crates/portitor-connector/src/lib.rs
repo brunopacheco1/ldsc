@@ -432,6 +432,7 @@ pub fn build(
     let consumer = Arc::new(consumer::Consumer::new(
         &ports,
         callback_address.clone(),
+        config.participant_id.clone(),
         config.allow_http_callbacks,
     ));
     let transfer_consumer = Arc::new(consumer_transfer::TransferConsumer::new(

@@ -124,13 +124,19 @@ pub(crate) struct Consumer {
 }
 
 impl Consumer {
-    pub(crate) fn new(ports: &Ports, callback_address: String, allow_http: bool) -> Self {
+    pub(crate) fn new(
+        ports: &Ports,
+        callback_address: String,
+        participant_id: String,
+        allow_http: bool,
+    ) -> Self {
         Self {
             service: ConsumerService::new(
                 ports.consumer_store.clone(),
                 ports.consumer_decider.clone(),
                 SystemEnvironment,
                 callback_address,
+                participant_id,
             ),
             link: Link::new(ports),
             allow_http,
