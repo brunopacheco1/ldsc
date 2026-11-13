@@ -39,7 +39,7 @@ use std::time::Duration;
 use portitor_dcp::credential::{Credential, Presentation};
 use portitor_dcp::message::{PresentationQueryMessage, PresentationResponseMessage};
 use portitor_dcp::status_list::{self, Status, StatusEntry};
-use portitor_dcp::{DidDocument, JtiCache, unverified_claims, validate_self_issued};
+use portitor_dcp::{Claims, DidDocument, JtiCache, unverified_claims, validate_self_issued};
 use portitor_runtime::did::{DEFAULT_TTL, DidWebResolver};
 use portitor_runtime::http::{HttpSender, Sender as _};
 use portitor_runtime::system::now_secs;
@@ -210,21 +210,31 @@ impl DcpVerifier {
         let unverified = unverified_claims(token).map_err(|e| format!("ID token: {e}"))?;
         let now = now_secs();
         let doc = self.resolver.resolve(&unverified.iss).await?;
-        let claims = {
-            // a panic while holding the lock leaves at most one more token
-            // id in the list
-            let mut used = self
-                .used_token_ids
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            validate_self_issued(token, &doc, &self.own_did, now, LEEWAY, &mut used)
-        }
-        .map_err(|e| format!("ID token: {e}"))?;
+        let claims = self
+            .validate_and_remember(token, &doc, now)
+            .map_err(|e| format!("ID token: {e}"))?;
         let access_token = claims
             .token
             .filter(|t| !t.is_empty())
             .ok_or("the ID token has no access token (token claim)")?;
         Ok(CheckedToken { doc, access_token })
+    }
+
+    /// Checks the token against the caller's DID document and records its
+    /// id as used, under the lock of the used ids.
+    fn validate_and_remember(
+        &self,
+        token: &str,
+        doc: &DidDocument,
+        now: u64,
+    ) -> Result<Claims, portitor_dcp::Error> {
+        // a panic while holding the lock leaves at most one more token id
+        // in the list, so the list is still safe to use
+        let mut used = self
+            .used_token_ids
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        validate_self_issued(token, doc, &self.own_did, now, LEEWAY, &mut used)
     }
 
     /// Step 3: asks the caller's Credential Service for presentations.
