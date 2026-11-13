@@ -163,18 +163,42 @@ all checks green, Scorecard published.
   over HTTP pull; CI runs it on every pull request. The upstream reports
   are drafted; the maintainer files them, and their links are added here.
 
-## 0.5 DCP: identity and presentation
+## 0.5 DCP: identity and DSP authentication
 
-- Identity component: did:web document, key management, self-issued ID
-  token, presentation query API, storage API.
-- Connector verifies the counter-party's credentials on every DSP request.
-- **First interop test against EDC**, in CI: catalog, negotiation and
-  transfer, with DCP against EDC's IdentityHub.
-- Exit: DCP TCK credential service tests green; DSP flows from 0.2 to 0.4
-  run with DCP authentication; the EDC interop test is green in CI.
+Plan approved by the maintainer on 2026-11-13. DCP v1.0.1 and the DCP
+TCK v1.2.1 are the targets (latest releases, checked 2026-11-13).
+
+- Identity component `portitor-identity` ([ADR 0015](adr/0015-dcp-identity-component.md)):
+  did:web document, one P-256 key from a mounted file, Secure Token
+  Service (the DCP TCK and EDC need one), presentation API, storage API
+  and credential offers (holder side), credentials in SQLite. Profile
+  `vc20-bssl/jwt` only. Its own signed image.
+- The connector authenticates every DSP request with DCP
+  ([ADR 0016](adr/0016-dsp-caller-authentication.md)): the caller's DID
+  is proven, it must hold a `MembershipCredential` from a trusted issuer,
+  not revoked (BitstringStatusList). Every outgoing DSP request carries a
+  token from the own identity's STS. `/.well-known/dspace-version` stays
+  open. Credential rules in ODRL stay in 0.6.
+- Until the issuer exists (0.6), a test-only tool, not shipped in any
+  image, signs credentials for the demos and the EDC test.
+- **First interop test against EDC**: catalog, negotiation and pull
+  transfer, with DCP against EDC's IdentityHub. Target the EDC 1.0
+  release candidates and pin 1.0.0 when it ships (fallback 0.18.2). To
+  save CI minutes it runs on pull requests that change DSP or DCP code
+  and nightly (maintainer, 2026-11-13).
 - Spike: how to join a **Simpl-Open** dataspace. Simpl-Open uses EDC with
   DCP outside its agent, but x509/mTLS and attribute-based access inside it.
-  Decide whether Portitor needs an x509/mTLS authentication profile.
+  Decide whether Portitor needs an x509/mTLS authentication profile
+  (ADR 0017).
+- Code quality and readability review before the release, as in 0.4.
+- Pull requests: (1) ADRs 0015 and 0016; (2) DCP domain types;
+  (3) identity component; (4) storage API and DCP TCK credential service
+  tests; (5) connector as verifier, DCP TCK verifier tests, DSP TCK and
+  demos with DCP; (6) EDC interop test; (7) Simpl-Open spike;
+  (8) readability review and 0.5.0.
+- Exit: DCP TCK credential service tests (presentation and holder-side
+  issuance) and verifier tests green; DSP flows from 0.2 to 0.4 run with
+  DCP authentication; the EDC interop test is green in CI.
 
 ## 0.6 DCP: issuance and credential-based policies
 
