@@ -41,7 +41,7 @@ use portitor_dcp::message::{PresentationQueryMessage, PresentationResponseMessag
 use portitor_dcp::status_list::{self, Status, StatusEntry};
 use portitor_dcp::{Claims, DidDocument, JtiCache, unverified_claims, validate_self_issued};
 use portitor_runtime::did::{DEFAULT_TTL, DidWebResolver};
-use portitor_runtime::http::{HttpSender, Sender as _};
+use portitor_runtime::http::{HttpSender, Sender as _, bearer_token};
 use portitor_runtime::system::now_secs;
 use serde_json::Value;
 
@@ -384,14 +384,7 @@ impl CallerVerifier for DcpVerifier {
 /// expects the same.
 fn bearer(authorization: Option<&str>) -> Result<&str, String> {
     let header = authorization.ok_or("no Authorization header")?;
-    match header.split_once(' ') {
-        Some((scheme, token))
-            if scheme.eq_ignore_ascii_case("bearer") && !token.trim().is_empty() =>
-        {
-            Ok(token.trim())
-        }
-        _ => Err("the Authorization header is not a Bearer token".to_owned()),
-    }
+    bearer_token(header).ok_or_else(|| "the Authorization header is not a Bearer token".to_owned())
 }
 
 /// The presentations of a Credential Service's answer, which must be a

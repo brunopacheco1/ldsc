@@ -38,7 +38,7 @@ use portitor_dps::port::{DataPlane, SignalError};
 use portitor_dps::state::DataFlowState;
 use portitor_dsp::transfer::{DataAddress, DataAddressType, EndpointProperty};
 
-use crate::http_client::{HttpsClient, https_client};
+use crate::http_client::{HttpsClient, bearer_token_in, https_client};
 use crate::ports::AnyFlowStore;
 use crate::system::{hex, new_uuid, now_secs};
 
@@ -443,15 +443,6 @@ impl DataPlane for HttpDataPlane {
     }
 }
 
-/// The bearer token of a request, if any.
-fn bearer(headers: &HeaderMap) -> Option<&str> {
-    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
-    let (scheme, token) = value.split_once(' ')?;
-    scheme
-        .eq_ignore_ascii_case("bearer")
-        .then_some(token.trim())
-}
-
 fn unauthorized() -> Response {
     let challenge = [(header::WWW_AUTHENTICATE, "Bearer")];
     (StatusCode::UNAUTHORIZED, challenge).into_response()
@@ -464,7 +455,7 @@ pub(crate) async fn serve(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let Some(token) = bearer(&headers) else {
+    let Some(token) = bearer_token_in(&headers) else {
         return unauthorized();
     };
     let source = match plane.authorize(&id, token, now_secs()) {
@@ -654,17 +645,5 @@ mod tests {
         let b = token_of(&p.start(&second).unwrap());
         assert_ne!(a, b);
         assert_eq!(p.authorize("f2", &a, now_secs()), Err(Denied::Unauthorized));
-    }
-
-    #[test]
-    fn bearer_tokens_are_read_from_the_authorization_header() {
-        let mut headers = HeaderMap::new();
-        assert_eq!(bearer(&headers), None);
-        headers.insert(header::AUTHORIZATION, "Bearer abc".parse().unwrap());
-        assert_eq!(bearer(&headers), Some("abc"));
-        headers.insert(header::AUTHORIZATION, "bearer  abc ".parse().unwrap());
-        assert_eq!(bearer(&headers), Some("abc"));
-        headers.insert(header::AUTHORIZATION, "Basic abc".parse().unwrap());
-        assert_eq!(bearer(&headers), None);
     }
 }

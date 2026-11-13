@@ -95,6 +95,12 @@ versions may change behaviour and configuration.
 - Fuzz target `dcp_did_document`: DID document parsing and key selection.
 
 ### Changed
+- One rule reads `Authorization: Bearer <token>` everywhere
+  (`portitor_runtime::http::bearer_token`): DSP requests, the data plane,
+  the identity component's STS callers and both management APIs now all
+  accept the scheme name in any case (`bearer`, RFC 7235) and ignore
+  spaces around the token. Before, the identity component and the
+  management API keys required exactly `Bearer `.
 - Release assets: one provenance bundle per image,
   `<component>-X.Y.Z.intoto.jsonl`, instead of `portitor-X.Y.Z.intoto.jsonl`.
   `docker build` needs `--target portitor-connector` or

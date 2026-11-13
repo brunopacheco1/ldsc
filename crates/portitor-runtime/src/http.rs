@@ -334,10 +334,57 @@ pub fn outbound_url_allowed(url: &str, allow_http: bool) -> bool {
     !host.is_empty() && !host.contains('@')
 }
 
+/// The token of an `Authorization` header value `Bearer <token>` (RFC
+/// 6750, section 2.1), the one rule for every Portitor endpoint that
+/// takes a bearer token. The scheme name may be written in any case
+/// (`bearer`, `BEARER`; RFC 7235, section 2.1), and spaces around the
+/// token are ignored. `None` for another scheme, an empty token, or a
+/// token without the scheme in front (EDC and the DCP TCK refuse that
+/// too).
+#[must_use]
+pub fn bearer_token(header_value: &str) -> Option<&str> {
+    let (scheme, token) = header_value.split_once(' ')?;
+    let token = token.trim();
+    if scheme.eq_ignore_ascii_case("bearer") && !token.is_empty() {
+        Some(token)
+    } else {
+        None
+    }
+}
+
+/// The bearer token of a request's `Authorization` header, if any (see
+/// [`bearer_token`]). The value is read as UTF-8, so a management API
+/// key with non-ASCII characters still works.
+#[must_use]
+pub fn bearer_token_in(headers: &hyper::HeaderMap) -> Option<&str> {
+    let value = headers.get(hyper::header::AUTHORIZATION)?;
+    let text = std::str::from_utf8(value.as_bytes()).ok()?;
+    bearer_token(text)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bearer_tokens_are_read_from_the_authorization_header() {
+        assert_eq!(bearer_token("Bearer abc"), Some("abc"));
+        assert_eq!(bearer_token("bearer  abc "), Some("abc"));
+        assert_eq!(bearer_token("BEARER abc"), Some("abc"));
+        for refused in ["", "abc", "Bearer", "Bearer  ", "Basic abc", "Bearerabc"] {
+            assert_eq!(bearer_token(refused), None, "{refused:?}");
+        }
+        let mut headers = hyper::HeaderMap::new();
+        assert_eq!(bearer_token_in(&headers), None);
+        headers.insert(hyper::header::AUTHORIZATION, "Bearer abc".parse().unwrap());
+        assert_eq!(bearer_token_in(&headers), Some("abc"));
+        headers.insert(
+            hyper::header::AUTHORIZATION,
+            hyper::header::HeaderValue::from_bytes("Bearer k\u{e9}y".as_bytes()).unwrap(),
+        );
+        assert_eq!(bearer_token_in(&headers), Some("k\u{e9}y"));
+    }
 
     #[test]
     fn outbound_urls() {
