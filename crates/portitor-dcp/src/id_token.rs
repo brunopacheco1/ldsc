@@ -47,10 +47,8 @@ fn one_audience<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Str
     }
     match Audience::deserialize(deserializer)? {
         Audience::One(one) => Ok(one),
-        Audience::List(list) => match <[String; 1]>::try_from(list) {
-            Ok([only]) => Ok(only),
-            Err(_) => Err(serde::de::Error::custom("aud must name one audience")),
-        },
+        Audience::List(mut list) if list.len() == 1 => Ok(list.remove(0)),
+        Audience::List(_) => Err(serde::de::Error::custom("aud must name one audience")),
     }
 }
 

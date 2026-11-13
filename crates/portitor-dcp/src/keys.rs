@@ -168,14 +168,18 @@ impl SigningKey {
             kid: Some(kid.to_owned()),
             typ: Some(typ.to_owned()),
         };
-        let h = B64.encode(serde_json::to_vec(&header).map_err(|_| Error::Malformed("header"))?);
-        let c = B64.encode(serde_json::to_vec(payload).map_err(|_| Error::Malformed("claims"))?);
-        let input = format!("{h}.{c}");
-        let sig = self
+        let header_json = serde_json::to_vec(&header).map_err(|_| Error::Malformed("header"))?;
+        let claims_json = serde_json::to_vec(payload).map_err(|_| Error::Malformed("claims"))?;
+        let header_b64 = B64.encode(header_json);
+        let claims_b64 = B64.encode(claims_json);
+        // the signature covers "header.claims", both in base64url
+        let signing_input = format!("{header_b64}.{claims_b64}");
+        let signature = self
             .pair
-            .sign(&self.rng, input.as_bytes())
+            .sign(&self.rng, signing_input.as_bytes())
             .map_err(|_| Error::Key("sign"))?;
-        Ok(format!("{input}.{}", B64.encode(sig.as_ref())))
+        let signature_b64 = B64.encode(signature.as_ref());
+        Ok(format!("{signing_input}.{signature_b64}"))
     }
 }
 

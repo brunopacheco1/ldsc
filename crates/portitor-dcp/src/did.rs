@@ -69,6 +69,17 @@ pub enum Purpose {
     AssertionMethod,
 }
 
+impl Purpose {
+    /// The error text when a key lacks this relationship.
+    const fn missing_message(self) -> &'static str {
+        match self {
+            Self::CapabilityInvocation => "key lacks capabilityInvocation",
+            Self::Authentication => "key lacks authentication",
+            Self::AssertionMethod => "key lacks assertionMethod",
+        }
+    }
+}
+
 /// The parts of a DID document DCP needs.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -131,14 +142,12 @@ impl DidDocument {
         purpose: Purpose,
     ) -> Result<&VerificationMethod, Error> {
         let allowed = self.relationship(purpose);
-        let embedded = allowed.iter().filter_map(|r| match r {
-            Relationship::Embedded(vm) => Some(vm),
-            Relationship::Reference(_) => None,
-        });
-        let mut candidates = self.verification_method.iter().chain(embedded);
         let vm = match kid {
-            Some(kid) => candidates
-                .find(|vm| vm.id == kid || vm.id.strip_prefix(&self.id) == Some(kid))
+            Some(kid) => self
+                .verification_method
+                .iter()
+                .chain(embedded_methods(allowed))
+                .find(|vm| self.names_kid(vm, kid))
                 .ok_or(Error::Invalid("kid not found"))?,
             None => match self.verification_method.as_slice() {
                 [only] => only,
@@ -149,13 +158,25 @@ impl DidDocument {
         if allowed.iter().any(|r| r.id() == vm.id) {
             Ok(vm)
         } else {
-            Err(Error::Invalid(match purpose {
-                Purpose::CapabilityInvocation => "key lacks capabilityInvocation",
-                Purpose::Authentication => "key lacks authentication",
-                Purpose::AssertionMethod => "key lacks assertionMethod",
-            }))
+            Err(Error::Invalid(purpose.missing_message()))
         }
     }
+
+    /// Whether `kid` names `vm`: either its full id
+    /// (`did:web:example.com#key-1`), or only the `#key-1` part, which
+    /// a JWS may use for a key of the signer's own DID document.
+    fn names_kid(&self, vm: &VerificationMethod, kid: &str) -> bool {
+        vm.id == kid || vm.id.strip_prefix(&self.id) == Some(kid)
+    }
+}
+
+/// The verification methods written in full inside a relationship list,
+/// rather than named by reference.
+fn embedded_methods(relationships: &[Relationship]) -> impl Iterator<Item = &VerificationMethod> {
+    relationships.iter().filter_map(|r| match r {
+        Relationship::Embedded(vm) => Some(vm),
+        Relationship::Reference(_) => None,
+    })
 }
 
 /// Returns the HTTPS URL of the DID document for a `did:web` DID.

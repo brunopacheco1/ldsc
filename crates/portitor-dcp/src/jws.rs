@@ -50,30 +50,38 @@ impl<'a> Jws<'a> {
     /// # Errors
     /// Fails on malformed input or a disallowed algorithm.
     pub fn parse(token: &'a str) -> Result<Self, Error> {
-        let (signing_input, sig) = token.rsplit_once('.').ok_or(Error::Malformed("segments"))?;
-        let (h, p) = signing_input
+        // header.payload.signature; the signature covers "header.payload"
+        let (signing_input, signature_b64) =
+            token.rsplit_once('.').ok_or(Error::Malformed("segments"))?;
+        let (header_b64, payload_b64) = signing_input
             .split_once('.')
             .ok_or(Error::Malformed("segments"))?;
-        if p.contains('.') {
+        if payload_b64.contains('.') {
             return Err(Error::Malformed("segments"));
         }
+        let header_json = B64
+            .decode(header_b64)
+            .map_err(|_| Error::Malformed("header b64"))?;
         let header: Header =
-            serde_json::from_slice(&B64.decode(h).map_err(|_| Error::Malformed("header b64"))?)
-                .map_err(|_| Error::Malformed("header json"))?;
+            serde_json::from_slice(&header_json).map_err(|_| Error::Malformed("header json"))?;
         let alg = match header.alg.as_str() {
             "ES256" => Alg::ES256,
             "PS256" => Alg::PS256,
             other => return Err(Error::AlgorithmNotAllowed(other.to_owned())),
         };
+        let signature = B64
+            .decode(signature_b64)
+            .map_err(|_| Error::Malformed("signature b64"))?;
+        let payload = B64
+            .decode(payload_b64)
+            .map_err(|_| Error::Malformed("payload b64"))?;
         Ok(Self {
             signing_input,
-            signature: B64
-                .decode(sig)
-                .map_err(|_| Error::Malformed("signature b64"))?,
+            signature,
             alg,
             kid: header.kid,
             typ: header.typ,
-            payload: B64.decode(p).map_err(|_| Error::Malformed("payload b64"))?,
+            payload,
         })
     }
 
