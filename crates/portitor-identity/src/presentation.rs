@@ -175,3 +175,44 @@ fn presentations(
     }
     Ok(jwts)
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    fn held(id: &str, kind: &str, expires_at: Option<i64>) -> StoredCredential {
+        StoredCredential {
+            id: id.to_owned(),
+            issuer: "did:web:issuer.example".to_owned(),
+            types: vec!["VerifiableCredential".to_owned(), kind.to_owned()],
+            profile: Profile::Vc11,
+            expires_at,
+            holder_pid: "h-1".to_owned(),
+            jwt: "a.b.c".to_owned(),
+        }
+    }
+
+    #[test]
+    fn only_covered_and_unexpired_credentials_are_shown() {
+        let now = 1_000;
+        let credentials = [
+            held("no-end", "MembershipCredential", None),
+            held("later", "MembershipCredential", Some(1_001)),
+            held("ends-now", "MembershipCredential", Some(1_000)),
+            held("ended", "MembershipCredential", Some(999)),
+            held("other-type", "SensitiveDataCredential", Some(2_000)),
+        ];
+        let allowed =
+            [Scope::parse("org.eclipse.dspace.dcp.vc.type:MembershipCredential", &[]).unwrap()];
+        let shown: Vec<&str> = visible(&credentials, &allowed, now)
+            .iter()
+            .map(|credential| credential.id.as_str())
+            .collect();
+        assert_eq!(shown, ["no-end", "later"]);
+        assert!(
+            visible(&credentials, &[], now).is_empty(),
+            "no scope, nothing"
+        );
+    }
+}
