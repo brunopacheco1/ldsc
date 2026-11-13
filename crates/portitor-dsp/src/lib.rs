@@ -46,10 +46,156 @@ macro_rules! type_tag {
     };
 }
 
+/// The two parties of a negotiation or transfer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    /// Offers datasets.
+    Provider,
+    /// Requests datasets.
+    Consumer,
+}
+
+/// The state of a DSP process (a negotiation or a transfer).
+pub trait ProcessState: Copy + std::fmt::Debug {
+    /// The process, as error messages name it.
+    const PROCESS: &'static str;
+}
+
+/// Why a message cannot move a process: `S` is its state, `T` its
+/// transition. Each process module names its own as `TransitionError`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransitionError<S, T> {
+    /// The process is in a terminal state.
+    Terminal(S),
+    /// The party may not send this message (in this state).
+    WrongSender {
+        /// The message.
+        transition: T,
+        /// Who sent it.
+        sender: Role,
+    },
+    /// The message is not allowed in this state (`None`: no process yet).
+    NotAllowed {
+        /// The current state.
+        from: Option<S>,
+        /// The message.
+        transition: T,
+    },
+}
+
+impl<S: ProcessState, T: std::fmt::Debug> std::fmt::Display for TransitionError<S, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let process = S::PROCESS;
+        match self {
+            Self::Terminal(s) => write!(f, "the {process} is {s:?}, a terminal state"),
+            Self::WrongSender { transition, sender } => {
+                write!(f, "a {sender:?} may not send {transition:?}")
+            }
+            Self::NotAllowed {
+                from: None,
+                transition,
+            } => write!(f, "{transition:?} cannot start a {process}"),
+            Self::NotAllowed {
+                from: Some(s),
+                transition,
+            } => write!(f, "{transition:?} is not allowed in state {s:?}"),
+        }
+    }
+}
+
+impl<S: ProcessState, T: std::fmt::Debug> std::error::Error for TransitionError<S, T> {}
+
+/// A message with the JSON-LD context, its `@type` and both process ids.
+/// With `code`, it also carries an optional code and reasons (DSP's
+/// `AbstractTransferCodeMessage`, and the same shape in negotiation).
+/// With `error`, it also gets `new(provider_pid, consumer_pid, code,
+/// reason)`. Other fields can follow in braces.
+macro_rules! pid_message {
+    ($(#[$doc:meta])* $name:ident, $tag:ident) => {
+        pid_message!(@struct $(#[$doc])* $name, $tag, {});
+    };
+    ($(#[$doc:meta])* $name:ident, $tag:ident, code) => {
+        pid_message!(@struct $(#[$doc])* $name, $tag, {
+            /// Implementation-specific code.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub code: Option<String>,
+            /// Reasons, in any form.
+            #[serde(default, skip_serializing_if = "Vec::is_empty")]
+            pub reason: Vec<serde_json::Value>,
+        });
+    };
+    ($(#[$doc:meta])* $name:ident, $tag:ident, { $($extra:tt)* }) => {
+        pid_message!(@struct $(#[$doc])* $name, $tag, { $($extra)* });
+    };
+    ($(#[$doc:meta])* $name:ident, $tag:ident, error) => {
+        pid_message!($(#[$doc])* $name, $tag, code);
+
+        impl $name {
+            /// Builds an error with one reason.
+            #[must_use]
+            pub fn new(provider_pid: &str, consumer_pid: &str, code: &str, reason: &str) -> Self {
+                Self {
+                    context: $crate::Context::default(),
+                    kind: $tag,
+                    provider_pid: provider_pid.to_owned(),
+                    consumer_pid: consumer_pid.to_owned(),
+                    code: Some(code.to_owned()),
+                    reason: vec![serde_json::Value::String(reason.to_owned())],
+                }
+            }
+        }
+    };
+    (@struct $(#[$doc:meta])* $name:ident, $tag:ident, { $($extra:tt)* }) => {
+        $(#[$doc])*
+        #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        pub struct $name {
+            /// JSON-LD context.
+            #[serde(rename = "@context")]
+            pub context: $crate::Context,
+            /// Message type.
+            #[serde(rename = "@type")]
+            pub kind: $tag,
+            /// The provider's process id.
+            pub provider_pid: String,
+            /// The consumer's process id.
+            pub consumer_pid: String,
+            $($extra)*
+        }
+    };
+}
+
+/// The acknowledgement of a process message and the answer to a state
+/// query: both process ids and the current state, with `new`.
+macro_rules! process_ack {
+    ($(#[$doc:meta])* $name:ident, $tag:ident, $state:ty) => {
+        pid_message!(@struct $(#[$doc])* $name, $tag, {
+            /// The current state.
+            pub state: $state,
+        });
+
+        impl $name {
+            /// Builds the acknowledgement.
+            #[must_use]
+            pub fn new(provider_pid: &str, consumer_pid: &str, state: $state) -> Self {
+                Self {
+                    context: $crate::Context::default(),
+                    kind: $tag,
+                    provider_pid: provider_pid.to_owned(),
+                    consumer_pid: consumer_pid.to_owned(),
+                    state,
+                }
+            }
+        }
+    };
+}
+
 pub mod catalog;
 pub mod guard;
 pub mod negotiation;
 pub mod policy;
+pub mod transfer;
 
 type_tag!(
     /// `@type: CatalogRequestMessage`
