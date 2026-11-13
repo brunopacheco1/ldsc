@@ -28,6 +28,7 @@ use axum::extract::{Request, State};
 use axum::http::{StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
+use portitor_dcp::scope::Scope;
 use portitor_dsp::CatalogError;
 use portitor_dsp::negotiation::ContractNegotiationError;
 use portitor_dsp::transfer::TransferError;
@@ -204,7 +205,8 @@ impl AuthSettings {
     ///
     /// The STS URL is plain HTTP without `PORTITOR_STS_ALLOW_HTTP`, the
     /// secret file cannot be read or is empty, no trusted issuer is set,
-    /// or a scope is empty.
+    /// or a scope is empty, not a DCP scope, or asks for every credential
+    /// (type `VerifiableCredential`).
     pub fn from_vars(
         participant_id: &str,
         allow_http: bool,
@@ -243,6 +245,11 @@ impl AuthSettings {
         };
         if scopes.is_empty() {
             return Err("PORTITOR_DCP_SCOPES is set but empty".to_owned());
+        }
+        for scope in &scopes {
+            // the DCP aliases only: they are what other Credential Services
+            // must understand
+            Scope::parse(scope, &[]).map_err(|e| format!("PORTITOR_DCP_SCOPES: {e}"))?;
         }
         Ok(Some(Self {
             participant_id: participant_id.to_owned(),
@@ -344,7 +351,10 @@ mod tests {
                 ("PORTITOR_STS_CLIENT_ID", "client"),
                 ("PORTITOR_STS_CLIENT_SECRET_FILE", &secret),
                 ("PORTITOR_TRUSTED_ISSUERS", "did:web:a"),
-                ("PORTITOR_DCP_SCOPES", "x:A,y:B"),
+                (
+                    "PORTITOR_DCP_SCOPES",
+                    "org.eclipse.dspace.dcp.vc.type:A,org.eclipse.dspace.dcp.vc.id:B",
+                ),
             ]),
         )
         .unwrap()
@@ -365,6 +375,38 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(s.sts_allow_http && !s.allow_http);
+        // scopes are checked at start, each with its reason
+        let base = [
+            ("PORTITOR_STS_URL", "https://me.example/sts/token"),
+            ("PORTITOR_STS_CLIENT_SECRET_FILE", secret.as_str()),
+            ("PORTITOR_TRUSTED_ISSUERS", "did:web:a"),
+        ];
+        for (scopes, reason) in [
+            ("no-colon", "not of the form alias:discriminator"),
+            (
+                "org.eclipse.dspace.dcp.vc.type:",
+                "not of the form alias:discriminator",
+            ),
+            ("com.example:MembershipCredential", "is not supported"),
+            (
+                "org.eclipse.dspace.dcp.vc.type:VerifiableCredential",
+                "too broad",
+            ),
+        ] {
+            let mut with = base.to_vec();
+            with.push(("PORTITOR_DCP_SCOPES", scopes));
+            let err = AuthSettings::from_vars(me, false, vars(&with)).unwrap_err();
+            assert!(
+                err.starts_with("PORTITOR_DCP_SCOPES") && err.contains(reason),
+                "{scopes}: {err}"
+            );
+        }
+        let mut edc = base.to_vec();
+        edc.push((
+            "PORTITOR_DCP_SCOPES",
+            "org.eclipse.dspace.dcp.vc.type:MembershipCredential:read",
+        ));
+        assert!(AuthSettings::from_vars(me, false, vars(&edc)).is_ok());
         for missing in [
             vec![
                 ("PORTITOR_STS_URL", "u"),
