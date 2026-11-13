@@ -112,6 +112,15 @@ steps 3 and 5, including revocation.
 - Parsing of tokens, DID documents, presentations and status lists is
   covered by fuzz targets (ClusterFuzzLite).
 
+### Amended during the 0.5 review (2026-11-13)
+
+The decision stands; one detail changed while it was built:
+
+- The `tck` build maps the DSP TCK's fixed `Authorization` header to the
+  participant id `TCK_PARTICIPANT` (the TCK's
+  `DspConstants.TCK_PARTICIPANT_ID`), not to a test DID: that id is
+  what the TCK's own messages and agreements use.
+
 ## Consequences
 
 - Running a connector now needs an identity component (or a compatible
@@ -126,7 +135,8 @@ steps 3 and 5, including revocation.
   DID. The DCP TCK covers the authentication itself, and the EDC test
   covers both together.
 - DSP calls get slower by the round trips above. Numbers are measured
-  in 0.5 and published with the release.
+  in 0.5 and published with the release (ADR 0002, section 7, "Measured
+  again for 0.5").
 - Credential rules in policies (for example "member of dataspace X") come
   in 0.6 on top of this, using the verified credentials kept for the
   request.

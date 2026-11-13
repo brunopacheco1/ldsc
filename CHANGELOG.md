@@ -30,8 +30,8 @@ versions may change behaviour and configuration.
 - ADR 0017 (proposed): how to join a Simpl-Open data space. No
   x509/mTLS profile in Portitor; Simpl-Open's connector speaks DSP
   2025-1 but not DCP, and its agents authenticate at a Tier 2 gateway.
-- DCP v1.0.1 building blocks in `portitor-dcp` (0.5, ADR 0015), not yet
-  used by a running service: the presentation query and response
+- DCP v1.0.1 building blocks in `portitor-dcp` (0.5, ADR 0015), used by
+  the identity component and the connector: the presentation query and response
   messages, the credential and offer messages of the issuance protocol,
   scopes (`org.eclipse.dspace.dcp.vc.type`, `...vc.id`, and configured
   aliases such as EDC's), and status list checks for revocation
@@ -118,12 +118,31 @@ versions may change behaviour and configuration.
   Each negotiation and transfer is bound to the participant that started
   it; as provider, another caller is told it does not exist, and as
   consumer, only the provider it was started with may use the callbacks.
+  Upgrading from 0.4: finish or terminate negotiations and transfers in
+  progress first, and negotiate again for agreements made by 0.4 (their
+  consumer is `urn:portitor:unauthenticated`, so no transfer starts under
+  them). See `DEPLOYING.md`, "From 0.4 to 0.5".
 - The management API refuses a `providerId` that is not a `did:web` DID,
   and an agreement whose assigner is not the provider is refused.
 - The catalog request endpoint also reads the expanded JSON-LD request
   the DCP TCK sends.
+- The VS Code configurations and the `_http/` Bruno collection run with
+  DCP: a task (`scripts/dev-identities.sh`) starts the demo authority and
+  the provider's and consumer's identities with their credentials, the
+  connectors use them, and the collection gets a token from the
+  consumer's STS before every DSP request.
 - The DSP TCK job sends a fixed `Authorization` header, which the `tck`
   build (`PORTITOR_TCK_AUTHORIZATION`) maps to the TCK participant.
+
+- `scripts/measure.sh` runs with DCP: it starts a provider and a
+  consumer identity as the demo does, and measures with the new
+  `dsp-load` example (a fresh token per request) instead of `oha`. The
+  0.5 numbers and the cost of DCP per DSP request (about 2 ms, idle) are
+  in ADR 0002, section 7.
+
+- The EDC interop test's Gradle build verifies the SHA-256 of every
+  downloaded plugin and library
+  (`interop/edc/runtimes/gradle/verification-metadata.xml`).
 
 ### Fixed
 - EDC can read Portitor's catalog: a catalog request whose `filter`

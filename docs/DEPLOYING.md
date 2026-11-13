@@ -417,6 +417,28 @@ Messages the connector was sending when it stopped are saved and sent
 again at start (ADR 0007), so an upgrade does not leave negotiations
 waiting. A partner may receive such a message twice; that is handled.
 
+#### From 0.4 to 0.5
+
+0.5 authenticates every DSP request with DCP (ADR 0016). Before you
+upgrade:
+
+1. Set up the identity component and a credential for the participant
+   ([section 4](#4-run-the-identity-next-to-the-connector)), and add the
+   new connector settings (`PORTITOR_STS_URL`,
+   `PORTITOR_STS_CLIENT_SECRET_FILE`, `PORTITOR_TRUSTED_ISSUERS`).
+   Without them the 0.5 connector does not start. Your partners need the
+   same, at the same time: a 0.4 connector cannot talk to a 0.5 one.
+2. Finish or terminate the negotiations and transfers in progress. 0.4
+   did not know who its callers were, so 0.5 cannot match them to the
+   participant that started them: a provider answers that they do not
+   exist, and a consumer refuses the provider's callbacks.
+3. Agreements made by 0.4 name `urn:portitor:unauthenticated` as the
+   consumer (`assignee`). 0.5 does not start transfers under them;
+   negotiate them again after the upgrade.
+
+The database needs no migration for this; a rollback to 0.4 works as
+above.
+
 ## Known limits
 
 In this version (see also [SECURITY-ASSURANCE.md](SECURITY-ASSURANCE.md)):

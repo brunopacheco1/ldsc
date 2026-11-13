@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use portitor_connector::auth::{AuthSettings, CallerVerifier, Prover, dcp_adapters};
-use portitor_runtime::serve::{init_logging, shutdown, wait};
+use portitor_runtime::serve::{bind_management, init_logging, serve};
 
 /// The verifier and the prover (ADR 0016).
 type AuthAdapters = (Arc<dyn CallerVerifier>, Arc<dyn Prover>);
@@ -51,18 +51,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let bind = std::env::var("PORTITOR_BIND").unwrap_or_else(|_| "0.0.0.0:8080".to_owned());
     let listener = tokio::net::TcpListener::bind(&bind).await?;
 
-    // one signal stops both servers
-    let (stop, stopped) = tokio::sync::watch::channel(false);
     let management =
         if let Some(settings) = portitor_connector::management::ManagementConfig::from_env() {
             let key = portitor_connector::management::ApiKey::read(&settings.api_key_file)?;
-            let listener = tokio::net::TcpListener::bind(&settings.bind).await?;
-            tracing::info!(bind = %settings.bind, "management API listening");
-            let app = portitor_connector::management::router(negotiator, key);
-            Some(tokio::spawn(
-                axum::serve(listener, app)
-                    .with_graceful_shutdown(wait(stopped.clone()))
-                    .into_future(),
+            let listener = bind_management(&settings.bind).await?;
+            Some((
+                listener,
+                portitor_connector::management::router(negotiator, key),
             ))
         } else {
             tracing::info!("management API off (PORTITOR_MANAGEMENT_API_KEY_FILE not set)");
@@ -74,18 +69,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         db = %config.db_file.display(),
         "portitor-connector listening"
     );
-    tokio::spawn(async move {
-        shutdown().await;
-        let _ = stop.send(true);
-    });
-    axum::serve(listener, app)
-        .with_graceful_shutdown(wait(stopped))
-        .await?;
-    if let Some(management) = management {
-        // two `?`: the first for the task itself (it may have panicked),
-        // the second for the server's own result
-        management.await??;
-    }
+    serve((listener, app), management).await?;
     Ok(())
 }
 

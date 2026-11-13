@@ -243,6 +243,17 @@ EDC v1.0.0-RC7 sources):
   built with the Eclipse Data Plane SDK 1.2.1 (`runtimes/dataplane`), and
   serves one file. Control plane and data plane register with each other
   without authorization (test-only).
+- **Dependency verification.** Gradle checks the SHA-256 of every
+  plugin and library it downloads against
+  `interop/edc/runtimes/gradle/verification-metadata.xml` and stops on a
+  mismatch or an unknown file. After changing a version in
+  `gradle.properties` or the build files, write it again with the same
+  Gradle as the Dockerfile and review the diff:
+
+  ```sh
+  docker run --rm -v "$PWD/interop/edc/runtimes:/src" -w /src \
+    gradle:9.8.2-jdk21 gradle --no-daemon --write-verification-metadata sha256 shadowJar
+  ```
 - **IdentityHub admin.** The Identity API takes a JWT signed by the demo
   authority (`test-issuer admin-token --scope identity-api:admin`), checked
   against the authority's JWKS.
@@ -310,8 +321,10 @@ The endpoints are described in [docs/api/openapi.json](api/openapi.json)
 (OpenAPI 3.1). Any OpenAPI tool that resolves relative `$ref`s from the
 repository can show it and send requests. The [Bruno](https://www.usebruno.com/)
 collection in `_http/` has these requests ready, with the `single` and
-`two-connectors` environments for the setups below (put the management
-API key in the secret `apiKey` variable). With `curl`:
+`two-connectors` environments of the [VS Code set-up](#debugging-in-vs-code),
+which runs real DCP instead of the `tck` build: the collection gets a
+token from the consumer's STS before every DSP request. With `curl` and
+the `tck` build:
 
 ```sh
 curl -s localhost:8080/.well-known/dspace-version
@@ -411,12 +424,27 @@ extensions (`extensions.json`). Install the recommended
 and [CodeLLDB](https://marketplace.visualstudio.com/items?itemName=vadimcn.vscode-lldb)
 when VS Code asks. Then open Run and Debug, pick a configuration and press F5.
 
+Every connector needs its identity component, a credential and a
+trusted issuer (DCP, ADR 0016). The task **portitor: identities**
+(`scripts/dev-identities.sh`) provides them, as `scripts/demo.sh` does:
+it publishes the demo authority on `127.0.0.1:9100` and starts two
+`portitor-identity` processes, each with its `MembershipCredential`:
+
+| Participant | DID | Identity (DID document, STS, credential service) | Identity management |
+|---|---|---|---|
+| provider | `did:web:127.0.0.1%3A9102` | `127.0.0.1:9102` | `127.0.0.1:9103` |
+| consumer | `did:web:127.0.0.1%3A9203` | `127.0.0.1:9203` | `127.0.0.1:9204` |
+
+It keeps running until you stop it, and starts afresh each time (new
+keys); restart the connectors after restarting it. Keys, STS client
+secrets and logs are in `target/vscode-dcp/`.
+
 | Configuration | What it starts |
 |---|---|
-| Connector (single, :8080, management :8081) | one connector with `examples/datasets.json`; the `single` environment of `_http/` |
-| Connector: provider (:9101) / consumer (:9201, management :9202) | the two connectors of [Two connectors](#two-connectors); the `two-connectors` environment |
-| Two connectors (provider + consumer) | both at once; stopping one stops both |
-| Connector: TCK build (:8080) | the connector with the `tck` feature and `tck/datasets.json`, for the [TCK](#dsp-conformance-tck) |
+| Connector (single, :8080, management :8081) | one connector with `examples/datasets.json`, as the provider participant; starts the identities first; the `single` environment of `_http/` |
+| Connector: provider (:9101) / consumer (:9201, management :9202) | the two connectors of [Two connectors](#two-connectors), each with its identity; start the identities task first; the `two-connectors` environment |
+| Two connectors (provider + consumer) | the identities, then both connectors; stopping one connector stops both |
+| Connector: TCK build (:8080) | the connector with the `tck` feature and `tck/datasets.json`, for the [TCK](#dsp-conformance-tck); no identity, it takes the header `authorization: manual-test` |
 | Tests: *crate* (unit) | the unit tests of one crate |
 | Tests: *crate* *file* | one integration test file in `crates/*/tests` |
 
@@ -424,8 +452,12 @@ CodeLLDB runs `cargo run` or `cargo test` for the configuration and
 starts the result under the debugger, so it always debugs a fresh build.
 Databases and the management API key are kept in `target/`
 (`target/vscode-*.db`, `target/vscode-management.key`); a task creates the
-key the first time. Put that key in the `apiKey` secret of the `_http/`
-collection. Delete the `.db` files to start from an empty store.
+key the first time. In the `_http/` collection, put that key in the
+`apiKey` secret and the consumer's STS client secret
+(`target/vscode-dcp/consumer/sts-client-secret`) in `stsSecret`; the
+collection then gets a fresh token from the consumer's STS before each
+DSP request (`auth/STS token` shows one). Delete the `.db` files to
+start from an empty store.
 
 To debug one test, use the **Debug** link that rust-analyzer shows above
 each `#[test]`, or add the test name to `"args"` of a test configuration.
@@ -441,5 +473,24 @@ Fuzz targets need a nightly toolchain and are not in `launch.json`.
 
 ## Footprint
 
-`scripts/measure.sh <binary>` measures start time, memory and latency of a
-built binary against the targets in ADR 0002 (needs `oha`).
+`scripts/measure.sh` measures size, start time, memory and latency
+against the targets in ADR 0002, and what DCP costs per DSP request
+(ADR 0016). It starts a provider (connector and identity) and a
+consumer identity with the demo authority, as `scripts/demo.sh` does.
+The load tool is the `dsp-load` example of the connector: it sends
+catalog requests from 50 clients, each with a fresh token from the
+consumer's STS (a general load tool cannot, since a DCP token may be used
+once). With `TCK_CONNECTOR`, a connector built with the `tck` feature
+runs the same load with a fixed header, without DCP. Every wait is
+bounded; it needs `curl`, `openssl` and Python 3.
+
+```sh
+scripts/measure.sh                   # builds the release binaries and the tools
+cargo build --release -p portitor-connector --features tck
+cp target/release/portitor-connector /tmp/portitor-connector-tck
+cargo build --release -p portitor-connector -p portitor-identity
+TCK_CONNECTOR=/tmp/portitor-connector-tck \
+  scripts/measure.sh target/release/portitor-connector
+```
+
+The results of each release are in ADR 0002, section 7.

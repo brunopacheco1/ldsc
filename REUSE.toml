@@ -23,6 +23,9 @@ path = [
     # the EDC interop test's datasets (JSON) and made-up data (CSV)
     "interop/edc/config/*.json",
     "interop/edc/data/*",
+    # Gradle dependency verification of the EDC runtimes, written by
+    # Gradle (--write-verification-metadata), so no header
+    "interop/edc/runtimes/gradle/verification-metadata.xml",
     "docs/api/*.json",
     # Bruno API client collection (.bru and bruno.json have no comment syntax we rely on)
     "_http/**",
