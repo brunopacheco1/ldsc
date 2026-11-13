@@ -72,67 +72,94 @@ def workspace():
     return crates, version
 
 
-def main():
+def check_files(files):
+    """The diagram folder holds only draw.io files, all shown in ARCHITECTURE.md."""
     errors = []
-    crates, version = workspace()
-    files = sorted(DIAGRAMS.glob("*.drawio.svg"))
     others = sorted(p.name for p in DIAGRAMS.iterdir() if not p.name.endswith(".drawio.svg"))
     if others:
         errors.append(f"docs/diagrams holds files that are not .drawio.svg: {others}")
     if not files:
         errors.append("docs/diagrams has no .drawio.svg diagram")
-
-    architecture = ARCHITECTURE.read_text(encoding="utf-8")
-    shown = set(re.findall(r"diagrams/([\w.-]+\.drawio\.svg)", architecture))
+    shown = set(re.findall(r"diagrams/([\w.-]+\.drawio\.svg)", ARCHITECTURE.read_text(encoding="utf-8")))
     for name in sorted(shown - {p.name for p in files}):
         errors.append(f"ARCHITECTURE.md shows diagrams/{name}, which does not exist")
-    for path in files:
-        if path.name not in shown:
-            errors.append(f"docs/diagrams/{path.name} is not shown in ARCHITECTURE.md")
+    for name in sorted({p.name for p in files} - shown):
+        errors.append(f"docs/diagrams/{name} is not shown in ARCHITECTURE.md")
+    return errors
 
-    rust_files = {p.name for p in (ROOT / "crates").rglob("*.rs")}
-    sources = "\n".join(p.read_text(encoding="utf-8") for p in (ROOT / "crates").rglob("*.rs"))
-    text_of, shapes_of = {}, {}
+
+def read_diagrams(files):
+    """Each diagram's label text and its shapes' labels, by file name."""
+    errors, text_of, shapes_of = [], {}, {}
     for path in files:
         try:
             found = labels(drawio_model(path))
-            text_of[path.name] = "\n".join(t for _, t in found)
-            shapes_of[path.name] = [t for shape, t in found if shape and t]
         except (ET.ParseError, ValueError, zlib.error) as e:
             errors.append(f"docs/diagrams/{path.name}: {e}")
+            continue
+        text_of[path.name] = "\n".join(t for _, t in found)
+        shapes_of[path.name] = [t for shape, t in found if shape and t]
+    return errors, text_of, shapes_of
+
+
+def check_coverage(text_of, crates, images):
+    """Every crate is in some diagram; every image is in the C2 diagram."""
     everything = "\n".join(text_of.values())
-
-    for crate in crates:
-        if crate not in everything:
-            errors.append(f"crate {crate} appears in no diagram")
-
-    images = re.findall(r"^FROM\s+\S+\s+AS\s+(portitor-[\w-]+)", (ROOT / "Dockerfile").read_text(encoding="utf-8"),
-                        re.MULTILINE | re.IGNORECASE)
     c2 = "\n".join(t for name, t in text_of.items() if name.startswith("c2-"))
-    for image in images:
-        if image not in c2:
-            errors.append(f"image {image} (Dockerfile) is not in the C2 diagram")
+    errors = [f"crate {crate} appears in no diagram" for crate in crates if crate not in everything]
+    errors += [f"image {image} (Dockerfile) is not in the C2 diagram" for image in images if image not in c2]
+    return errors
 
+
+def code_names(shapes):
+    """The type and trait names a C4 (code) diagram's shapes name."""
+    names = set()
+    for shape in shapes:
+        title = re.match(r"(?:trait\s+)?([A-Z]\w*)", shape)
+        if title:
+            names.add(title.group(1))
+        names.update(re.findall(r"\b[A-Z][a-z0-9]+[A-Z]\w*\b", shape))
+    return names
+
+
+def check_code(text_of, shapes_of):
+    """Rust files and (in C4 diagrams) types named in the diagrams exist."""
+    rust = list((ROOT / "crates").rglob("*.rs"))
+    rust_files = {p.name for p in rust}
+    sources = "\n".join(p.read_text(encoding="utf-8") for p in rust)
+    errors = []
     for name, text in text_of.items():
-        for file in sorted(set(re.findall(r"\b([a-z_]+\.rs)\b", text))):
-            if file not in rust_files:
-                errors.append(f"docs/diagrams/{name} names {file}, which no crate has")
-        if name.startswith("c4-"):
-            names = set()
-            for shape in shapes_of[name]:
-                title = re.match(r"(?:trait\s+)?([A-Z]\w*)", shape)
-                if title:
-                    names.add(title.group(1))
-                names.update(re.findall(r"\b[A-Z][a-z0-9]+[A-Z]\w*\b", shape))
-            for ident in sorted(names):
-                if not re.search(rf"\b(struct|trait|enum|type)\s+{ident}\b", sources):
-                    errors.append(f"docs/diagrams/{name} names {ident}, which the code does not define")
+        for file in sorted(set(re.findall(r"\b([a-z_]+\.rs)\b", text)) - rust_files):
+            errors.append(f"docs/diagrams/{name} names {file}, which no crate has")
+        if not name.startswith("c4-"):
+            continue
+        for ident in sorted(code_names(shapes_of[name])):
+            if not re.search(rf"\b(struct|trait|enum|type)\s+{ident}\b", sources):
+                errors.append(f"docs/diagrams/{name} names {ident}, which the code does not define")
+    return errors
 
+
+def check_openapi(version):
+    """Every OpenAPI description has the workspace version."""
+    errors = []
     for spec in sorted((ROOT / "docs" / "api").glob("*.json")):
         found = json.loads(spec.read_text(encoding="utf-8")).get("info", {}).get("version")
         if found != version:
             errors.append(f"docs/api/{spec.name} has version {found}, the workspace {version}")
+    return errors
 
+
+def main():
+    crates, version = workspace()
+    images = re.findall(r"^FROM\s+\S+\s+AS\s+(portitor-[\w-]+)", (ROOT / "Dockerfile").read_text(encoding="utf-8"),
+                        re.MULTILINE | re.IGNORECASE)
+    files = sorted(DIAGRAMS.glob("*.drawio.svg"))
+    errors = check_files(files)
+    read_errors, text_of, shapes_of = read_diagrams(files)
+    errors += read_errors
+    errors += check_coverage(text_of, crates, images)
+    errors += check_code(text_of, shapes_of)
+    errors += check_openapi(version)
     for error in errors:
         print(f"::error::{error}")
     if not errors:
