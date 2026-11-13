@@ -260,8 +260,7 @@ impl DcpVerifier {
         holder: &DidDocument,
         jwts: &[String],
     ) -> Result<(), String> {
-        let now = i64::try_from(now_secs()).unwrap_or(i64::MAX);
-        let leeway = i64::try_from(LEEWAY).unwrap_or(0);
+        let now = now_secs();
         let mut member = false;
         for jwt in jwts {
             let presentation =
@@ -270,7 +269,7 @@ impl DcpVerifier {
                 return Err("a presentation's holder is not the caller".to_owned());
             }
             presentation
-                .verify(holder, &self.own_did, now, leeway)
+                .verify(holder, &self.own_did, now, LEEWAY)
                 .map_err(|e| format!("presentation: {e}"))?;
             if presentation.credentials.len() > MAX_CREDENTIALS {
                 return Err(format!(
@@ -303,7 +302,7 @@ impl DcpVerifier {
         &self,
         credential: &Credential,
         caller: &str,
-        now: i64,
+        now: u64,
     ) -> Result<(), String> {
         let about_caller = !credential.subjects.is_empty()
             && credential.subjects.len() == credential.subject_ids().count()
@@ -317,9 +316,8 @@ impl DcpVerifier {
             ));
         }
         let issuer = self.resolver.resolve(&credential.issuer).await?;
-        let leeway = i64::try_from(LEEWAY).unwrap_or(0);
         credential
-            .verify(&issuer, now, leeway)
+            .verify(&issuer, now, LEEWAY)
             .map_err(|e| format!("credential from {}: {e}", credential.issuer))?;
         for entry in &credential.status {
             self.check_status(credential, &issuer, entry, now).await?;
@@ -335,7 +333,7 @@ impl DcpVerifier {
         credential: &Credential,
         issuer: &DidDocument,
         entry: &StatusEntry,
-        now: i64,
+        now: u64,
     ) -> Result<(), String> {
         let url = &entry.status_list_credential;
         let text = self
@@ -348,9 +346,8 @@ impl DcpVerifier {
         if list_credential.issuer != credential.issuer {
             return Err(format!("status list {url} has another issuer"));
         }
-        let leeway = i64::try_from(LEEWAY).unwrap_or(0);
         list_credential
-            .verify(issuer, now, leeway)
+            .verify(issuer, now, LEEWAY)
             .map_err(|e| format!("status list {url}: {e}"))?;
         let list = status_list::list_in(&list_credential, entry)
             .map_err(|e| format!("status list {url}: {e}"))?;

@@ -79,6 +79,10 @@ pub enum CredentialError {
 }
 
 /// A validity period in seconds since 1970; `None` means unbounded.
+///
+/// The times are `i64` because credential dates may lie before 1970;
+/// the clock (`now`) and the leeway are `u64` everywhere else in
+/// Portitor, and [`Validity::check`] converts them once.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Validity {
     /// Not valid before this time.
@@ -97,12 +101,14 @@ impl Validity {
         }
     }
 
-    /// Checks the period at `now`, allowing `leeway` seconds of clock
-    /// difference.
+    /// Checks the period at `now` (seconds since 1970), allowing `leeway`
+    /// seconds of clock difference.
     ///
     /// # Errors
     /// Not yet valid, or expired.
-    pub fn check(self, now: i64, leeway: i64) -> Result<(), CredentialError> {
+    pub fn check(self, now: u64, leeway: u64) -> Result<(), CredentialError> {
+        let now = signed_seconds(now);
+        let leeway = signed_seconds(leeway);
         if self
             .from
             .is_some_and(|from| now.saturating_add(leeway) < from)
@@ -117,6 +123,12 @@ impl Validity {
         }
         Ok(())
     }
+}
+
+/// Seconds as `i64`, for comparing with credential dates. A time past
+/// the year 292 billion is cut to the largest `i64`.
+fn signed_seconds(seconds: u64) -> i64 {
+    i64::try_from(seconds).unwrap_or(i64::MAX)
 }
 
 /// The later of two start times; `None` (no start) loses to any time.
@@ -277,8 +289,8 @@ impl Credential {
     pub fn verify(
         &self,
         issuer: &DidDocument,
-        now: i64,
-        leeway: i64,
+        now: u64,
+        leeway: u64,
     ) -> Result<(), CredentialError> {
         if issuer.id != self.issuer {
             return Err(CredentialError::Invalid("DID document is not the issuer's"));
@@ -424,8 +436,8 @@ impl Presentation {
         &self,
         holder: &DidDocument,
         verifier: &str,
-        now: i64,
-        leeway: i64,
+        now: u64,
+        leeway: u64,
     ) -> Result<(), CredentialError> {
         if holder.id != self.holder {
             return Err(CredentialError::Invalid("DID document is not the holder's"));

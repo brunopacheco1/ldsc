@@ -276,8 +276,7 @@ mod tests {
             assert_eq!(presentation.audience, [VERIFIER]);
             assert_eq!(presentation.credentials.len(), 1);
             assert_eq!(presentation.credentials[0].jwt(), vc);
-            let now = i64::try_from(NOW).unwrap();
-            presentation.verify(&doc, VERIFIER, now, 0).unwrap();
+            presentation.verify(&doc, VERIFIER, NOW, 0).unwrap();
         }
     }
 

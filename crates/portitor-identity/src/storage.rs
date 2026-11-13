@@ -142,10 +142,8 @@ fn check_credential(
     if credential.issuer != issuer_document.id {
         return Err("the credential is from another issuer".to_owned());
     }
-    let now = i64::try_from(now_secs()).unwrap_or(i64::MAX);
-    let leeway = i64::try_from(LEEWAY).unwrap_or_default();
     credential
-        .verify(issuer_document, now, leeway)
+        .verify(issuer_document, now_secs(), LEEWAY)
         .map_err(|e| e.to_string())?;
     // every subject must be this participant, named by its DID
     let ids: Vec<&str> = credential.subject_ids().collect();
