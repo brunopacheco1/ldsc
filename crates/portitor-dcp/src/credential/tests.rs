@@ -386,3 +386,127 @@ fn expired_presentation_is_refused() {
     );
     presentation.verify(&alice.doc, BOB, NOW + 300, 30).unwrap();
 }
+
+#[test]
+fn vc20_validity_is_checked() {
+    let issuer = Party::new(ISSUER);
+    // the fields alone: validFrom 2026-11-13T00:00:00Z, validUntil a year on
+    let plain = Credential::parse(&vc20(&issuer, ALICE, &json!({}))).unwrap();
+    plain.verify(&issuer.doc, NOW, 0).unwrap();
+    let past = json!({"validUntil": "2026-11-13T16:00:00Z"});
+    assert_eq!(
+        Credential::parse(&vc20(&issuer, ALICE, &past))
+            .unwrap()
+            .verify(&issuer.doc, NOW, 0),
+        Err(CredentialError::Invalid("expired"))
+    );
+    let future = json!({"validFrom": "2026-11-13T18:00:00Z"});
+    assert_eq!(
+        Credential::parse(&vc20(&issuer, ALICE, &future))
+            .unwrap()
+            .verify(&issuer.doc, NOW, 0),
+        Err(CredentialError::Invalid("not yet valid"))
+    );
+    // JWT claims narrower than the fields win, on both ends
+    let narrow_end = Credential::parse(&vc20(&issuer, ALICE, &json!({"exp": NOW - 1}))).unwrap();
+    assert_eq!(narrow_end.validity.until, Some(NOW - 1));
+    assert_eq!(
+        narrow_end.verify(&issuer.doc, NOW, 0),
+        Err(CredentialError::Invalid("expired"))
+    );
+    let narrow_start = Credential::parse(&vc20(&issuer, ALICE, &json!({"nbf": NOW + 60}))).unwrap();
+    assert_eq!(
+        narrow_start.verify(&issuer.doc, NOW, 0),
+        Err(CredentialError::Invalid("not yet valid"))
+    );
+    // a wider claim does not extend the fields
+    let wide = Credential::parse(&vc20(
+        &issuer,
+        ALICE,
+        &json!({"exp": NOW + 10 * 365 * 86_400, "validUntil": "2026-11-13T16:00:00Z"}),
+    ))
+    .unwrap();
+    assert_eq!(
+        wide.verify(&issuer.doc, NOW, 0),
+        Err(CredentialError::Invalid("expired"))
+    );
+}
+
+#[test]
+fn envelope_edge_cases() {
+    let issuer = Party::new(ISSUER);
+    let alice = Party::new(ALICE);
+    let bob = Party::new(BOB);
+    let vp = vp20(&alice, BOB, &[vc20(&issuer, ALICE, &json!({}))]);
+    let wrap = |by: &Party, id: String, exp: i64| {
+        by.sign(
+            "vp+jwt",
+            &json!({"@context": [VC2_CONTEXT], "id": id,
+                "type": "EnvelopedVerifiablePresentation",
+                "iss": by.did, "aud": BOB, "iat": NOW - 600, "exp": exp}),
+        )
+    };
+    // around a VC 1.1 presentation
+    let old = vp11(&alice, BOB, &[vc11(&issuer, ALICE)]);
+    assert_eq!(
+        Presentation::parse(&wrap(
+            &alice,
+            format!("data:application/vp+jwt,{old}"),
+            NOW + 300
+        )),
+        Err(CredentialError::Unsupported(
+            "envelope around a VC 1.1 presentation"
+        ))
+    );
+    // another data: media type
+    assert_eq!(
+        Presentation::parse(&wrap(
+            &alice,
+            format!("data:application/vc+jwt,{vp}"),
+            NOW + 300
+        )),
+        Err(CredentialError::Unsupported("envelope without a vp+jwt"))
+    );
+    // the envelope has expired, the presentation inside has not
+    let expired = Presentation::parse(&wrap(
+        &alice,
+        format!("data:application/vp+jwt,{vp}"),
+        NOW - 1,
+    ))
+    .unwrap();
+    assert_eq!(
+        expired.verify(&alice.doc, BOB, NOW, 0),
+        Err(CredentialError::Invalid("expired"))
+    );
+    // the envelope is signed by another participant than the holder
+    let foreign = Presentation::parse(&wrap(
+        &bob,
+        format!("data:application/vp+jwt,{vp}"),
+        NOW + 300,
+    ))
+    .unwrap();
+    assert_eq!(foreign.holder, ALICE);
+    assert_eq!(
+        foreign.verify(&alice.doc, BOB, NOW, 0),
+        Err(CredentialError::Jws(Error::Invalid("kid not found")))
+    );
+}
+
+#[test]
+fn a_presentation_without_audience_is_accepted() {
+    // pinned decision: `aud` is checked only when the presentation has
+    // one (Presentation::verify); the verifier's own ID token and access
+    // token already tie the query to it. Another `aud` is refused (see
+    // vc11_presentation_from_the_tck_shape).
+    let issuer = Party::new(ISSUER);
+    let alice = Party::new(ALICE);
+    let jwt = alice.sign(
+        "JWT",
+        &json!({"iss": ALICE, "sub": ALICE, "nbf": NOW - 1, "exp": NOW + 300,
+            "vp": {"@context": [VC1_CONTEXT], "type": "VerifiablePresentation",
+                "verifiableCredential": [vc11(&issuer, ALICE)]}}),
+    );
+    let presentation = Presentation::parse(&jwt).unwrap();
+    assert!(presentation.audience.is_empty());
+    presentation.verify(&alice.doc, BOB, NOW, 0).unwrap();
+}

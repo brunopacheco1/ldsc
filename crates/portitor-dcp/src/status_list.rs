@@ -369,6 +369,17 @@ mod tests {
     }
 
     #[test]
+    fn the_size_limit_is_exact() {
+        let at_limit = encoded(MAX_LIST_BYTES, &[]);
+        assert_eq!(
+            decode_list(&at_limit).map(|bits| bits.len()),
+            Ok(MAX_LIST_BYTES)
+        );
+        let one_more = encoded(MAX_LIST_BYTES + 1, &[]);
+        assert_eq!(decode_list(&one_more), Err(StatusError::TooLarge));
+    }
+
+    #[test]
     fn reads_the_list_of_a_status_list_credential() {
         let key = crate::SigningKey::generate().unwrap();
         let payload = serde_json::json!({
