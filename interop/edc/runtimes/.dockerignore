@@ -1,0 +1,6 @@
+# SPDX-FileCopyrightText: Portitor contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+**/build
+.gradle

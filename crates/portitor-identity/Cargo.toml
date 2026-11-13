@@ -27,6 +27,18 @@ utoipa.workspace = true
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# For the test-only demo authority (examples/test-issuer, ADR 0015): the
+# HTTP calls that deliver its credentials (hyper, http-body-util, as
+# portitor-runtime uses them).
+http-body-util.workspace = true
+hyper.workspace = true
+
+# The demo authority is an example, never part of the release binary or
+# image; `test = true` runs its unit tests with `cargo test --workspace`.
+[[example]]
+name = "test-issuer"
+path = "examples/test-issuer/main.rs"
+test = true
 
 [features]
 # Test settings for the DCP TCK. Test builds only; the release image is

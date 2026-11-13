@@ -21,6 +21,7 @@ project checks every change. All commands run from the repository root.
 | Licence headers | `reuse lint` | every PR (`REUSE compliance`) |
 | DSP conformance (TCK) | see [below](#dsp-conformance-tck) | every PR (`TCK`) |
 | DCP conformance, identity component (TCK) | see [below](#dcp-conformance-tck) | every PR (`TCK`) |
+| Interoperability with EDC v1.0.0-RC7 | `scripts/edc-interop.sh`, see [below](#edc-interop-test) | PRs that touch `crates/`, `interop/edc/` or the script, and nightly (`EDC interop`) |
 | Fuzzing | see [below](#fuzzing) | every PR (short), weekly (long) |
 | Two connectors agree a contract and transfer a file | `scripts/demo.sh` | every PR (`CI`) |
 | The same in Docker Compose | `scripts/demo-compose.sh` | every PR (`CI`) |
@@ -184,6 +185,94 @@ curl -X POST localhost:8091/v1/credential-requests -H "Authorization: Bearer $(c
 DATASPACETCK_STS_CLIENT_SECRET=$(cat /tmp/id-sts.secret) \
   java -jar dcp-tck-1.2.1-all.jar -config tck/dcp-tck.properties > dcp-tck.log
 python3 scripts/dcp_tck_check.py dcp-tck.log
+```
+
+## EDC interop test
+
+`scripts/edc-interop.sh` runs a small data space in Docker Compose
+(`interop/edc/compose.yaml`): a Portitor participant (`portitor-connector`
+and `portitor-identity`) and an Eclipse Dataspace Components participant
+(control plane, data plane, and IdentityHub with its STS, all
+v1.0.0-RC7), both members by a `MembershipCredential` from a test-only
+demo authority. It checks, in this order:
+
+1. Portitor's identity receives its credential the DCP way (a pending
+   request on its management API, then a `CredentialMessage` to its
+   Storage API);
+2. EDC accepts Portitor's identity: the EDC provider's catalog, read with
+   a token from Portitor's STS (EDC queries Portitor's credential service);
+3. Portitor consumer, EDC provider: negotiation, pull transfer, and the
+   data fetched equals the published file;
+4. EDC consumer, Portitor provider: catalog, negotiation, pull transfer
+   (EDC's data plane fetches from Portitor's), the same check;
+5. revocation both ways: once the authority revokes one participant's
+   credential, the other refuses it with 401.
+
+Known failure: step 4 stops at the catalog. EDC always sends a `filter`
+in its `CatalogRequestMessage` (an EDC `QuerySpec` with no filter
+expressions, offset 0, limit 50), and Portitor answers any non-empty
+`filter` with 400 ("filter expressions are not supported"). Everything
+after it (negotiation, transfer, revocation) passes when the offer is
+taken from `config/portitor-datasets.json` instead.
+
+```sh
+# builds the Portitor images as CI does, then runs the test; the EDC
+# images are built from interop/edc/runtimes (Maven Central, no EDC images
+# are published); needs docker compose, curl, jq and openssl
+mkdir -p dist/amd64
+cargo build --release --target x86_64-unknown-linux-musl -p portitor-connector -p portitor-identity
+cp target/x86_64-unknown-linux-musl/release/portitor-{connector,identity} dist/amd64/
+docker build --target portitor-connector -t portitor-connector:ci .
+docker build --target portitor-identity -t portitor-identity:ci .
+scripts/edc-interop.sh            # KEEP=1 leaves it running; --no-build reuses the EDC images
+```
+
+What EDC needs, and why the test is set up as it is (all read from the
+EDC v1.0.0-RC7 sources):
+
+- **Scope.** EDC IdentityHub accepts only
+  `org.eclipse.dspace.dcp.vc.type:<type>:<read|all|*>` (with the
+  operation), so the control plane asks for
+  `org.eclipse.dspace.dcp.vc.type:MembershipCredential:read`
+  (`edc.iam.dcp.scopes.*` in `config/edc-controlplane.properties`) and
+  Portitor's `PORTITOR_DCP_SCOPES` is the same string.
+- **Trust.** `edc.iam.trustedissuer.authority.id=did:web:authority`, and
+  `PORTITOR_TRUSTED_ISSUERS` on both Portitor components.
+- **Status lists.** EDC needs an `id` on every `credentialStatus`, and
+  reads status lists again after one second here
+  (`edc.iam.credential.revocation.cache.validity`), so the revocation
+  check sees a new list at once.
+- **Data plane.** EDC 1.0 has no data plane of its own; the test's is
+  built with the Eclipse Data Plane SDK 1.2.1 (`runtimes/dataplane`), and
+  serves one file. Control plane and data plane register with each other
+  without authorization (test-only).
+- **IdentityHub admin.** The Identity API takes a JWT signed by the demo
+  authority (`test-issuer admin-token --scope identity-api:admin`), checked
+  against the authority's JWKS.
+
+### The demo authority (`test-issuer`)
+
+Until Portitor has an issuer, a test-only example of `portitor-identity`
+signs the credentials (ADR 0015, "Credentials before the issuer
+exists"). It is never part of a release build or image; its key is
+`crates/portitor-identity/tests/fixtures/test-only-demo-authority.pem`.
+
+```sh
+cargo build -p portitor-identity --example test-issuer
+T=target/debug/examples/test-issuer
+K="--key crates/portitor-identity/tests/fixtures/test-only-demo-authority.pem --did did:web:authority"
+# the DID document, JWKS and an all-clear 16 KiB status list, for a static web server
+$T init $K --site site/ --status-list-url http://authority/status/membership
+# a MembershipCredential (vc20-bssl/jwt or vc11-sl2021/jwt), printed
+$T issue $K --holder did:web:holder.example --profile vc20-bssl/jwt \
+  --status-list-url http://authority/status/membership --status-index 1
+# the same, delivered to a Portitor identity component
+$T deliver $K --holder did:web:holder.example --profile vc20-bssl/jwt \
+  --status-list-url http://authority/status/membership --status-index 1 \
+  --management http://127.0.0.1:8091 --api-key-file id-api.key \
+  --credential-service http://127.0.0.1:8090/cs --allow-http
+# revoke: set bit 1 and sign the list again
+$T revoke $K --site site/ --status-list-url http://authority/status/membership --status-index 1
 ```
 
 ## Fuzzing

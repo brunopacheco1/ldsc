@@ -33,6 +33,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::credential::Credential;
 
+/// The smallest list Bitstring Status List allows: 16 KiB, that is
+/// 131,072 entries (section 2.1, "MUST be at least 16KB"). Issuers use it;
+/// readers do not enforce it (see the module comment).
+pub const MIN_LIST_BYTES: usize = 16 * 1024;
+
 /// The largest uncompressed list Portitor reads: 16 MiB, that is about
 /// 134 million entries, a thousand times the spec's minimum.
 pub const MAX_LIST_BYTES: usize = 16 * 1024 * 1024;
@@ -197,6 +202,21 @@ pub fn encode_list(bits: &[u8]) -> String {
     )
 }
 
+/// Sets bit `index` (revokes or suspends the credential at that position);
+/// index 0 is the highest bit of byte 0, as [`check`] reads it.
+///
+/// # Errors
+/// The index is past the end of the list.
+pub fn set_bit(bits: &mut [u8], index: u64) -> Result<(), StatusError> {
+    let byte = usize::try_from(index / 8)
+        .ok()
+        .and_then(|at| bits.get_mut(at))
+        .ok_or(StatusError::OutOfRange(index))?;
+    let shift = 7 - (index % 8);
+    *byte |= 1 << shift;
+    Ok(())
+}
+
 /// The list kept in `credential`, the status list credential that
 /// `entry` points to. The kinds must match: a `BitstringStatusListEntry`
 /// needs a `BitstringStatusListCredential` (Bitstring Status List v1.0,
@@ -321,6 +341,23 @@ mod tests {
         assert_eq!(check(&wide, &l), Err(StatusError::UnsupportedSize(2)));
         assert_eq!(decode_list("u!!!"), Err(StatusError::Encoding("base64")));
         assert_eq!(decode_list("uAAAA"), Err(StatusError::Encoding("gzip")));
+    }
+
+    #[test]
+    fn set_bits_are_found_in_a_full_size_list() {
+        let mut bits = vec![0u8; MIN_LIST_BYTES];
+        set_bit(&mut bits, 3).unwrap();
+        set_bit(&mut bits, 131_071).unwrap();
+        assert_eq!(
+            set_bit(&mut bits, 131_072),
+            Err(StatusError::OutOfRange(131_072))
+        );
+        let text = encode_list(&bits);
+        assert!(text.starts_with("uH4s"), "multibase u, then GZIP: {text}");
+        let l = list(text);
+        assert_eq!(check(&entry("3"), &l).unwrap(), Status::Set);
+        assert_eq!(check(&entry("4"), &l).unwrap(), Status::Clear);
+        assert_eq!(check(&entry("131071"), &l).unwrap(), Status::Set);
     }
 
     #[test]

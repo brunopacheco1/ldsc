@@ -10,7 +10,9 @@ path = [
     "Cargo.lock",
     "fuzz/Cargo.lock",
     "NOTICE",
-    # test-only key material in binary form
+    # test-only key material: binary DER, and PEM such as the demo authority's
+    # key (crates/portitor-identity/tests/fixtures/test-only-demo-authority.pem,
+    # used by the test-issuer example, ADR 0015); never a real secret
     "crates/*/tests/fixtures/**",
     # JSON has no comments
     "examples/*.json",
@@ -18,6 +20,9 @@ path = [
     # made-up demo data (CSV has no comments)
     "examples/data/*",
     "tck/*.json",
+    # the EDC interop test's datasets (JSON) and made-up data (CSV)
+    "interop/edc/config/*.json",
+    "interop/edc/data/*",
     "docs/api/*.json",
     # Bruno API client collection (.bru and bruno.json have no comment syntax we rely on)
     "_http/**",
