@@ -55,22 +55,22 @@ impl TransferStore for InMemoryTransfers {
         Ok(self.map().get(provider_pid).cloned())
     }
 
-    fn insert(&self, t: &Transfer) -> Result<(), StoreError> {
+    fn insert(&self, transfer: &Transfer) -> Result<(), StoreError> {
         let mut map = self.map();
-        if map.contains_key(&t.provider_pid) {
-            return Err(StoreError(format!("{} exists", t.provider_pid)));
+        if map.contains_key(&transfer.provider_pid) {
+            return Err(StoreError(format!("{} exists", transfer.provider_pid)));
         }
-        map.insert(t.provider_pid.clone(), t.clone());
+        map.insert(transfer.provider_pid.clone(), transfer.clone());
         Ok(())
     }
 
-    fn replace_if(&self, t: &Transfer, expected: u64) -> Result<bool, StoreError> {
+    fn replace_if(&self, transfer: &Transfer, expected: u64) -> Result<bool, StoreError> {
         let mut map = self.map();
-        let current = map.get(&t.provider_pid).map(|old| old.version);
+        let current = map.get(&transfer.provider_pid).map(|old| old.version);
         if current != Some(expected) {
             return Ok(false);
         }
-        map.insert(t.provider_pid.clone(), t.clone());
+        map.insert(transfer.provider_pid.clone(), transfer.clone());
         Ok(true)
     }
 
@@ -78,7 +78,7 @@ impl TransferStore for InMemoryTransfers {
         let map = self.map();
         Ok(map
             .values()
-            .filter(|t| t.pending.is_some())
+            .filter(|transfer| transfer.pending.is_some())
             .cloned()
             .collect())
     }
@@ -89,7 +89,7 @@ impl Agreements for InMemoryNegotiations {
         let map = self.map();
         Ok(map
             .values()
-            .find_map(|n| finalized_agreement(n, agreement_id)))
+            .find_map(|negotiation| finalized_agreement(negotiation, agreement_id)))
     }
 }
 
@@ -144,13 +144,13 @@ pub(crate) struct TransferProvider {
 
 impl TransferProvider {
     pub(crate) fn new(ports: &crate::Ports, catalog: InMemoryDatasets, allow_http: bool) -> Self {
-        let t = ports.transfers.clone();
+        let transfer = ports.transfers.clone();
         Self {
             service: TransferService::new(
-                t.store,
-                t.agreements,
-                t.flows,
-                t.decider,
+                transfer.store,
+                transfer.agreements,
+                transfer.flows,
+                transfer.decider,
                 catalog,
                 SystemEnvironment,
             ),
@@ -226,7 +226,7 @@ impl Outbox for TransferProvider {
 /// Whether `state`, a counter-party's answer to a transfer state query,
 /// is `to`.
 pub(crate) fn reached_state(state: Value, to: TransferState) -> bool {
-    serde_json::from_value::<TransferProcess>(state).is_ok_and(|t| t.state == to)
+    serde_json::from_value::<TransferProcess>(state).is_ok_and(|transfer| transfer.state == to)
 }
 
 /// Checks a message's shape with `guard`, then reads it. A refusal is
@@ -274,78 +274,85 @@ type Provider = State<Arc<TransferProvider>>;
 pub(crate) type Body = Result<Json<Value>, JsonRejection>;
 
 /// `GET /transfers/{providerPid}`.
-pub(crate) async fn get(State(p): Provider, Path(pid): Path<String>) -> Response {
-    match p.service.get(&pid, UNAUTHENTICATED) {
+pub(crate) async fn get(State(provider): Provider, Path(pid): Path<String>) -> Response {
+    match provider.service.get(&pid, UNAUTHENTICATED) {
         Ok(ack) => Json(ack).into_response(),
         Err(f) => failed(f),
     }
 }
 
 /// `POST /transfers/request`.
-pub(crate) async fn request(State(p): Provider, body: Body) -> Response {
-    let msg: TransferRequestMessage = match p.read(body, "TransferRequestMessage", "") {
+pub(crate) async fn request(State(provider): Provider, body: Body) -> Response {
+    let msg: TransferRequestMessage = match provider.read(body, "TransferRequestMessage", "") {
         Ok(m) => m,
         Err(refused) => return bad_request(*refused),
     };
-    if !callback_allowed(&msg.callback_address, p.allow_http) {
+    if !callback_allowed(&msg.callback_address, provider.allow_http) {
         let reason = "callbackAddress must be an https URL";
         return bad_request(TransferError::new("", &msg.consumer_pid, "400", reason));
     }
-    let handled = p.service.request(&msg, UNAUTHENTICATED);
-    p.finish(handled, StatusCode::CREATED)
+    let handled = provider.service.request(&msg, UNAUTHENTICATED);
+    provider.finish(handled, StatusCode::CREATED)
 }
 
 /// `POST /transfers/{providerPid}/start`.
-pub(crate) async fn start(State(p): Provider, Path(pid): Path<String>, body: Body) -> Response {
-    let msg: TransferStartMessage = match p.read(body, "TransferStartMessage", &pid) {
+pub(crate) async fn start(
+    State(provider): Provider,
+    Path(pid): Path<String>,
+    body: Body,
+) -> Response {
+    let msg: TransferStartMessage = match provider.read(body, "TransferStartMessage", &pid) {
         Ok(m) => m,
         Err(refused) => return bad_request(*refused),
     };
-    let handled = p.service.start(&pid, &msg, UNAUTHENTICATED);
-    p.finish(handled, StatusCode::OK)
+    let handled = provider.service.start(&pid, &msg, UNAUTHENTICATED);
+    provider.finish(handled, StatusCode::OK)
 }
 
 /// `POST /transfers/{providerPid}/suspension`.
 pub(crate) async fn suspension(
-    State(p): Provider,
+    State(provider): Provider,
     Path(pid): Path<String>,
     body: Body,
 ) -> Response {
-    let msg: TransferSuspensionMessage = match p.read(body, "TransferSuspensionMessage", &pid) {
-        Ok(m) => m,
-        Err(refused) => return bad_request(*refused),
-    };
+    let msg: TransferSuspensionMessage =
+        match provider.read(body, "TransferSuspensionMessage", &pid) {
+            Ok(m) => m,
+            Err(refused) => return bad_request(*refused),
+        };
     let ids = (msg.provider_pid.as_str(), msg.consumer_pid.as_str());
-    let handled = p.service.suspend(&pid, ids, UNAUTHENTICATED);
-    p.finish(handled, StatusCode::OK)
+    let handled = provider.service.suspend(&pid, ids, UNAUTHENTICATED);
+    provider.finish(handled, StatusCode::OK)
 }
 
 /// `POST /transfers/{providerPid}/completion`.
 pub(crate) async fn completion(
-    State(p): Provider,
+    State(provider): Provider,
     Path(pid): Path<String>,
     body: Body,
 ) -> Response {
-    let msg: TransferCompletionMessage = match p.read(body, "TransferCompletionMessage", &pid) {
-        Ok(m) => m,
-        Err(refused) => return bad_request(*refused),
-    };
+    let msg: TransferCompletionMessage =
+        match provider.read(body, "TransferCompletionMessage", &pid) {
+            Ok(m) => m,
+            Err(refused) => return bad_request(*refused),
+        };
     let ids = (msg.provider_pid.as_str(), msg.consumer_pid.as_str());
-    let handled = p.service.complete(&pid, ids, UNAUTHENTICATED);
-    p.finish(handled, StatusCode::OK)
+    let handled = provider.service.complete(&pid, ids, UNAUTHENTICATED);
+    provider.finish(handled, StatusCode::OK)
 }
 
 /// `POST /transfers/{providerPid}/termination`.
 pub(crate) async fn termination(
-    State(p): Provider,
+    State(provider): Provider,
     Path(pid): Path<String>,
     body: Body,
 ) -> Response {
-    let msg: TransferTerminationMessage = match p.read(body, "TransferTerminationMessage", &pid) {
-        Ok(m) => m,
-        Err(refused) => return bad_request(*refused),
-    };
+    let msg: TransferTerminationMessage =
+        match provider.read(body, "TransferTerminationMessage", &pid) {
+            Ok(m) => m,
+            Err(refused) => return bad_request(*refused),
+        };
     let ids = (msg.provider_pid.as_str(), msg.consumer_pid.as_str());
-    let handled = p.service.terminate(&pid, ids, UNAUTHENTICATED);
-    p.finish(handled, StatusCode::OK)
+    let handled = provider.service.terminate(&pid, ids, UNAUTHENTICATED);
+    provider.finish(handled, StatusCode::OK)
 }

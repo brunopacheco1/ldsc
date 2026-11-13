@@ -45,23 +45,23 @@ fn pending_message(consumer_pid: &str, text: &str) -> Result<Outgoing, StoreErro
     })
 }
 
-fn consumer_transfer(r: &Row<'_>) -> Result<ConsumerTransfer, StoreError> {
-    let consumer_pid: String = col(r, 0)?;
-    let pending = col::<Option<String>>(r, 8)?
+fn consumer_transfer_from_row(row: &Row<'_>) -> Result<ConsumerTransfer, StoreError> {
+    let consumer_pid: String = col(row, 0)?;
+    let pending = col::<Option<String>>(row, 8)?
         .map(|text| pending_message(&consumer_pid, &text))
         .transpose()?;
     Ok(ConsumerTransfer {
-        provider_pid: col(r, 1)?,
-        state: parsed_transfer_state(col(r, 2)?)?,
-        provider_address: col(r, 3)?,
-        provider_id: col(r, 4)?,
-        agreement_id: col(r, 5)?,
-        format: col(r, 6)?,
-        data_address: col::<Option<String>>(r, 7)?
+        provider_pid: col(row, 1)?,
+        state: parsed_transfer_state(col(row, 2)?)?,
+        provider_address: col(row, 3)?,
+        provider_id: col(row, 4)?,
+        agreement_id: col(row, 5)?,
+        format: col(row, 6)?,
+        data_address: col::<Option<String>>(row, 7)?
             .map(|a| parsed("data address", &a))
             .transpose()?,
         pending,
-        version: parsed_version(col(r, 9)?)?,
+        version: parsed_version(col(row, 9)?)?,
         consumer_pid,
     })
 }
@@ -69,11 +69,11 @@ fn consumer_transfer(r: &Row<'_>) -> Result<ConsumerTransfer, StoreError> {
 impl ConsumerTransferStore for SqliteNegotiations {
     fn get(&self, consumer_pid: &str) -> Result<Option<ConsumerTransfer>, StoreError> {
         let sql = format!("SELECT {COLUMNS} FROM consumer_transfer WHERE consumer_pid = ?1");
-        let found = self.query(&sql, params![consumer_pid], consumer_transfer)?;
+        let found = self.query(&sql, params![consumer_pid], consumer_transfer_from_row)?;
         Ok(found.into_iter().next())
     }
 
-    fn insert(&self, t: &ConsumerTransfer) -> Result<(), StoreError> {
+    fn insert(&self, transfer: &ConsumerTransfer) -> Result<(), StoreError> {
         let sql = format!(
             "INSERT INTO consumer_transfer ({COLUMNS})
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"
@@ -82,23 +82,23 @@ impl ConsumerTransferStore for SqliteNegotiations {
             .execute(
                 &sql,
                 params![
-                    t.consumer_pid,
-                    t.provider_pid,
-                    transfer_state_text(t.state)?,
-                    t.provider_address,
-                    t.provider_id,
-                    t.agreement_id,
-                    t.format,
-                    t.data_address.as_ref().map(json).transpose()?,
-                    pending_text(t.pending.as_ref())?,
-                    version(t.version)?,
+                    transfer.consumer_pid,
+                    transfer.provider_pid,
+                    transfer_state_text(transfer.state)?,
+                    transfer.provider_address,
+                    transfer.provider_id,
+                    transfer.agreement_id,
+                    transfer.format,
+                    transfer.data_address.as_ref().map(json).transpose()?,
+                    pending_text(transfer.pending.as_ref())?,
+                    version(transfer.version)?,
                 ],
             )
             .map_err(err)?;
         Ok(())
     }
 
-    fn replace_if(&self, t: &ConsumerTransfer, expected: u64) -> Result<bool, StoreError> {
+    fn replace_if(&self, transfer: &ConsumerTransfer, expected: u64) -> Result<bool, StoreError> {
         // compare-and-update in one statement: a concurrent change makes
         // the WHERE clause miss and nothing is written. Only the fields a
         // transfer step changes are written.
@@ -109,12 +109,12 @@ impl ConsumerTransferStore for SqliteNegotiations {
                  SET provider_pid = ?2, state = ?3, data_address = ?4, pending = ?5, version = ?6
                  WHERE consumer_pid = ?1 AND version = ?7",
                 params![
-                    t.consumer_pid,
-                    t.provider_pid,
-                    transfer_state_text(t.state)?,
-                    t.data_address.as_ref().map(json).transpose()?,
-                    pending_text(t.pending.as_ref())?,
-                    version(t.version)?,
+                    transfer.consumer_pid,
+                    transfer.provider_pid,
+                    transfer_state_text(transfer.state)?,
+                    transfer.data_address.as_ref().map(json).transpose()?,
+                    pending_text(transfer.pending.as_ref())?,
+                    version(transfer.version)?,
                     version(expected)?,
                 ],
             )
@@ -127,7 +127,7 @@ impl ConsumerTransferStore for SqliteNegotiations {
             "SELECT {COLUMNS} FROM consumer_transfer WHERE pending IS NOT NULL
              ORDER BY consumer_pid"
         );
-        self.query(&sql, [], consumer_transfer)
+        self.query(&sql, [], consumer_transfer_from_row)
     }
 
     fn list(&self, after: Option<&str>, limit: usize) -> Result<Vec<ConsumerTransfer>, StoreError> {
@@ -137,7 +137,7 @@ impl ConsumerTransferStore for SqliteNegotiations {
              ORDER BY consumer_pid LIMIT ?2"
         );
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        self.query(&sql, params![after, limit], consumer_transfer)
+        self.query(&sql, params![after, limit], consumer_transfer_from_row)
     }
 }
 
@@ -147,10 +147,10 @@ impl HeldAgreements for SqliteNegotiations {
         let sql = "SELECT provider_address, provider_id FROM consumer_negotiation
                    WHERE state = ?1 AND json_extract(agreement, '$.\"@id\"') = ?2";
         let finalized = state_text(NegotiationState::Finalized)?;
-        let found = self.query(sql, params![finalized, agreement_id], |r| {
+        let found = self.query(sql, params![finalized, agreement_id], |row| {
             Ok(AgreementProvider {
-                address: col(r, 0)?,
-                id: col(r, 1)?,
+                address: col(row, 0)?,
+                id: col(row, 1)?,
             })
         })?;
         Ok(found.into_iter().next())

@@ -336,11 +336,11 @@ impl TransferStore for AnyTransferStore {
     fn get(&self, provider_pid: &str) -> Result<Option<Transfer>, StoreError> {
         self.0.get(provider_pid)
     }
-    fn insert(&self, t: &Transfer) -> Result<(), StoreError> {
-        self.0.insert(t)
+    fn insert(&self, transfer: &Transfer) -> Result<(), StoreError> {
+        self.0.insert(transfer)
     }
-    fn replace_if(&self, t: &Transfer, expected: u64) -> Result<bool, StoreError> {
-        self.0.replace_if(t, expected)
+    fn replace_if(&self, transfer: &Transfer, expected: u64) -> Result<bool, StoreError> {
+        self.0.replace_if(transfer, expected)
     }
     fn pending(&self) -> Result<Vec<Transfer>, StoreError> {
         self.0.pending()
@@ -357,8 +357,8 @@ impl DataFlows for AnyDataFlows {
     fn supports(&self, dataset_id: &str, format: &str) -> bool {
         self.0.supports(dataset_id, format)
     }
-    fn start(&self, t: &Transfer) -> Result<DataAddress, String> {
-        self.0.start(t)
+    fn start(&self, transfer: &Transfer) -> Result<DataAddress, String> {
+        self.0.start(transfer)
     }
     fn suspend(&self, pid: &str) -> Result<(), String> {
         self.0.suspend(pid)
@@ -378,8 +378,8 @@ impl DataFlows for AnyDataFlows {
 }
 
 impl TransferDecider for AnyTransferDecider {
-    fn decide(&self, t: &Transfer) -> TransferDecision {
-        self.0.decide(t)
+    fn decide(&self, transfer: &Transfer) -> TransferDecision {
+        self.0.decide(transfer)
     }
 }
 
@@ -396,11 +396,11 @@ impl ConsumerTransferStore for AnyConsumerTransferStore {
     fn get(&self, consumer_pid: &str) -> Result<Option<ConsumerTransfer>, StoreError> {
         self.0.get(consumer_pid)
     }
-    fn insert(&self, t: &ConsumerTransfer) -> Result<(), StoreError> {
-        self.0.insert(t)
+    fn insert(&self, transfer: &ConsumerTransfer) -> Result<(), StoreError> {
+        self.0.insert(transfer)
     }
-    fn replace_if(&self, t: &ConsumerTransfer, expected: u64) -> Result<bool, StoreError> {
-        self.0.replace_if(t, expected)
+    fn replace_if(&self, transfer: &ConsumerTransfer, expected: u64) -> Result<bool, StoreError> {
+        self.0.replace_if(transfer, expected)
     }
     fn pending(&self) -> Result<Vec<ConsumerTransfer>, StoreError> {
         self.0.pending()
@@ -411,8 +411,8 @@ impl ConsumerTransferStore for AnyConsumerTransferStore {
 }
 
 impl ConsumerTransferDecider for AnyConsumerTransferDecider {
-    fn decide(&self, t: &ConsumerTransfer) -> ConsumerTransferDecision {
-        self.0.decide(t)
+    fn decide(&self, transfer: &ConsumerTransfer) -> ConsumerTransferDecision {
+        self.0.decide(transfer)
     }
 }
 

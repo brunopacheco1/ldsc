@@ -58,27 +58,27 @@ pub struct TckDecider {
 }
 
 impl TckDecider {
-    fn count_requested(&self, n: &Negotiation) -> u32 {
+    fn count_requested(&self, negotiation: &Negotiation) -> u32 {
         let mut map = self
             .requested
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let c = map.entry(n.provider_pid.clone()).or_insert(0);
+        let c = map.entry(negotiation.provider_pid.clone()).or_insert(0);
         *c += 1;
         *c
     }
 }
 
 impl Decider for TckDecider {
-    fn decide(&self, n: &Negotiation) -> Decision {
+    fn decide(&self, negotiation: &Negotiation) -> Decision {
         use Decision::{Agree, Finalize, Offer, Terminate, Wait};
         use NegotiationState::{Accepted, Offered, Requested, Verified};
-        let times = if n.state == Requested {
-            self.count_requested(n)
+        let times = if negotiation.state == Requested {
+            self.count_requested(negotiation)
         } else {
             0
         };
-        match (n.dataset_id(), n.state) {
+        match (negotiation.dataset_id(), negotiation.state) {
             ("ACN0102" | "ACN0304", Requested) if times == 1 => Offer,
             (
                 "ACN0101" | "ACN0103" | "ACN0204" | "ACN0205" | "ACN0206" | "ACN0302" | "ACN0303",
@@ -93,7 +93,7 @@ impl Decider for TckDecider {
             | ("ACN0206", Accepted)
             | ("ACN0207", Verified) => Terminate,
             (d, _) if d.starts_with("ACN") => Wait,
-            _ => AgreeToCatalogOffers.decide(n),
+            _ => AgreeToCatalogOffers.decide(negotiation),
         }
     }
 }
@@ -103,14 +103,14 @@ impl Decider for TckDecider {
 pub struct TckConsumerDecider;
 
 impl ConsumerDecider for TckConsumerDecider {
-    fn decide(&self, n: &ConsumerNegotiation) -> ConsumerDecision {
+    fn decide(&self, negotiation: &ConsumerNegotiation) -> ConsumerDecision {
         use ConsumerDecision::{Request, Terminate, Wait};
         use NegotiationState::{Agreed, Offered, Requested};
-        match (n.dataset_id(), n.state) {
+        match (negotiation.dataset_id(), negotiation.state) {
             ("ACNC0102", Offered) => Request,
             ("ACNC0103", Offered) | ("ACNC0202", Requested) | ("ACNC0203", Agreed) => Terminate,
             ("ACNC0204" | "ACNC0302" | "ACNC0303", Offered) | ("ACNC0306", Agreed) => Wait,
-            _ => AcceptAndVerify.decide(n),
+            _ => AcceptAndVerify.decide(negotiation),
         }
     }
 }
@@ -124,24 +124,24 @@ pub struct TckTransferDecider {
 }
 
 impl TckTransferDecider {
-    fn count_started(&self, t: &Transfer) -> u32 {
+    fn count_started(&self, transfer: &Transfer) -> u32 {
         let mut map = self.started.lock().unwrap_or_else(PoisonError::into_inner);
-        let c = map.entry(t.provider_pid.clone()).or_insert(0);
+        let c = map.entry(transfer.provider_pid.clone()).or_insert(0);
         *c += 1;
         *c
     }
 }
 
 impl TransferDecider for TckTransferDecider {
-    fn decide(&self, t: &Transfer) -> TransferDecision {
+    fn decide(&self, transfer: &Transfer) -> TransferDecision {
         use TransferDecision::{Complete, Start, Suspend, Terminate, Wait};
         use TransferState::{Requested, Started, Suspended};
-        let times = if t.state == Started {
-            self.count_started(t)
+        let times = if transfer.state == Started {
+            self.count_started(transfer)
         } else {
             0
         };
-        match (t.agreement_id.as_str(), t.state) {
+        match (transfer.agreement_id.as_str(), transfer.state) {
             // TP:01-01 to 01-05: the provider ends, completes or suspends
             ("ATP0101", Started) | ("ATP0103", Suspended) | ("ATP0105", Requested) => Terminate,
             ("ATP0103", Started) => Suspend,
@@ -151,7 +151,7 @@ impl TransferDecider for TckTransferDecider {
             ("ATP0102" | "ATP0104", Started) => Complete,
             // TP:02-05, 03-01, 03-02: the consumer acts on a requested transfer
             ("ATP0205" | "ATP0301" | "ATP0302", Requested) => Wait,
-            _ => StartAtOnce.decide(t),
+            _ => StartAtOnce.decide(transfer),
         }
     }
 }
@@ -162,10 +162,10 @@ impl TransferDecider for TckTransferDecider {
 pub struct TckConsumerTransferDecider;
 
 impl ConsumerTransferDecider for TckConsumerTransferDecider {
-    fn decide(&self, t: &ConsumerTransfer) -> ConsumerTransferDecision {
+    fn decide(&self, transfer: &ConsumerTransfer) -> ConsumerTransferDecision {
         use ConsumerTransferDecision::{Complete, Suspend, Terminate, Wait};
         use TransferState::{Requested, Started, Suspended};
-        match (t.agreement_id.as_str(), t.state) {
+        match (transfer.agreement_id.as_str(), transfer.state) {
             ("ATPC0201", Started) | ("ATPC0203", Suspended) | ("ATPC0205", Requested) => Terminate,
             ("ATPC0202", Started) => Complete,
             ("ATPC0203", Started) => Suspend,
@@ -279,9 +279,9 @@ pub(crate) async fn initiate(
         profile: None,
     };
     match c.start(&req.connector_address, &req.provider_id, offer) {
-        Ok(n) => (
+        Ok(negotiation) => (
             StatusCode::CREATED,
-            Json(serde_json::json!({"consumerPid": n.consumer_pid, "state": n.state})),
+            Json(serde_json::json!({"consumerPid": negotiation.consumer_pid, "state": negotiation.state})),
         )
             .into_response(),
         Err(f) => crate::negotiation::failed(*f),
@@ -319,9 +319,11 @@ pub(crate) async fn initiate_transfer(
         &req.format,
     );
     match started {
-        Ok(t) => (
+        Ok(transfer) => (
             StatusCode::CREATED,
-            Json(serde_json::json!({"consumerPid": t.consumer_pid, "state": t.state})),
+            Json(
+                serde_json::json!({"consumerPid": transfer.consumer_pid, "state": transfer.state}),
+            ),
         )
             .into_response(),
         Err(f) => crate::transfer::failed(*f),

@@ -22,7 +22,7 @@ const TRANSFER_COLUMNS: &str = "provider_pid, consumer_pid, state, callback_addr
 /// A transfer state as stored: its DSP name, for example `STARTED`.
 pub(super) fn transfer_state_text(s: TransferState) -> Result<String, StoreError> {
     match serde_json::to_value(s) {
-        Ok(serde_json::Value::String(t)) => Ok(t),
+        Ok(serde_json::Value::String(transfer)) => Ok(transfer),
         _ => Err(StoreError(format!("cannot store state {s:?}"))),
     }
 }
@@ -61,22 +61,22 @@ fn pending_message(provider_pid: &str, text: &str) -> Result<Outgoing, StoreErro
     })
 }
 
-fn transfer(r: &Row<'_>) -> Result<Transfer, StoreError> {
-    let provider_pid: String = col(r, 0)?;
-    let pending = match col::<Option<String>>(r, 8)? {
+fn transfer_from_row(row: &Row<'_>) -> Result<Transfer, StoreError> {
+    let provider_pid: String = col(row, 0)?;
+    let pending = match col::<Option<String>>(row, 8)? {
         Some(text) => Some(pending_message(&provider_pid, &text)?),
         None => None,
     };
     Ok(Transfer {
-        consumer_pid: col(r, 1)?,
-        state: parsed_transfer_state(col(r, 2)?)?,
-        callback_address: col(r, 3)?,
-        counter_party: col(r, 4)?,
-        agreement_id: col(r, 5)?,
-        dataset_id: col(r, 6)?,
-        format: col(r, 7)?,
+        consumer_pid: col(row, 1)?,
+        state: parsed_transfer_state(col(row, 2)?)?,
+        callback_address: col(row, 3)?,
+        counter_party: col(row, 4)?,
+        agreement_id: col(row, 5)?,
+        dataset_id: col(row, 6)?,
+        format: col(row, 7)?,
         pending,
-        version: parsed_version(col(r, 9)?)?,
+        version: parsed_version(col(row, 9)?)?,
         provider_pid,
     })
 }
@@ -84,11 +84,11 @@ fn transfer(r: &Row<'_>) -> Result<Transfer, StoreError> {
 impl TransferStore for SqliteNegotiations {
     fn get(&self, provider_pid: &str) -> Result<Option<Transfer>, StoreError> {
         let sql = format!("SELECT {TRANSFER_COLUMNS} FROM transfer WHERE provider_pid = ?1");
-        let found = self.query(&sql, params![provider_pid], transfer)?;
+        let found = self.query(&sql, params![provider_pid], transfer_from_row)?;
         Ok(found.into_iter().next())
     }
 
-    fn insert(&self, t: &Transfer) -> Result<(), StoreError> {
+    fn insert(&self, transfer: &Transfer) -> Result<(), StoreError> {
         let sql = format!(
             "INSERT INTO transfer ({TRANSFER_COLUMNS})
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"
@@ -97,23 +97,23 @@ impl TransferStore for SqliteNegotiations {
             .execute(
                 &sql,
                 params![
-                    t.provider_pid,
-                    t.consumer_pid,
-                    transfer_state_text(t.state)?,
-                    t.callback_address,
-                    t.counter_party,
-                    t.agreement_id,
-                    t.dataset_id,
-                    t.format,
-                    pending_text(t.pending.as_ref())?,
-                    version(t.version)?,
+                    transfer.provider_pid,
+                    transfer.consumer_pid,
+                    transfer_state_text(transfer.state)?,
+                    transfer.callback_address,
+                    transfer.counter_party,
+                    transfer.agreement_id,
+                    transfer.dataset_id,
+                    transfer.format,
+                    pending_text(transfer.pending.as_ref())?,
+                    version(transfer.version)?,
                 ],
             )
             .map_err(err)?;
         Ok(())
     }
 
-    fn replace_if(&self, t: &Transfer, expected: u64) -> Result<bool, StoreError> {
+    fn replace_if(&self, transfer: &Transfer, expected: u64) -> Result<bool, StoreError> {
         // compare-and-update in one statement: a concurrent change makes
         // the WHERE clause miss and nothing is written. Only the fields a
         // transfer step changes are written.
@@ -123,10 +123,10 @@ impl TransferStore for SqliteNegotiations {
                 "UPDATE transfer SET state = ?2, pending = ?3, version = ?4
                  WHERE provider_pid = ?1 AND version = ?5",
                 params![
-                    t.provider_pid,
-                    transfer_state_text(t.state)?,
-                    pending_text(t.pending.as_ref())?,
-                    version(t.version)?,
+                    transfer.provider_pid,
+                    transfer_state_text(transfer.state)?,
+                    pending_text(transfer.pending.as_ref())?,
+                    version(transfer.version)?,
                     version(expected)?,
                 ],
             )
@@ -139,7 +139,7 @@ impl TransferStore for SqliteNegotiations {
             "SELECT {TRANSFER_COLUMNS} FROM transfer WHERE pending IS NOT NULL
              ORDER BY provider_pid"
         );
-        self.query(&sql, [], transfer)
+        self.query(&sql, [], transfer_from_row)
     }
 }
 
@@ -150,8 +150,8 @@ impl Agreements for SqliteNegotiations {
         let sql = "SELECT agreement FROM negotiation
                    WHERE state = ?1 AND json_extract(agreement, '$.\"@id\"') = ?2";
         let finalized = state_text(NegotiationState::Finalized)?;
-        let found = self.query(sql, params![finalized, agreement_id], |r| {
-            parsed("agreement", &col::<String>(r, 0)?)
+        let found = self.query(sql, params![finalized, agreement_id], |row| {
+            parsed("agreement", &col::<String>(row, 0)?)
         })?;
         Ok(found.into_iter().next())
     }
@@ -160,9 +160,9 @@ impl Agreements for SqliteNegotiations {
 /// The agreement of a finalized negotiation, for adapters that keep
 /// negotiations in memory.
 #[must_use]
-pub fn finalized_agreement(n: &Negotiation, agreement_id: &str) -> Option<Agreement> {
-    let agreement = n.agreement.as_ref()?;
-    (n.state == NegotiationState::Finalized && agreement.id == agreement_id)
+pub fn finalized_agreement(negotiation: &Negotiation, agreement_id: &str) -> Option<Agreement> {
+    let agreement = negotiation.agreement.as_ref()?;
+    (negotiation.state == NegotiationState::Finalized && agreement.id == agreement_id)
         .then(|| agreement.clone())
 }
 

@@ -29,8 +29,6 @@ use serde_json::Value;
 use crate::InMemoryDatasets;
 use crate::http_client::callback_allowed;
 use crate::outbox::{self, Link, Message, Outbox};
-#[cfg(test)]
-use crate::ports::Shared;
 use crate::ports::{AnyDecider, AnyStore, Ports};
 use crate::system::SystemEnvironment;
 
@@ -56,20 +54,20 @@ impl NegotiationStore for InMemoryNegotiations {
         Ok(self.map().get(provider_pid).cloned())
     }
 
-    fn insert(&self, n: &Negotiation) -> Result<(), StoreError> {
+    fn insert(&self, negotiation: &Negotiation) -> Result<(), StoreError> {
         let mut map = self.map();
-        if map.contains_key(&n.provider_pid) {
-            return Err(StoreError(format!("{} exists", n.provider_pid)));
+        if map.contains_key(&negotiation.provider_pid) {
+            return Err(StoreError(format!("{} exists", negotiation.provider_pid)));
         }
-        map.insert(n.provider_pid.clone(), n.clone());
+        map.insert(negotiation.provider_pid.clone(), negotiation.clone());
         Ok(())
     }
 
-    fn replace_if(&self, n: &Negotiation, expected: u64) -> Result<bool, StoreError> {
+    fn replace_if(&self, negotiation: &Negotiation, expected: u64) -> Result<bool, StoreError> {
         let mut map = self.map();
-        match map.get(&n.provider_pid) {
+        match map.get(&negotiation.provider_pid) {
             Some(old) if old.version == expected => {
-                map.insert(n.provider_pid.clone(), n.clone());
+                map.insert(negotiation.provider_pid.clone(), negotiation.clone());
                 Ok(true)
             }
             _ => Ok(false),
@@ -80,7 +78,7 @@ impl NegotiationStore for InMemoryNegotiations {
         Ok(self
             .map()
             .values()
-            .filter(|n| n.pending.is_some())
+            .filter(|negotiation| negotiation.pending.is_some())
             .cloned()
             .collect())
     }
@@ -162,7 +160,8 @@ impl Outbox for Provider {
     }
 
     fn reached(out: &Outgoing, state: Value) -> bool {
-        serde_json::from_value::<ContractNegotiation>(state).is_ok_and(|n| n.state == out.to)
+        serde_json::from_value::<ContractNegotiation>(state)
+            .is_ok_and(|negotiation| negotiation.state == out.to)
     }
 
     fn delivered(&self, out: &Outgoing, _: Option<&Value>) -> Result<Option<Outgoing>, Failure> {
@@ -189,14 +188,14 @@ pub(crate) fn bad_request(e: ContractNegotiationError) -> Response {
 /// Turns the service's answer into the HTTP response and starts sending
 /// whatever the provider sends next.
 fn finish(
-    p: &Arc<Provider>,
+    provider: &Arc<Provider>,
     handled: Result<(ContractNegotiation, Option<Outgoing>), Failure>,
     ok: StatusCode,
 ) -> Response {
     match handled {
         Ok((ack, next)) => {
             if let Some(out) = next {
-                tokio::spawn(outbox::deliver(Arc::clone(p), out));
+                tokio::spawn(outbox::deliver(Arc::clone(provider), out));
             }
             (ok, Json(ack)).into_response()
         }
@@ -217,8 +216,11 @@ pub(crate) fn failed(failure: Failure) -> Response {
 }
 
 /// `GET /negotiations/{providerPid}`.
-pub(crate) async fn get(State(p): State<Arc<Provider>>, Path(pid): Path<String>) -> Response {
-    match p.service.get(&pid, UNAUTHENTICATED) {
+pub(crate) async fn get(
+    State(provider): State<Arc<Provider>>,
+    Path(pid): Path<String>,
+) -> Response {
+    match provider.service.get(&pid, UNAUTHENTICATED) {
         Ok(ack) => Json(ack).into_response(),
         Err(f) => failed(f),
     }
@@ -226,82 +228,82 @@ pub(crate) async fn get(State(p): State<Arc<Provider>>, Path(pid): Path<String>)
 
 /// `POST /negotiations/request`.
 pub(crate) async fn request_new(
-    State(p): State<Arc<Provider>>,
+    State(provider): State<Arc<Provider>>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
-    let msg: ContractRequestMessage = match p.read(body, "ContractRequestMessage", "") {
+    let msg: ContractRequestMessage = match provider.read(body, "ContractRequestMessage", "") {
         Ok(m) => m,
         Err(e) => return bad_request(*e),
     };
     let callback = msg.callback_address.as_deref().unwrap_or_default();
-    if !callback.is_empty() && !callback_allowed(callback, p.allow_http) {
+    if !callback.is_empty() && !callback_allowed(callback, provider.allow_http) {
         return bad_request(invalid(
             "",
             &msg.consumer_pid,
             "callbackAddress must be an https URL",
         ));
     }
-    let handled = p.service.request(None, msg, UNAUTHENTICATED);
-    finish(&p, handled, StatusCode::CREATED)
+    let handled = provider.service.request(None, msg, UNAUTHENTICATED);
+    finish(&provider, handled, StatusCode::CREATED)
 }
 
 /// `POST /negotiations/{providerPid}/request`.
 pub(crate) async fn request_counter(
-    State(p): State<Arc<Provider>>,
+    State(provider): State<Arc<Provider>>,
     Path(pid): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
-    let msg: ContractRequestMessage = match p.read(body, "ContractRequestMessage", &pid) {
+    let msg: ContractRequestMessage = match provider.read(body, "ContractRequestMessage", &pid) {
         Ok(m) => m,
         Err(e) => return bad_request(*e),
     };
-    let handled = p.service.request(Some(&pid), msg, UNAUTHENTICATED);
-    finish(&p, handled, StatusCode::OK)
+    let handled = provider.service.request(Some(&pid), msg, UNAUTHENTICATED);
+    finish(&provider, handled, StatusCode::OK)
 }
 
 /// `POST /negotiations/{providerPid}/events`.
 pub(crate) async fn event(
-    State(p): State<Arc<Provider>>,
+    State(provider): State<Arc<Provider>>,
     Path(pid): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
     let msg: ContractNegotiationEventMessage =
-        match p.read(body, "ContractNegotiationEventMessage", &pid) {
+        match provider.read(body, "ContractNegotiationEventMessage", &pid) {
             Ok(m) => m,
             Err(e) => return bad_request(*e),
         };
-    let handled = p.service.event(&pid, &msg, UNAUTHENTICATED);
-    finish(&p, handled, StatusCode::OK)
+    let handled = provider.service.event(&pid, &msg, UNAUTHENTICATED);
+    finish(&provider, handled, StatusCode::OK)
 }
 
 /// `POST /negotiations/{providerPid}/agreement/verification`.
 pub(crate) async fn verify(
-    State(p): State<Arc<Provider>>,
+    State(provider): State<Arc<Provider>>,
     Path(pid): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
     let msg: ContractAgreementVerificationMessage =
-        match p.read(body, "ContractAgreementVerificationMessage", &pid) {
+        match provider.read(body, "ContractAgreementVerificationMessage", &pid) {
             Ok(m) => m,
             Err(e) => return bad_request(*e),
         };
-    let handled = p.service.verify(&pid, &msg, UNAUTHENTICATED);
-    finish(&p, handled, StatusCode::OK)
+    let handled = provider.service.verify(&pid, &msg, UNAUTHENTICATED);
+    finish(&provider, handled, StatusCode::OK)
 }
 
 /// `POST /negotiations/{providerPid}/termination`.
 pub(crate) async fn terminate(
-    State(p): State<Arc<Provider>>,
+    State(provider): State<Arc<Provider>>,
     Path(pid): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
     let msg: ContractNegotiationTerminationMessage =
-        match p.read(body, "ContractNegotiationTerminationMessage", &pid) {
+        match provider.read(body, "ContractNegotiationTerminationMessage", &pid) {
             Ok(m) => m,
             Err(e) => return bad_request(*e),
         };
-    let handled = p.service.terminate(&pid, &msg, UNAUTHENTICATED);
-    finish(&p, handled, StatusCode::OK)
+    let handled = provider.service.terminate(&pid, &msg, UNAUTHENTICATED);
+    finish(&provider, handled, StatusCode::OK)
 }
 
 #[cfg(test)]
@@ -312,6 +314,7 @@ mod tests {
     use portitor_dsp::negotiation::NegotiationState;
 
     use crate::http_client::{HttpSender, SendFuture, Sender};
+    use crate::ports::Shared;
 
     fn negotiation(state: NegotiationState) -> Negotiation {
         Negotiation {
