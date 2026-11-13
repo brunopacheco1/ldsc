@@ -187,10 +187,13 @@ TCK v1.2.1 are the targets (latest releases, checked 2026-11-13).
   release candidates and pin 1.0.0 when it ships (fallback 0.18.2). To
   save CI minutes it runs on pull requests that change DSP or DCP code
   and nightly (maintainer, 2026-11-13).
-- Spike: how to join a **Simpl-Open** dataspace. Simpl-Open uses EDC with
-  DCP outside its agent, but x509/mTLS and attribute-based access inside it.
-  Decide whether Portitor needs an x509/mTLS authentication profile
-  (ADR 0017).
+- Spike: how to join a **Simpl-Open** dataspace
+  ([ADR 0017](adr/0017-simpl-open.md), proposed). Simpl-Open's connector
+  is EDC 0.17.0 with DSP 2025-1 but no DCP; agents authenticate each
+  other with GA-issued x509 certificates over mTLS at their Tier 2
+  gateway, with attribute-based access. Proposed: no x509/mTLS profile
+  in Portitor; later, run Portitor behind the Simpl Tier 2 gateway with
+  a small adapter, and ask Simpl whether SSI Tier 2 will use DCP.
 - Code quality and readability review before the release, as in 0.4.
 - Pull requests: (1) ADRs 0015 and 0016; (2) DCP domain types;
   (3) identity component; (4) storage API and DCP TCK credential service
