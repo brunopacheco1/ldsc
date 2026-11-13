@@ -341,55 +341,77 @@ async fn tokens_are_checked() {
     let signed = |by: &Party, claims: Claims| {
         format!("Bearer {}", by.key.sign(&holder.kid(), &claims).unwrap())
     };
+    let mut from_the_future = claims(&holder.did, &holder.did, me, now + 600, Some("a"));
+    from_the_future.iat = now + 300;
+    // each header, and the reason it is refused for
     let refused = [
-        // no Bearer prefix, an empty token, another scheme
-        token.to_owned(),
-        "Bearer ".to_owned(),
-        "Basic abc".to_owned(),
-        // iss and sub differ
-        signed(
-            holder,
-            claims(&holder.did, &ds.third.did, me, now + 300, Some("a")),
-        ),
-        // another audience
-        signed(
-            holder,
-            claims(
-                &holder.did,
-                &holder.did,
-                &ds.third.did,
-                now + 300,
-                Some("a"),
+        (token.to_owned(), "not a Bearer token"),
+        ("Bearer ".to_owned(), "not a Bearer token"),
+        ("Basic abc".to_owned(), "not a Bearer token"),
+        (
+            signed(
+                holder,
+                claims(&holder.did, &ds.third.did, me, now + 300, Some("a")),
             ),
+            "iss and sub differ",
         ),
-        // expired
-        signed(
-            holder,
-            claims(&holder.did, &holder.did, me, now - 3_600, Some("a")),
+        (
+            signed(
+                holder,
+                claims(
+                    &holder.did,
+                    &holder.did,
+                    &ds.third.did,
+                    now + 300,
+                    Some("a"),
+                ),
+            ),
+            "aud is not the verifier",
         ),
-        // valid for too long
-        signed(
-            holder,
-            claims(&holder.did, &holder.did, me, now + 7_200, Some("a")),
+        (
+            signed(
+                holder,
+                claims(&holder.did, &holder.did, me, now - 3_600, Some("a")),
+            ),
+            "expired",
         ),
-        // no access token
-        signed(
-            holder,
-            claims(&holder.did, &holder.did, me, now + 300, None),
+        (
+            signed(
+                holder,
+                claims(&holder.did, &holder.did, me, now + 7_200, Some("a")),
+            ),
+            "valid for too long",
         ),
-        // signed by another key than the issuer's
-        signed(
-            &ds.third,
-            claims(&holder.did, &holder.did, me, now + 300, Some("a")),
+        (signed(holder, from_the_future), "issued in the future"),
+        (
+            signed(
+                holder,
+                claims(&holder.did, &holder.did, me, now + 300, None),
+            ),
+            "no access token",
+        ),
+        (
+            signed(
+                &ds.third,
+                claims(&holder.did, &holder.did, me, now + 300, Some("a")),
+            ),
+            "bad signature",
         ),
     ];
-    assert!(ds.verifier.verify(None).await.is_err());
-    for header in refused {
-        assert!(ds.verify(&header).await.is_err(), "{header}");
+    let err = ds.verifier.verify(None).await.unwrap_err();
+    assert!(err.contains("no Authorization header"), "{err}");
+    for (header, reason) in refused {
+        let err = ds.verify(&header).await.unwrap_err();
+        assert!(err.contains(reason), "{reason}: {err}");
     }
     // a token is good once
     assert!(ds.verify(&header).await.is_ok());
-    assert!(ds.verify(&header).await.unwrap_err().contains("jti"));
+    assert!(
+        ds.verify(&header)
+            .await
+            .unwrap_err()
+            .contains("jti replayed")
+    );
 }
 
 #[tokio::test]

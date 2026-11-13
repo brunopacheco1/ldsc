@@ -10,7 +10,7 @@
 //! Only `ES256` and `PS256` are accepted. Any other `alg`, including
 //! `none`, is rejected before a key is even looked up.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD as PEM_B64, URL_SAFE_NO_PAD as B64};
@@ -557,42 +557,101 @@ impl<'a> Jws<'a> {
     }
 }
 
+/// The longest a self-issued ID token may still be valid when it is
+/// checked, in seconds. DCP sets no limit; this one bounds how long a
+/// used token id must be remembered ([`JtiCache`]). EDC's STS and
+/// Portitor's issue tokens for 5 minutes.
+pub const MAX_TOKEN_LIFETIME: u64 = 3_600;
+
+/// How many token ids a [`JtiCache`] keeps by default. With tokens valid
+/// for at most [`MAX_TOKEN_LIFETIME`], that is about 28 new tokens a
+/// second, sustained for an hour; one entry is a few hundred bytes.
+pub const DEFAULT_MAX_TOKEN_IDS: usize = 100_000;
+
 /// Remembers used `jti` values until the token they came from has
 /// expired; after that the token is refused for its age anyway (ADR 0016:
 /// in memory, one replica per store).
-#[derive(Debug, Default)]
-pub struct JtiCache(HashMap<String, u64>);
+///
+/// The cache holds at most a fixed number of ids. When it is full, new
+/// tokens are refused (not old ids forgotten, which would let a token be
+/// replayed) until enough of the remembered ones expire.
+#[derive(Debug)]
+pub struct JtiCache {
+    /// Each remembered id, and until when (seconds since 1970).
+    until: HashMap<String, u64>,
+    /// The same entries ordered by expiry, so the expired ones are found
+    /// at the front without looking at every entry.
+    by_expiry: BTreeSet<(u64, String)>,
+    /// The most ids kept at once.
+    max: usize,
+}
+
+impl Default for JtiCache {
+    fn default() -> Self {
+        Self::with_max(DEFAULT_MAX_TOKEN_IDS)
+    }
+}
 
 impl JtiCache {
-    /// Records `jti` as used until `until` (seconds since 1970). Returns
-    /// false if it was already used and not yet forgotten. Forgets every
-    /// entry whose time has passed at `now`, so the cache stays small.
-    pub fn remember(&mut self, jti: &str, until: u64, now: u64) -> bool {
-        self.0.retain(|_, kept_until| *kept_until >= now);
-        if self.0.contains_key(jti) {
-            return false;
+    /// An empty cache that keeps at most `max` ids.
+    #[must_use]
+    pub fn with_max(max: usize) -> Self {
+        Self {
+            until: HashMap::new(),
+            by_expiry: BTreeSet::new(),
+            max,
         }
-        self.0.insert(jti.to_owned(), until);
-        true
+    }
+
+    /// Records `jti` as used until `until` (seconds since 1970). First
+    /// forgets the ids whose time has passed at `now`.
+    ///
+    /// # Errors
+    /// `jti` was used before and is not yet forgotten, or the cache is
+    /// full.
+    pub fn remember(&mut self, jti: &str, until: u64, now: u64) -> Result<(), Error> {
+        self.forget_expired(now);
+        if self.until.contains_key(jti) {
+            return Err(Error::Invalid("jti replayed"));
+        }
+        if self.until.len() >= self.max {
+            return Err(Error::Invalid("too many token ids in use"));
+        }
+        self.until.insert(jti.to_owned(), until);
+        self.by_expiry.insert((until, jti.to_owned()));
+        Ok(())
+    }
+
+    /// Forgets every id kept until before `now`: the oldest first, and
+    /// stops at the first one still valid.
+    fn forget_expired(&mut self, now: u64) {
+        while let Some((until, _)) = self.by_expiry.first()
+            && *until < now
+        {
+            if let Some((_, jti)) = self.by_expiry.pop_first() {
+                self.until.remove(&jti);
+            }
+        }
     }
 
     /// How many token ids are remembered.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.until.len()
     }
 
     /// Whether no token id is remembered.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.until.is_empty()
     }
 }
 
 /// Validates a self-issued ID token, following DCP 1.0 "Validating
 /// Self-Issued ID Tokens" step by step. `doc` is the resolved DID document
 /// of the token's `sub`; `now` is seconds since epoch; `leeway` is the
-/// allowed clock skew in seconds.
+/// allowed clock skew in seconds. Beyond DCP, a token issued in the
+/// future or valid for longer than [`MAX_TOKEN_LIFETIME`] is refused.
 ///
 /// # Errors
 /// Fails at the first step that does not hold.
@@ -636,10 +695,13 @@ pub fn validate_self_issued(
     if now.saturating_add(leeway) < claims.iat {
         return Err(Error::Invalid("issued in the future"));
     }
-    // 6. jti not used before; remembered as long as the token is valid
-    if !jti_cache.remember(&claims.jti, claims.exp.saturating_add(leeway), now) {
-        return Err(Error::Invalid("jti replayed"));
+    // not a DCP step either: a token valid for longer than
+    // MAX_TOKEN_LIFETIME would have to be remembered for that long
+    if claims.exp > now.saturating_add(MAX_TOKEN_LIFETIME + leeway) {
+        return Err(Error::Invalid("valid for too long"));
     }
+    // 6. jti not used before; remembered as long as the token is valid
+    jti_cache.remember(&claims.jti, claims.exp.saturating_add(leeway), now)?;
     Ok(claims)
 }
 
@@ -712,11 +774,60 @@ mod tests {
         let (key, doc, claims) = setup();
         let t = key.sign("#key-1", &claims).unwrap();
         let mut c = JtiCache::default();
-        assert!(validate_self_issued(&t, &doc, BOB, 2_000, 0, &mut c).is_err());
-        assert!(validate_self_issued(&t, &doc, "did:web:eve.example", 1_500, 0, &mut c).is_err());
+        assert_eq!(
+            validate_self_issued(&t, &doc, BOB, 2_000, 0, &mut c),
+            Err(Error::Invalid("expired"))
+        );
+        assert_eq!(
+            validate_self_issued(&t, &doc, "did:web:eve.example", 1_500, 0, &mut c),
+            Err(Error::Invalid("aud is not the verifier"))
+        );
         let mut tampered = t.clone();
         tampered.insert(tampered.find('.').unwrap() + 2, 'A');
         assert!(validate_self_issued(&tampered, &doc, BOB, 1_500, 0, &mut c).is_err());
+    }
+
+    #[test]
+    fn rejects_tokens_not_yet_valid() {
+        let (key, doc, mut claims) = setup();
+        claims.nbf = Some(1_600);
+        let t = key.sign(&format!("{ALICE}#key-1"), &claims).unwrap();
+        let mut c = JtiCache::default();
+        assert_eq!(
+            validate_self_issued(&t, &doc, BOB, 1_500, 60, &mut c),
+            Err(Error::Invalid("not yet valid"))
+        );
+        // within the leeway
+        assert!(validate_self_issued(&t, &doc, BOB, 1_540, 60, &mut c).is_ok());
+    }
+
+    #[test]
+    fn rejects_a_subject_that_is_not_the_document() {
+        let (key, mut doc, claims) = setup();
+        doc.id = BOB.to_owned();
+        let t = key.sign(&format!("{ALICE}#key-1"), &claims).unwrap();
+        assert_eq!(
+            validate_self_issued(&t, &doc, BOB, 1_500, 0, &mut JtiCache::default()),
+            Err(Error::Invalid("sub does not match DID document id"))
+        );
+    }
+
+    #[test]
+    fn rejects_tokens_valid_for_too_long() {
+        let (key, doc, mut claims) = setup();
+        let now = 1_500;
+        let leeway = 60;
+        claims.exp = now + MAX_TOKEN_LIFETIME + leeway + 1;
+        let t = key.sign(&format!("{ALICE}#key-1"), &claims).unwrap();
+        let mut c = JtiCache::default();
+        assert_eq!(
+            validate_self_issued(&t, &doc, BOB, now, leeway, &mut c),
+            Err(Error::Invalid("valid for too long"))
+        );
+        assert!(c.is_empty(), "a refused token is not remembered");
+        claims.exp -= 1;
+        let t = key.sign(&format!("{ALICE}#key-1"), &claims).unwrap();
+        assert!(validate_self_issued(&t, &doc, BOB, now, leeway, &mut c).is_ok());
     }
 
     #[test]
@@ -734,7 +845,10 @@ mod tests {
         ));
         claims.nbf = None;
         let t = key.sign(&format!("{ALICE}#key-1"), &claims).unwrap();
-        assert!(validate_self_issued(&t, &doc, BOB, 1_500, 60, &mut c).is_ok());
+        assert_eq!(
+            validate_self_issued(&t, &doc, BOB, 1_500, 60, &mut c),
+            Err(Error::Invalid("valid for too long"))
+        );
     }
 
     #[test]
@@ -776,10 +890,50 @@ mod tests {
     #[test]
     fn used_ids_are_forgotten_after_expiry() {
         let mut cache = JtiCache::default();
-        assert!(cache.remember("a", 100, 10));
-        assert!(!cache.remember("a", 100, 50));
-        assert!(cache.remember("b", 300, 200), "a is forgotten at 200");
+        assert_eq!(cache.remember("a", 100, 10), Ok(()));
+        assert_eq!(
+            cache.remember("a", 100, 50),
+            Err(Error::Invalid("jti replayed"))
+        );
+        assert_eq!(
+            cache.remember("b", 300, 200),
+            Ok(()),
+            "a is forgotten at 200"
+        );
         assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn ids_expire_in_order_of_expiry_not_of_arrival() {
+        let mut cache = JtiCache::default();
+        cache.remember("late", 500, 0).unwrap();
+        cache.remember("early", 100, 0).unwrap();
+        cache.remember("middle", 300, 0).unwrap();
+        cache.remember("x", 1_000, 200).unwrap();
+        assert_eq!(cache.len(), 3, "only early is forgotten at 200");
+        assert_eq!(
+            cache.remember("middle", 1_000, 250),
+            Err(Error::Invalid("jti replayed"))
+        );
+        assert_eq!(cache.remember("early", 1_000, 250), Ok(()));
+    }
+
+    #[test]
+    fn a_full_cache_refuses_new_ids_until_old_ones_expire() {
+        let mut cache = JtiCache::with_max(2);
+        cache.remember("a", 100, 0).unwrap();
+        cache.remember("b", 200, 0).unwrap();
+        assert_eq!(
+            cache.remember("c", 300, 50),
+            Err(Error::Invalid("too many token ids in use"))
+        );
+        // a used id is still told apart from a full cache
+        assert_eq!(
+            cache.remember("a", 300, 50),
+            Err(Error::Invalid("jti replayed"))
+        );
+        assert_eq!(cache.remember("c", 300, 150), Ok(()), "a expired at 100");
+        assert_eq!(cache.len(), 2);
     }
 
     #[test]

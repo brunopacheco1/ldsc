@@ -152,9 +152,9 @@ impl Identity {
         }
     }
 
-    /// The used token ids. A panic while the lock was held cannot leave
-    /// the cache half-changed (each change is one insert), so a poisoned
-    /// lock is used as it is.
+    /// The used token ids. A panic while the lock was held could at worst
+    /// leave one id that is never forgotten (it only panics when memory
+    /// runs out), so a poisoned lock is used as it is.
     fn used_tokens(&self) -> std::sync::MutexGuard<'_, JtiCache> {
         self.used_tokens
             .lock()

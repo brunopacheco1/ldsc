@@ -9,7 +9,8 @@
 //! 1. Read `Authorization: Bearer <self-issued ID token>`.
 //! 2. Resolve the token's issuer DID, and check the token: signed with a
 //!    `capabilityInvocation` key, `aud` is our DID, `iss` = `sub`, `exp`,
-//!    `nbf`, `jti` not seen before ([`portitor_dcp::validate_self_issued`]).
+//!    `nbf`, `jti` not seen before, valid for at most an hour
+//!    ([`portitor_dcp::validate_self_issued`]).
 //! 3. Take the access token from its `token` claim, find the caller's
 //!    Credential Service in its DID document, and send it a
 //!    `PresentationQueryMessage` for the configured scopes, with our own
@@ -41,11 +42,6 @@ use super::{AuthFuture, AuthSettings, Caller, CallerVerifier};
 
 /// Allowed clock difference between participants, in seconds.
 const LEEWAY: u64 = 60;
-
-/// The longest a caller's token may still be valid, in seconds. DCP sets
-/// no limit; this one keeps the list of used token ids short (each is
-/// kept until its token expires). EDC's STS issues tokens for 5 minutes.
-const MAX_TOKEN_LIFETIME: u64 = 3_600;
 
 /// The largest status list credential read, in bytes. A list of the
 /// minimum size (16 KiB uncompressed) is a few kilobytes even when many
@@ -177,9 +173,6 @@ impl DcpVerifier {
     async fn check_token(&self, token: &str) -> Result<CheckedToken, String> {
         let unverified = unverified_claims(token).map_err(|e| format!("ID token: {e}"))?;
         let now = now_secs();
-        if unverified.exp > now.saturating_add(MAX_TOKEN_LIFETIME + LEEWAY) {
-            return Err("the token is valid for too long".to_owned());
-        }
         let doc = self.resolver.resolve(&unverified.iss).await?;
         let claims = {
             // a panic while holding the lock leaves at most one more token
