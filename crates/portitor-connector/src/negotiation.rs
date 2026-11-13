@@ -48,7 +48,7 @@ pub const UNAUTHENTICATED: &str = "urn:portitor:unauthenticated";
 pub struct InMemoryNegotiations(Arc<Mutex<BTreeMap<String, Negotiation>>>);
 
 impl InMemoryNegotiations {
-    fn map(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, Negotiation>> {
+    pub(crate) fn map(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, Negotiation>> {
         // a panic while holding the lock cannot leave a half-written entry:
         // every write is a single insert
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
@@ -397,6 +397,8 @@ pub struct Ports {
     pub consumer_store: AnyConsumerStore,
     /// The consumer's decisions.
     pub consumer_decider: AnyConsumerDecider,
+    /// The adapters for transfers as provider.
+    pub transfers: crate::transfer::TransferPorts,
 }
 
 impl std::fmt::Debug for Ports {
@@ -414,8 +416,11 @@ impl Ports {
     /// `tck` feature the deciders follow the DSP TCK scripts instead.
     #[must_use]
     pub fn new(sender: Arc<dyn Sender>) -> Self {
+        // one store for negotiations and the agreements transfers need
+        let negotiations = InMemoryNegotiations::default();
         Self {
-            store: AnyStore(Arc::new(InMemoryNegotiations::default())),
+            store: AnyStore(Arc::new(negotiations.clone())),
+            transfers: crate::transfer::TransferPorts::in_memory(negotiations),
             decider: default_decider(),
             sender,
             guard: Arc::new(AllowAll),
@@ -423,6 +428,17 @@ impl Ports {
             consumer_store: AnyConsumerStore(Arc::new(InMemoryConsumerNegotiations::default())),
             consumer_decider: default_consumer_decider(),
         }
+    }
+}
+
+impl Ports {
+    /// Keeps negotiations (as provider and as consumer), transfers and
+    /// the agreements transfers are checked against in one `SQLite` file.
+    pub fn use_sqlite(&mut self, store: &Arc<crate::store::SqliteNegotiations>) {
+        self.store = AnyStore(Arc::clone(store) as _);
+        self.consumer_store = AnyConsumerStore(Arc::clone(store) as _);
+        self.transfers.store = crate::transfer::Shared(Arc::clone(store) as _);
+        self.transfers.agreements = crate::transfer::Shared(Arc::clone(store) as _);
     }
 }
 

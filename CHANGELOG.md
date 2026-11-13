@@ -13,6 +13,18 @@ versions may change behaviour and configuration.
 ## [Unreleased]
 
 ### Added
+- Transfer process as provider (DSP 2025-1, ADR 0013): the
+  `/transfers/...` endpoints. A request is accepted only under a finalized
+  agreement held by the caller, whose permissions still hold, in a format
+  the dataset offers and the data plane serves (`HttpData-PULL`; no push).
+  The provider then starts the data flow and sends the data address. The
+  consumer may suspend, start again, complete or terminate; the data plane
+  is told first, then the transfer is saved. Transfers are kept in the
+  SQLite file with the same outbox as negotiations (new migration). Until
+  the HTTP data plane lands (0.4 PR 4) every request is refused with "this
+  connector cannot transfer this format".
+- Bridge from the transfer process to Data Plane Signaling
+  (`data_flows.rs`): repeated signals are harmless.
 - Transfer process (DSP 2025-1) in `portitor-dsp`: the five message types,
   `DataAddress`, the acknowledgement and error types, and the state
   machine as a pure function. Checked against every transfer example and

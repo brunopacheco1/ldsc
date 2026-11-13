@@ -781,6 +781,7 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "jsonschema",
+ "portitor-dps",
  "portitor-dsp",
  "ring",
  "rusqlite",
