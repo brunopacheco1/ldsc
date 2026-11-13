@@ -1,0 +1,32 @@
+meta {
+  name: STS token (consumer)
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{stsUrl}}
+  body: formUrlEncoded
+  auth: none
+}
+
+body:form-urlencoded {
+  grant_type: client_credentials
+  client_id: {{consumerId}}
+  client_secret: {{stsSecret}}
+  audience: {{providerId}}
+  bearer_access_scope: {{dcpScope}}
+}
+
+assert {
+  res.status: eq 200
+  res.body.token_type: isDefined
+}
+
+docs {
+  The consumer's Secure Token Service (portitor-identity, POST /sts/token, DCP's
+  identity-trust-sts-api.yaml): a self-issued ID token for the provider's DID, valid for
+  one DSP request. The collection's pre-request script gets one like this before every
+  request to {{dsp}}; this request is here to look at one.
+  Debug: breakpoint in sts.rs (crates/portitor-identity/src).
+}

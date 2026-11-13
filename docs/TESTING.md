@@ -321,8 +321,10 @@ The endpoints are described in [docs/api/openapi.json](api/openapi.json)
 (OpenAPI 3.1). Any OpenAPI tool that resolves relative `$ref`s from the
 repository can show it and send requests. The [Bruno](https://www.usebruno.com/)
 collection in `_http/` has these requests ready, with the `single` and
-`two-connectors` environments for the setups below (put the management
-API key in the secret `apiKey` variable). With `curl`:
+`two-connectors` environments of the [VS Code set-up](#debugging-in-vs-code),
+which runs real DCP instead of the `tck` build: the collection gets a
+token from the consumer's STS before every DSP request. With `curl` and
+the `tck` build:
 
 ```sh
 curl -s localhost:8080/.well-known/dspace-version
@@ -422,12 +424,27 @@ extensions (`extensions.json`). Install the recommended
 and [CodeLLDB](https://marketplace.visualstudio.com/items?itemName=vadimcn.vscode-lldb)
 when VS Code asks. Then open Run and Debug, pick a configuration and press F5.
 
+Every connector needs its identity component, a credential and a
+trusted issuer (DCP, ADR 0016). The task **portitor: identities**
+(`scripts/dev-identities.sh`) provides them, as `scripts/demo.sh` does:
+it publishes the demo authority on `127.0.0.1:9100` and starts two
+`portitor-identity` processes, each with its `MembershipCredential`:
+
+| Participant | DID | Identity (DID document, STS, credential service) | Identity management |
+|---|---|---|---|
+| provider | `did:web:127.0.0.1%3A9102` | `127.0.0.1:9102` | `127.0.0.1:9103` |
+| consumer | `did:web:127.0.0.1%3A9203` | `127.0.0.1:9203` | `127.0.0.1:9204` |
+
+It keeps running until you stop it, and starts afresh each time (new
+keys); restart the connectors after restarting it. Keys, STS client
+secrets and logs are in `target/vscode-dcp/`.
+
 | Configuration | What it starts |
 |---|---|
-| Connector (single, :8080, management :8081) | one connector with `examples/datasets.json`; the `single` environment of `_http/` |
-| Connector: provider (:9101) / consumer (:9201, management :9202) | the two connectors of [Two connectors](#two-connectors); the `two-connectors` environment |
-| Two connectors (provider + consumer) | both at once; stopping one stops both |
-| Connector: TCK build (:8080) | the connector with the `tck` feature and `tck/datasets.json`, for the [TCK](#dsp-conformance-tck) |
+| Connector (single, :8080, management :8081) | one connector with `examples/datasets.json`, as the provider participant; starts the identities first; the `single` environment of `_http/` |
+| Connector: provider (:9101) / consumer (:9201, management :9202) | the two connectors of [Two connectors](#two-connectors), each with its identity; start the identities task first; the `two-connectors` environment |
+| Two connectors (provider + consumer) | the identities, then both connectors; stopping one connector stops both |
+| Connector: TCK build (:8080) | the connector with the `tck` feature and `tck/datasets.json`, for the [TCK](#dsp-conformance-tck); no identity, it takes the header `authorization: manual-test` |
 | Tests: *crate* (unit) | the unit tests of one crate |
 | Tests: *crate* *file* | one integration test file in `crates/*/tests` |
 
@@ -435,8 +452,12 @@ CodeLLDB runs `cargo run` or `cargo test` for the configuration and
 starts the result under the debugger, so it always debugs a fresh build.
 Databases and the management API key are kept in `target/`
 (`target/vscode-*.db`, `target/vscode-management.key`); a task creates the
-key the first time. Put that key in the `apiKey` secret of the `_http/`
-collection. Delete the `.db` files to start from an empty store.
+key the first time. In the `_http/` collection, put that key in the
+`apiKey` secret and the consumer's STS client secret
+(`target/vscode-dcp/consumer/sts-client-secret`) in `stsSecret`; the
+collection then gets a fresh token from the consumer's STS before each
+DSP request (`auth/STS token` shows one). Delete the `.db` files to
+start from an empty store.
 
 To debug one test, use the **Debug** link that rust-analyzer shows above
 each `#[test]`, or add the test name to `"args"` of a test configuration.

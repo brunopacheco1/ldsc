@@ -5,6 +5,12 @@
 // purpose: CodeLLDB gives the program Cargo's environment, which overrides "env".
 // Databases and the management key go to target/, which git ignores.
 //
+// A connector needs its identity component, a credential and a trusted issuer (DCP,
+// ADR 0016). The task "portitor: identities" (scripts/dev-identities.sh) starts the demo
+// authority (127.0.0.1:9100) and two identities: provider 127.0.0.1:9102, consumer
+// 127.0.0.1:9203, with their STS secrets in target/vscode-dcp/. The single connector and
+// the compound start it; start it yourself before "provider" or "consumer" alone.
+//
 // Tests: the working directory is the crate, as with `cargo test`. To debug one test,
 // use rust-analyzer's "Debug" link above it, or add its name to "args".
 // A new file in crates/*/tests gets a configuration here.
@@ -21,6 +27,10 @@
           "RUST_LOG": "info,portitor_connector=debug,portitor_dsp=debug,portitor_dcp=debug",
           "PORTITOR_BIND": "127.0.0.1:8080",
           "PORTITOR_PUBLIC_URL": "http://127.0.0.1:8080",
+          "PORTITOR_PARTICIPANT_ID": "did:web:127.0.0.1%3A9102",
+          "PORTITOR_STS_URL": "http://127.0.0.1:9102/sts/token",
+          "PORTITOR_STS_CLIENT_SECRET_FILE": "target/vscode-dcp/provider/sts-client-secret",
+          "PORTITOR_TRUSTED_ISSUERS": "did:web:127.0.0.1%3A9100",
           "PORTITOR_DATASETS_FILE": "examples/datasets.json",
           "PORTITOR_DB_FILE": "target/vscode-single.db",
           "PORTITOR_MANAGEMENT_API_KEY_FILE": "target/vscode-management.key",
@@ -32,7 +42,7 @@
         "group": "1-run",
         "order": 1
       },
-      "preLaunchTask": "portitor: management key"
+      "preLaunchTask": "portitor: identities and management key"
     },
     {
       "name": "Connector: provider (:9101)",
@@ -44,7 +54,10 @@
           "RUST_LOG": "info,portitor_connector=debug,portitor_dsp=debug,portitor_dcp=debug",
           "PORTITOR_BIND": "127.0.0.1:9101",
           "PORTITOR_PUBLIC_URL": "http://127.0.0.1:9101",
-          "PORTITOR_PARTICIPANT_ID": "did:web:provider",
+          "PORTITOR_PARTICIPANT_ID": "did:web:127.0.0.1%3A9102",
+          "PORTITOR_STS_URL": "http://127.0.0.1:9102/sts/token",
+          "PORTITOR_STS_CLIENT_SECRET_FILE": "target/vscode-dcp/provider/sts-client-secret",
+          "PORTITOR_TRUSTED_ISSUERS": "did:web:127.0.0.1%3A9100",
           "PORTITOR_DATASETS_FILE": "examples/datasets.json",
           "PORTITOR_DB_FILE": "target/vscode-provider.db",
           "PORTITOR_ALLOW_HTTP_CALLBACKS": "true"
@@ -66,7 +79,10 @@
           "RUST_LOG": "info,portitor_connector=debug,portitor_dsp=debug,portitor_dcp=debug",
           "PORTITOR_BIND": "127.0.0.1:9201",
           "PORTITOR_PUBLIC_URL": "http://127.0.0.1:9201",
-          "PORTITOR_PARTICIPANT_ID": "did:web:consumer",
+          "PORTITOR_PARTICIPANT_ID": "did:web:127.0.0.1%3A9203",
+          "PORTITOR_STS_URL": "http://127.0.0.1:9203/sts/token",
+          "PORTITOR_STS_CLIENT_SECRET_FILE": "target/vscode-dcp/consumer/sts-client-secret",
+          "PORTITOR_TRUSTED_ISSUERS": "did:web:127.0.0.1%3A9100",
           "PORTITOR_DB_FILE": "target/vscode-consumer.db",
           "PORTITOR_MANAGEMENT_BIND": "127.0.0.1:9202",
           "PORTITOR_MANAGEMENT_API_KEY_FILE": "target/vscode-management.key",
@@ -92,6 +108,7 @@
           "PORTITOR_PUBLIC_URL": "http://127.0.0.1:8080",
           "PORTITOR_DATASETS_FILE": "tck/datasets.json",
           "PORTITOR_DB_FILE": "target/vscode-tck.db",
+          "PORTITOR_TCK_AUTHORIZATION": "manual-test",
           "PORTITOR_ALLOW_HTTP_CALLBACKS": "true"
         }
       },
@@ -315,6 +332,7 @@
       "name": "Two connectors (provider + consumer)",
       "configurations": ["Connector: provider (:9101)", "Connector: consumer (:9201, management :9202)"],
       "stopAll": true,
+      "preLaunchTask": "portitor: identities",
       "presentation": {
         "group": "1-run",
         "order": 0

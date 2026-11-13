@@ -1,3 +1,35 @@
 meta {
   name: Portitor connector
 }
+
+script:pre-request {
+  // DCP (ADR 0016): every DSP request needs a fresh self-issued token from the caller's
+  // STS, since a token may be used once. Here the caller is the consumer's identity from
+  // scripts/dev-identities.sh (the "portitor: identities" task in VS Code): its STS
+  // issues a token for the provider's DID that lets the provider read the consumer's
+  // MembershipCredential. Requests to {{dsp}} get it as their Authorization header;
+  // management and metadata requests do not need one.
+  const url = req.getUrl();
+  if (url.includes("{{dsp}}") || url.includes("/dsp/2025-1/")) {
+    const axios = require("axios");
+    const form = new URLSearchParams({
+      grant_type: "client_credentials",
+      client_id: bru.getEnvVar("consumerId"),
+      client_secret: bru.getEnvVar("stsSecret"),
+      audience: bru.getEnvVar("providerId"),
+      bearer_access_scope: bru.getEnvVar("dcpScope"),
+    });
+    const answer = await axios.post(bru.getEnvVar("stsUrl"), form.toString(), {
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    });
+    req.setHeader("Authorization", "Bearer " + answer.data.access_token);
+  }
+}
+
+docs {
+  Start the demo authority and the identities first: scripts/dev-identities.sh, or the
+  VS Code task "portitor: identities" (docs/TESTING.md, Debugging in VS Code). Put the
+  consumer's STS client secret (target/vscode-dcp/consumer/sts-client-secret) in the
+  environment's secret stsSecret, and the management key (target/vscode-management.key)
+  in apiKey.
+}

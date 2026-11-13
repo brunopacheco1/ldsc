@@ -1,12 +1,16 @@
 vars {
-  providerUrl: http://localhost:8080
-  dsp: http://localhost:8080/dsp/2025-1
+  providerUrl: http://127.0.0.1:8080
+  dsp: http://127.0.0.1:8080/dsp/2025-1
   datasetId: weather-stations
   offerId: weather-stations:offer:use
   callbackAddress: http://127.0.0.1:9000
-  providerId: did:web:localhost%3A8080
+  providerId: did:web:127.0.0.1%3A9102
+  consumerId: did:web:127.0.0.1%3A9203
+  stsUrl: http://127.0.0.1:9203/sts/token
+  dcpScope: org.eclipse.dspace.dcp.vc.type:MembershipCredential
   mgmtUrl: http://127.0.0.1:8081
 }
 vars:secret [
-  apiKey
+  apiKey,
+  stsSecret
 ]

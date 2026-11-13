@@ -126,6 +126,11 @@ versions may change behaviour and configuration.
   and an agreement whose assigner is not the provider is refused.
 - The catalog request endpoint also reads the expanded JSON-LD request
   the DCP TCK sends.
+- The VS Code configurations and the `_http/` Bruno collection run with
+  DCP: a task (`scripts/dev-identities.sh`) starts the demo authority and
+  the provider's and consumer's identities with their credentials, the
+  connectors use them, and the collection gets a token from the
+  consumer's STS before every DSP request.
 - The DSP TCK job sends a fixed `Authorization` header, which the `tck`
   build (`PORTITOR_TCK_AUTHORIZATION`) maps to the TCK participant.
 

@@ -36,6 +36,30 @@
       "command": "mkdir -p target && { test -s target/vscode-management.key || openssl rand -hex 32 > target/vscode-management.key; }",
       "presentation": { "reveal": "silent" },
       "problemMatcher": []
+    },
+    {
+      // The demo authority and the provider's and consumer's identity components, with
+      // their credentials (scripts/dev-identities.sh). Keeps running; "ready" once the
+      // credentials are delivered. Keys, secrets and logs in target/vscode-dcp/.
+      "label": "portitor: identities",
+      "type": "shell",
+      "command": "scripts/dev-identities.sh",
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "portitor",
+        // only start and end matter; the pattern never matches
+        "pattern": { "regexp": "^__portitor_never__$", "file": 1, "message": 1 },
+        "background": {
+          "activeBegins": true,
+          "beginsPattern": "^== Start",
+          "endsPattern": "^(== Ready|FAILED)"
+        }
+      }
+    },
+    {
+      "label": "portitor: identities and management key",
+      "dependsOn": ["portitor: management key", "portitor: identities"],
+      "problemMatcher": []
     }
   ]
 }
