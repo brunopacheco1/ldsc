@@ -13,7 +13,7 @@ use portitor_identity::directory::WebDirectory;
 use portitor_identity::store::SqliteStore;
 use portitor_identity::{Identity, Ports};
 use portitor_runtime::api_key::ApiKey;
-use portitor_runtime::serve::{init_logging, shutdown, wait};
+use portitor_runtime::serve::{bind_management, init_logging, serve};
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -44,19 +44,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let identity = Arc::new(Identity::new(&config, key, sts_secret, ports)?);
     let listener = tokio::net::TcpListener::bind(&config.bind).await?;
 
-    // one signal stops both servers
-    let (stop, stopped) = tokio::sync::watch::channel(false);
     let management = if let Some(settings) = &config.management {
         let key = ApiKey::read(&settings.api_key_file)
             .map_err(|e| format!("PORTITOR_MANAGEMENT_API_KEY_FILE: {e}"))?;
-        let listener = tokio::net::TcpListener::bind(&settings.bind).await?;
-        tracing::info!(bind = %settings.bind, "management API listening");
+        let listener = bind_management(&settings.bind).await?;
         let app = portitor_identity::management::router(Arc::clone(&identity), key);
-        Some(tokio::spawn(
-            axum::serve(listener, app)
-                .with_graceful_shutdown(wait(stopped.clone()))
-                .into_future(),
-        ))
+        Some((listener, app))
     } else {
         tracing::info!("management API off (PORTITOR_MANAGEMENT_API_KEY_FILE not set)");
         None
@@ -68,18 +61,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         db = %config.db_file.display(),
         "portitor-identity listening"
     );
-    tokio::spawn(async move {
-        shutdown().await;
-        let _ = stop.send(true);
-    });
-    axum::serve(listener, portitor_identity::router(identity))
-        .with_graceful_shutdown(wait(stopped))
-        .await?;
-    if let Some(management) = management {
-        // two `?`: the first for the task itself (it may have panicked),
-        // the second for the server's own result
-        management.await??;
-    }
+    let app = portitor_identity::router(identity);
+    serve((listener, app), management).await?;
     Ok(())
 }
 
