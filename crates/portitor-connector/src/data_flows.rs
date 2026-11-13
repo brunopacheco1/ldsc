@@ -18,7 +18,7 @@ use portitor_dps::state::DataFlowState;
 use portitor_dsp::transfer::DataAddress;
 use portitor_dsp::transfer::provider::{DataFlows, Transfer};
 
-use crate::negotiation::new_uuid;
+use crate::system::new_uuid;
 
 /// The DSP formats the built-in data plane serves, with the Data Plane
 /// Signaling profile of each. Pull only in 0.4.

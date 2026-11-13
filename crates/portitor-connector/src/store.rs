@@ -141,14 +141,14 @@ impl SqliteNegotiations {
         &self,
         sql: &str,
         args: impl rusqlite::Params,
-        row: fn(&Row<'_>) -> Result<T, StoreError>,
+        from_row: fn(&Row<'_>) -> Result<T, StoreError>,
     ) -> Result<Vec<T>, StoreError> {
         let conn = self.conn();
         let mut stmt = conn.prepare(sql).map_err(err)?;
         let mut rows = stmt.query(args).map_err(err)?;
         let mut out = Vec::new();
-        while let Some(r) = rows.next().map_err(err)? {
-            out.push(row(r)?);
+        while let Some(row) = rows.next().map_err(err)? {
+            out.push(from_row(row)?);
         }
         Ok(out)
     }
@@ -157,7 +157,7 @@ impl SqliteNegotiations {
 fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
     let tx = conn.transaction().map_err(err)?;
     let stored: i64 = tx
-        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(err)?;
     let known = i64::try_from(MIGRATIONS.len()).unwrap_or(i64::MAX);
     let Ok(version) = usize::try_from(stored) else {
@@ -182,7 +182,7 @@ fn err(e: rusqlite::Error) -> StoreError {
 
 fn state_text(s: NegotiationState) -> Result<String, StoreError> {
     match serde_json::to_value(s) {
-        Ok(serde_json::Value::String(t)) => Ok(t),
+        Ok(serde_json::Value::String(text)) => Ok(text),
         _ => Err(StoreError(format!("cannot store state {s:?}"))),
     }
 }
@@ -196,8 +196,8 @@ fn version(v: u64) -> Result<i64, StoreError> {
 }
 
 /// Column `i` of a row.
-fn col<T: rusqlite::types::FromSql>(r: &Row<'_>, i: usize) -> Result<T, StoreError> {
-    r.get(i).map_err(err)
+fn col<T: rusqlite::types::FromSql>(row: &Row<'_>, i: usize) -> Result<T, StoreError> {
+    row.get(i).map_err(err)
 }
 
 fn parsed<T: for<'de> Deserialize<'de>>(what: &str, text: &str) -> Result<T, StoreError> {
@@ -286,9 +286,9 @@ fn consumer_pending(o: Option<&consumer::Outgoing>) -> Result<Option<String>, St
 const NEGOTIATION_COLUMNS: &str = "provider_pid, consumer_pid, state, callback_address, \
      counter_party, offer, agreement, pending, version";
 
-fn negotiation(r: &Row<'_>) -> Result<Negotiation, StoreError> {
-    let provider_pid: String = col(r, 0)?;
-    let pending = col::<Option<String>>(r, 7)?
+fn negotiation_from_row(row: &Row<'_>) -> Result<Negotiation, StoreError> {
+    let provider_pid: String = col(row, 0)?;
+    let pending = col::<Option<String>>(row, 7)?
         .map(|p| -> Result<provider::Outgoing, StoreError> {
             let m: StoredMessage<NegotiationState> = parsed("pending message", &p)?;
             Ok(provider::Outgoing {
@@ -302,16 +302,16 @@ fn negotiation(r: &Row<'_>) -> Result<Negotiation, StoreError> {
         })
         .transpose()?;
     Ok(Negotiation {
-        consumer_pid: col(r, 1)?,
-        state: parsed_state(col(r, 2)?)?,
-        callback_address: col(r, 3)?,
-        counter_party: col(r, 4)?,
-        offer: parsed("offer", &col::<String>(r, 5)?)?,
-        agreement: col::<Option<String>>(r, 6)?
+        consumer_pid: col(row, 1)?,
+        state: parsed_state(col(row, 2)?)?,
+        callback_address: col(row, 3)?,
+        counter_party: col(row, 4)?,
+        offer: parsed("offer", &col::<String>(row, 5)?)?,
+        agreement: col::<Option<String>>(row, 6)?
             .map(|a| parsed("agreement", &a))
             .transpose()?,
         pending,
-        version: parsed_version(col(r, 8)?)?,
+        version: parsed_version(col(row, 8)?)?,
         provider_pid,
     })
 }
@@ -320,12 +320,12 @@ impl NegotiationStore for SqliteNegotiations {
     fn get(&self, provider_pid: &str) -> Result<Option<Negotiation>, StoreError> {
         let sql = format!("SELECT {NEGOTIATION_COLUMNS} FROM negotiation WHERE provider_pid = ?1");
         Ok(self
-            .query(&sql, params![provider_pid], negotiation)?
+            .query(&sql, params![provider_pid], negotiation_from_row)?
             .into_iter()
             .next())
     }
 
-    fn insert(&self, n: &Negotiation) -> Result<(), StoreError> {
+    fn insert(&self, negotiation: &Negotiation) -> Result<(), StoreError> {
         let sql = format!(
             "INSERT INTO negotiation ({NEGOTIATION_COLUMNS})
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"
@@ -334,22 +334,22 @@ impl NegotiationStore for SqliteNegotiations {
             .execute(
                 &sql,
                 params![
-                    n.provider_pid,
-                    n.consumer_pid,
-                    state_text(n.state)?,
-                    n.callback_address,
-                    n.counter_party,
-                    json(&n.offer)?,
-                    n.agreement.as_ref().map(json).transpose()?,
-                    provider_pending(n.pending.as_ref())?,
-                    version(n.version)?,
+                    negotiation.provider_pid,
+                    negotiation.consumer_pid,
+                    state_text(negotiation.state)?,
+                    negotiation.callback_address,
+                    negotiation.counter_party,
+                    json(&negotiation.offer)?,
+                    negotiation.agreement.as_ref().map(json).transpose()?,
+                    provider_pending(negotiation.pending.as_ref())?,
+                    version(negotiation.version)?,
                 ],
             )
             .map_err(err)?;
         Ok(())
     }
 
-    fn replace_if(&self, n: &Negotiation, expected: u64) -> Result<bool, StoreError> {
+    fn replace_if(&self, negotiation: &Negotiation, expected: u64) -> Result<bool, StoreError> {
         // compare-and-update in one statement: a concurrent change makes
         // the WHERE clause miss and nothing is written
         let changed = self
@@ -360,15 +360,15 @@ impl NegotiationStore for SqliteNegotiations {
                      offer = ?6, agreement = ?7, pending = ?8, version = ?9
                  WHERE provider_pid = ?1 AND version = ?10",
                 params![
-                    n.provider_pid,
-                    n.consumer_pid,
-                    state_text(n.state)?,
-                    n.callback_address,
-                    n.counter_party,
-                    json(&n.offer)?,
-                    n.agreement.as_ref().map(json).transpose()?,
-                    provider_pending(n.pending.as_ref())?,
-                    version(n.version)?,
+                    negotiation.provider_pid,
+                    negotiation.consumer_pid,
+                    state_text(negotiation.state)?,
+                    negotiation.callback_address,
+                    negotiation.counter_party,
+                    json(&negotiation.offer)?,
+                    negotiation.agreement.as_ref().map(json).transpose()?,
+                    provider_pending(negotiation.pending.as_ref())?,
+                    version(negotiation.version)?,
                     version(expected)?,
                 ],
             )
@@ -381,16 +381,16 @@ impl NegotiationStore for SqliteNegotiations {
             "SELECT {NEGOTIATION_COLUMNS} FROM negotiation WHERE pending IS NOT NULL
              ORDER BY provider_pid"
         );
-        self.query(&sql, [], negotiation)
+        self.query(&sql, [], negotiation_from_row)
     }
 }
 
 const CONSUMER_COLUMNS: &str = "consumer_pid, provider_pid, state, provider_address, \
      provider_id, offer, agreement, pending, version";
 
-fn consumer_negotiation(r: &Row<'_>) -> Result<ConsumerNegotiation, StoreError> {
-    let consumer_pid: String = col(r, 0)?;
-    let pending = col::<Option<String>>(r, 7)?
+fn consumer_negotiation_from_row(row: &Row<'_>) -> Result<ConsumerNegotiation, StoreError> {
+    let consumer_pid: String = col(row, 0)?;
+    let pending = col::<Option<String>>(row, 7)?
         .map(|p| -> Result<consumer::Outgoing, StoreError> {
             let m: StoredMessage<NegotiationState> = parsed("pending message", &p)?;
             Ok(consumer::Outgoing {
@@ -405,16 +405,16 @@ fn consumer_negotiation(r: &Row<'_>) -> Result<ConsumerNegotiation, StoreError> 
         })
         .transpose()?;
     Ok(ConsumerNegotiation {
-        provider_pid: col(r, 1)?,
-        state: parsed_state(col(r, 2)?)?,
-        provider_address: col(r, 3)?,
-        provider_id: col(r, 4)?,
-        offer: parsed("offer", &col::<String>(r, 5)?)?,
-        agreement: col::<Option<String>>(r, 6)?
+        provider_pid: col(row, 1)?,
+        state: parsed_state(col(row, 2)?)?,
+        provider_address: col(row, 3)?,
+        provider_id: col(row, 4)?,
+        offer: parsed("offer", &col::<String>(row, 5)?)?,
+        agreement: col::<Option<String>>(row, 6)?
             .map(|a| parsed("agreement", &a))
             .transpose()?,
         pending,
-        version: parsed_version(col(r, 8)?)?,
+        version: parsed_version(col(row, 8)?)?,
         consumer_pid,
     })
 }
@@ -424,12 +424,12 @@ impl ConsumerStore for SqliteNegotiations {
         let sql =
             format!("SELECT {CONSUMER_COLUMNS} FROM consumer_negotiation WHERE consumer_pid = ?1");
         Ok(self
-            .query(&sql, params![consumer_pid], consumer_negotiation)?
+            .query(&sql, params![consumer_pid], consumer_negotiation_from_row)?
             .into_iter()
             .next())
     }
 
-    fn insert(&self, n: &ConsumerNegotiation) -> Result<(), StoreError> {
+    fn insert(&self, negotiation: &ConsumerNegotiation) -> Result<(), StoreError> {
         let sql = format!(
             "INSERT INTO consumer_negotiation ({CONSUMER_COLUMNS})
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"
@@ -438,22 +438,26 @@ impl ConsumerStore for SqliteNegotiations {
             .execute(
                 &sql,
                 params![
-                    n.consumer_pid,
-                    n.provider_pid,
-                    state_text(n.state)?,
-                    n.provider_address,
-                    n.provider_id,
-                    json(&n.offer)?,
-                    n.agreement.as_ref().map(json).transpose()?,
-                    consumer_pending(n.pending.as_ref())?,
-                    version(n.version)?,
+                    negotiation.consumer_pid,
+                    negotiation.provider_pid,
+                    state_text(negotiation.state)?,
+                    negotiation.provider_address,
+                    negotiation.provider_id,
+                    json(&negotiation.offer)?,
+                    negotiation.agreement.as_ref().map(json).transpose()?,
+                    consumer_pending(negotiation.pending.as_ref())?,
+                    version(negotiation.version)?,
                 ],
             )
             .map_err(err)?;
         Ok(())
     }
 
-    fn replace_if(&self, n: &ConsumerNegotiation, expected: u64) -> Result<bool, StoreError> {
+    fn replace_if(
+        &self,
+        negotiation: &ConsumerNegotiation,
+        expected: u64,
+    ) -> Result<bool, StoreError> {
         // compare-and-update in one statement, as for the provider side
         let changed = self
             .conn()
@@ -463,15 +467,15 @@ impl ConsumerStore for SqliteNegotiations {
                      offer = ?6, agreement = ?7, pending = ?8, version = ?9
                  WHERE consumer_pid = ?1 AND version = ?10",
                 params![
-                    n.consumer_pid,
-                    n.provider_pid,
-                    state_text(n.state)?,
-                    n.provider_address,
-                    n.provider_id,
-                    json(&n.offer)?,
-                    n.agreement.as_ref().map(json).transpose()?,
-                    consumer_pending(n.pending.as_ref())?,
-                    version(n.version)?,
+                    negotiation.consumer_pid,
+                    negotiation.provider_pid,
+                    state_text(negotiation.state)?,
+                    negotiation.provider_address,
+                    negotiation.provider_id,
+                    json(&negotiation.offer)?,
+                    negotiation.agreement.as_ref().map(json).transpose()?,
+                    consumer_pending(negotiation.pending.as_ref())?,
+                    version(negotiation.version)?,
                     version(expected)?,
                 ],
             )
@@ -490,7 +494,7 @@ impl ConsumerStore for SqliteNegotiations {
              ORDER BY consumer_pid LIMIT ?2"
         );
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        self.query(&sql, params![after, limit], consumer_negotiation)
+        self.query(&sql, params![after, limit], consumer_negotiation_from_row)
     }
 
     fn pending(&self) -> Result<Vec<ConsumerNegotiation>, StoreError> {
@@ -498,7 +502,7 @@ impl ConsumerStore for SqliteNegotiations {
             "SELECT {CONSUMER_COLUMNS} FROM consumer_negotiation WHERE pending IS NOT NULL
              ORDER BY consumer_pid"
         );
-        self.query(&sql, [], consumer_negotiation)
+        self.query(&sql, [], consumer_negotiation_from_row)
     }
 }
 

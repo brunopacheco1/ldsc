@@ -71,6 +71,10 @@ cargo deny check
 - **Licensing (REUSE):** every new file has an SPDX header, or is listed in
   `REUSE.toml`. Copied third-party files keep their licence and a note of
   their source.
+- **Plain code.** The maintainer reads Rust now and then. Use full
+  names, prefer a `match` or a loop to a long closure chain, and comment
+  any pattern that hides the intent. Patterns in use are explained in
+  `docs/RUST-IDIOMS.md`; add a pattern there when you introduce one.
 - **Small changes.** One concern per pull request; update `CHANGELOG.md`
   under *Unreleased* and the docs it affects.
 - **Commits** are signed; `main` changes only through reviewed pull

@@ -27,15 +27,15 @@ fn state_text(s: DataFlowState) -> Result<String, FlowStoreError> {
     }
 }
 
-fn flow(r: &Row<'_>) -> Result<Flow, super::StoreError> {
-    let state: String = col(r, 1)?;
-    let expires_at: i64 = col(r, 4)?;
+fn flow_from_row(row: &Row<'_>) -> Result<Flow, super::StoreError> {
+    let state: String = col(row, 1)?;
+    let expires_at: i64 = col(row, 4)?;
     Ok(Flow {
-        id: col(r, 0)?,
+        id: col(row, 0)?,
         state: serde_json::from_value(serde_json::Value::String(state))
             .map_err(|e| super::StoreError(format!("stored state: {e}")))?,
-        dataset_id: col(r, 2)?,
-        token_hash: col(r, 3)?,
+        dataset_id: col(row, 2)?,
+        token_hash: col(row, 3)?,
         expires_at: u64::try_from(expires_at).unwrap_or(0),
     })
 }
@@ -44,7 +44,9 @@ impl FlowStore for SqliteNegotiations {
     fn get(&self, id: &str) -> Result<Option<Flow>, FlowStoreError> {
         let sql =
             "SELECT id, state, dataset_id, token_hash, expires_at FROM data_flow WHERE id = ?1";
-        let found = self.query(sql, params![id], flow).map_err(store_error)?;
+        let found = self
+            .query(sql, params![id], flow_from_row)
+            .map_err(store_error)?;
         Ok(found.into_iter().next())
     }
 

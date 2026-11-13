@@ -18,8 +18,8 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use portitor_dsp::transfer::consumer::{
-    AgreementProvider, ConsumerTransfer, ConsumerTransferDecider, ConsumerTransferDecision,
-    ConsumerTransferService, ConsumerTransferStore, Handled, HeldAgreements, Outgoing,
+    AgreementProvider, ConsumerTransfer, ConsumerTransferDecision, ConsumerTransferService,
+    ConsumerTransferStore, Handled, HeldAgreements, Outgoing,
 };
 use portitor_dsp::transfer::provider::{Failure, StoreError};
 use portitor_dsp::transfer::{
@@ -30,46 +30,13 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::consumer::{InMemoryConsumerNegotiations, page};
-use crate::negotiation::{Ports, SystemEnvironment, callback_allowed};
+use crate::http_client::callback_allowed;
 use crate::outbox::{self, Link, Message, Outbox};
-use crate::transfer::{Body, Shared, bad_request, failed, reached_state, read_message};
-
-/// The consumer transfer store chosen at start.
-pub type AnyConsumerTransferStore = Shared<dyn ConsumerTransferStore + Send + Sync>;
-/// The consumer transfer policy chosen at start.
-pub type AnyConsumerTransferDecider = Shared<dyn ConsumerTransferDecider + Send + Sync>;
-/// The held agreements chosen at start (the negotiation store's).
-pub type AnyHeldAgreements = Shared<dyn HeldAgreements + Send + Sync>;
-
-impl ConsumerTransferStore for AnyConsumerTransferStore {
-    fn get(&self, consumer_pid: &str) -> Result<Option<ConsumerTransfer>, StoreError> {
-        self.0.get(consumer_pid)
-    }
-    fn insert(&self, t: &ConsumerTransfer) -> Result<(), StoreError> {
-        self.0.insert(t)
-    }
-    fn replace_if(&self, t: &ConsumerTransfer, expected: u64) -> Result<bool, StoreError> {
-        self.0.replace_if(t, expected)
-    }
-    fn pending(&self) -> Result<Vec<ConsumerTransfer>, StoreError> {
-        self.0.pending()
-    }
-    fn list(&self, after: Option<&str>, limit: usize) -> Result<Vec<ConsumerTransfer>, StoreError> {
-        self.0.list(after, limit)
-    }
-}
-
-impl ConsumerTransferDecider for AnyConsumerTransferDecider {
-    fn decide(&self, t: &ConsumerTransfer) -> ConsumerTransferDecision {
-        self.0.decide(t)
-    }
-}
-
-impl HeldAgreements for AnyHeldAgreements {
-    fn provider_of(&self, agreement_id: &str) -> Result<Option<AgreementProvider>, StoreError> {
-        self.0.provider_of(agreement_id)
-    }
-}
+use crate::ports::{
+    AnyConsumerTransferDecider, AnyConsumerTransferStore, AnyHeldAgreements, Ports,
+};
+use crate::system::SystemEnvironment;
+use crate::transfer::{Body, bad_request, failed, reached_state, read_message};
 
 /// Adapter: consumer transfers kept in memory (lost on restart). The
 /// `SQLite` adapter replaces it for real use.
@@ -89,22 +56,22 @@ impl ConsumerTransferStore for InMemoryConsumerTransfers {
         Ok(self.map().get(consumer_pid).cloned())
     }
 
-    fn insert(&self, t: &ConsumerTransfer) -> Result<(), StoreError> {
+    fn insert(&self, transfer: &ConsumerTransfer) -> Result<(), StoreError> {
         let mut map = self.map();
-        if map.contains_key(&t.consumer_pid) {
-            return Err(StoreError(format!("{} exists", t.consumer_pid)));
+        if map.contains_key(&transfer.consumer_pid) {
+            return Err(StoreError(format!("{} exists", transfer.consumer_pid)));
         }
-        map.insert(t.consumer_pid.clone(), t.clone());
+        map.insert(transfer.consumer_pid.clone(), transfer.clone());
         Ok(())
     }
 
-    fn replace_if(&self, t: &ConsumerTransfer, expected: u64) -> Result<bool, StoreError> {
+    fn replace_if(&self, transfer: &ConsumerTransfer, expected: u64) -> Result<bool, StoreError> {
         let mut map = self.map();
-        let current = map.get(&t.consumer_pid).map(|old| old.version);
+        let current = map.get(&transfer.consumer_pid).map(|old| old.version);
         if current != Some(expected) {
             return Ok(false);
         }
-        map.insert(t.consumer_pid.clone(), t.clone());
+        map.insert(transfer.consumer_pid.clone(), transfer.clone());
         Ok(true)
     }
 
@@ -112,7 +79,7 @@ impl ConsumerTransferStore for InMemoryConsumerTransfers {
         let map = self.map();
         Ok(map
             .values()
-            .filter(|t| t.pending.is_some())
+            .filter(|transfer| transfer.pending.is_some())
             .cloned()
             .collect())
     }
@@ -128,50 +95,18 @@ impl HeldAgreements for InMemoryConsumerNegotiations {
         let map = self.map();
         Ok(map
             .values()
-            .find(|n| {
-                n.state == NegotiationState::Finalized
-                    && n.agreement.as_ref().is_some_and(|a| a.id == agreement_id)
+            .find(|negotiation| {
+                negotiation.state == NegotiationState::Finalized
+                    && negotiation
+                        .agreement
+                        .as_ref()
+                        .is_some_and(|a| a.id == agreement_id)
             })
-            .map(|n| AgreementProvider {
-                address: n.provider_address.clone(),
-                id: n.provider_id.clone(),
+            .map(|negotiation| AgreementProvider {
+                address: negotiation.provider_address.clone(),
+                id: negotiation.provider_id.clone(),
             }))
     }
-}
-
-/// The adapters behind transfers as consumer (part of [`crate::Ports`]).
-#[derive(Clone, Debug)]
-pub struct ConsumerTransferPorts {
-    /// Where transfers are kept.
-    pub store: AnyConsumerTransferStore,
-    /// What the consumer does on its own.
-    pub decider: AnyConsumerTransferDecider,
-    /// The agreements a transfer may be requested under.
-    pub held: AnyHeldAgreements,
-}
-
-impl ConsumerTransferPorts {
-    /// Transfers in memory, agreements from `negotiations`, and the default
-    /// policy: act only when asked through the management API. With the
-    /// `tck` feature the policy follows the DSP TCK scripts instead.
-    #[must_use]
-    pub fn in_memory(negotiations: InMemoryConsumerNegotiations) -> Self {
-        Self {
-            store: Shared(Arc::new(InMemoryConsumerTransfers::default())),
-            decider: default_decider(),
-            held: Shared(Arc::new(negotiations)),
-        }
-    }
-}
-
-#[cfg(feature = "tck")]
-fn default_decider() -> AnyConsumerTransferDecider {
-    Shared(Arc::new(crate::tck::TckConsumerTransferDecider))
-}
-
-#[cfg(not(feature = "tck"))]
-fn default_decider() -> AnyConsumerTransferDecider {
-    Shared(Arc::new(portitor_dsp::transfer::consumer::OnlyWhenAsked))
 }
 
 type Service = ConsumerTransferService<
@@ -191,15 +126,15 @@ pub(crate) struct TransferConsumer {
 
 impl TransferConsumer {
     pub(crate) fn new(ports: &Ports, callback_address: String, allow_http: bool) -> Self {
-        let t = ports.consumer_transfers.clone();
+        let transfer_ports = ports.consumer_transfers.clone();
         Self {
             service: ConsumerTransferService::new(
-                t.store,
-                t.decider,
+                transfer_ports.store,
+                transfer_ports.decider,
                 SystemEnvironment,
                 callback_address,
             ),
-            held: t.held,
+            held: transfer_ports.held,
             link: Link::new(ports),
             allow_http,
         }
@@ -245,12 +180,12 @@ impl TransferConsumer {
                 "the provider address must be an https URL",
             )));
         }
-        let (t, out) = self
+        let (transfer, out) = self
             .service
             .start(provider_address, provider_id, agreement_id, format)
             .map_err(Box::new)?;
         tokio::spawn(outbox::deliver(Arc::clone(self), out));
-        Ok(t)
+        Ok(transfer)
     }
 
     /// Our own step on a transfer (suspend, start again, complete or
@@ -362,62 +297,81 @@ fn refused(reason: &str) -> Failure {
 type Consumer = State<Arc<TransferConsumer>>;
 
 /// `GET <callback>/transfers/{consumerPid}`.
-pub(crate) async fn get(State(c): Consumer, Path(cpid): Path<String>) -> Response {
-    match c.service.get(&cpid) {
+pub(crate) async fn get(State(consumer): Consumer, Path(cpid): Path<String>) -> Response {
+    match consumer.service.get(&cpid) {
         Ok(ack) => Json(ack).into_response(),
         Err(f) => failed(f),
     }
 }
 
 /// `POST <callback>/transfers/{consumerPid}/start`.
-pub(crate) async fn start(State(c): Consumer, Path(cpid): Path<String>, body: Body) -> Response {
-    let msg: TransferStartMessage = match c.read(body, "TransferStartMessage", &cpid) {
+pub(crate) async fn start(
+    State(consumer): Consumer,
+    Path(cpid): Path<String>,
+    body: Body,
+) -> Response {
+    let msg: TransferStartMessage = match consumer.read(body, "TransferStartMessage", &cpid) {
         Ok(m) => m,
         Err(refused) => return bad_request(*refused),
     };
-    c.answer(c.service.started(&cpid, &msg))
+    consumer.answer(consumer.service.started(&cpid, &msg))
 }
 
 /// `POST <callback>/transfers/{consumerPid}/suspension`.
 pub(crate) async fn suspension(
-    State(c): Consumer,
+    State(consumer): Consumer,
     Path(cpid): Path<String>,
     body: Body,
 ) -> Response {
-    let msg: TransferSuspensionMessage = match c.read(body, "TransferSuspensionMessage", &cpid) {
-        Ok(m) => m,
-        Err(refused) => return bad_request(*refused),
-    };
+    let msg: TransferSuspensionMessage =
+        match consumer.read(body, "TransferSuspensionMessage", &cpid) {
+            Ok(m) => m,
+            Err(refused) => return bad_request(*refused),
+        };
     let ids = (msg.provider_pid.as_str(), msg.consumer_pid.as_str());
-    c.answer(c.service.provider_step(&cpid, ids, Transition::Suspend))
+    consumer.answer(
+        consumer
+            .service
+            .provider_step(&cpid, ids, Transition::Suspend),
+    )
 }
 
 /// `POST <callback>/transfers/{consumerPid}/completion`.
 pub(crate) async fn completion(
-    State(c): Consumer,
+    State(consumer): Consumer,
     Path(cpid): Path<String>,
     body: Body,
 ) -> Response {
-    let msg: TransferCompletionMessage = match c.read(body, "TransferCompletionMessage", &cpid) {
-        Ok(m) => m,
-        Err(refused) => return bad_request(*refused),
-    };
+    let msg: TransferCompletionMessage =
+        match consumer.read(body, "TransferCompletionMessage", &cpid) {
+            Ok(m) => m,
+            Err(refused) => return bad_request(*refused),
+        };
     let ids = (msg.provider_pid.as_str(), msg.consumer_pid.as_str());
-    c.answer(c.service.provider_step(&cpid, ids, Transition::Complete))
+    consumer.answer(
+        consumer
+            .service
+            .provider_step(&cpid, ids, Transition::Complete),
+    )
 }
 
 /// `POST <callback>/transfers/{consumerPid}/termination`.
 pub(crate) async fn termination(
-    State(c): Consumer,
+    State(consumer): Consumer,
     Path(cpid): Path<String>,
     body: Body,
 ) -> Response {
-    let msg: TransferTerminationMessage = match c.read(body, "TransferTerminationMessage", &cpid) {
-        Ok(m) => m,
-        Err(refused) => return bad_request(*refused),
-    };
+    let msg: TransferTerminationMessage =
+        match consumer.read(body, "TransferTerminationMessage", &cpid) {
+            Ok(m) => m,
+            Err(refused) => return bad_request(*refused),
+        };
     let ids = (msg.provider_pid.as_str(), msg.consumer_pid.as_str());
-    c.answer(c.service.provider_step(&cpid, ids, Transition::Terminate))
+    consumer.answer(
+        consumer
+            .service
+            .provider_step(&cpid, ids, Transition::Terminate),
+    )
 }
 
 #[cfg(test)]
@@ -428,6 +382,7 @@ mod tests {
     use portitor_dsp::transfer::TransferState;
 
     use super::*;
+    use crate::ports::Shared;
 
     fn transfer(pid: &str) -> ConsumerTransfer {
         ConsumerTransfer {

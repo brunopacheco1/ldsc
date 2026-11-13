@@ -21,8 +21,7 @@ use axum::response::{IntoResponse, Response};
 use portitor_dsp::Offer;
 use portitor_dsp::guard::Direction;
 use portitor_dsp::negotiation::consumer::{
-    ConsumerDecider, ConsumerDecision, ConsumerNegotiation, ConsumerService, ConsumerStore,
-    Outgoing,
+    ConsumerNegotiation, ConsumerService, ConsumerStore, Outgoing,
 };
 use portitor_dsp::negotiation::provider::{Failure, StoreError};
 use portitor_dsp::negotiation::{
@@ -33,8 +32,11 @@ use portitor_dsp::negotiation::{
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::negotiation::{Ports, SystemEnvironment, bad_request, callback_allowed, failed};
+use crate::http_client::callback_allowed;
+use crate::negotiation::{bad_request, failed};
 use crate::outbox::{self, Link, Message, Outbox};
+use crate::ports::{AnyConsumerDecider, AnyConsumerStore, Ports};
+use crate::system::SystemEnvironment;
 
 /// Adapter: consumer negotiations kept in memory (lost on restart).
 #[derive(Debug, Clone, Default)]
@@ -52,20 +54,24 @@ impl ConsumerStore for InMemoryConsumerNegotiations {
         Ok(self.map().get(consumer_pid).cloned())
     }
 
-    fn insert(&self, n: &ConsumerNegotiation) -> Result<(), StoreError> {
+    fn insert(&self, negotiation: &ConsumerNegotiation) -> Result<(), StoreError> {
         let mut map = self.map();
-        if map.contains_key(&n.consumer_pid) {
-            return Err(StoreError(format!("{} exists", n.consumer_pid)));
+        if map.contains_key(&negotiation.consumer_pid) {
+            return Err(StoreError(format!("{} exists", negotiation.consumer_pid)));
         }
-        map.insert(n.consumer_pid.clone(), n.clone());
+        map.insert(negotiation.consumer_pid.clone(), negotiation.clone());
         Ok(())
     }
 
-    fn replace_if(&self, n: &ConsumerNegotiation, expected: u64) -> Result<bool, StoreError> {
+    fn replace_if(
+        &self,
+        negotiation: &ConsumerNegotiation,
+        expected: u64,
+    ) -> Result<bool, StoreError> {
         let mut map = self.map();
-        match map.get(&n.consumer_pid) {
+        match map.get(&negotiation.consumer_pid) {
             Some(old) if old.version == expected => {
-                map.insert(n.consumer_pid.clone(), n.clone());
+                map.insert(negotiation.consumer_pid.clone(), negotiation.clone());
                 Ok(true)
             }
             _ => Ok(false),
@@ -84,7 +90,7 @@ impl ConsumerStore for InMemoryConsumerNegotiations {
         Ok(self
             .map()
             .values()
-            .filter(|n| n.pending.is_some())
+            .filter(|negotiation| negotiation.pending.is_some())
             .cloned()
             .collect())
     }
@@ -102,54 +108,6 @@ pub(crate) fn page<V: Clone>(
         None => map.range::<str, _>(..),
     };
     range.take(limit).map(|(_, v)| v.clone()).collect()
-}
-
-/// Any [`ConsumerStore`], chosen at start.
-#[derive(Clone)]
-pub struct AnyConsumerStore(pub Arc<dyn ConsumerStore + Send + Sync>);
-
-impl ConsumerStore for AnyConsumerStore {
-    fn get(&self, consumer_pid: &str) -> Result<Option<ConsumerNegotiation>, StoreError> {
-        self.0.get(consumer_pid)
-    }
-    fn insert(&self, n: &ConsumerNegotiation) -> Result<(), StoreError> {
-        self.0.insert(n)
-    }
-    fn replace_if(&self, n: &ConsumerNegotiation, expected: u64) -> Result<bool, StoreError> {
-        self.0.replace_if(n, expected)
-    }
-    fn list(
-        &self,
-        after: Option<&str>,
-        limit: usize,
-    ) -> Result<Vec<ConsumerNegotiation>, StoreError> {
-        self.0.list(after, limit)
-    }
-    fn pending(&self) -> Result<Vec<ConsumerNegotiation>, StoreError> {
-        self.0.pending()
-    }
-}
-
-impl std::fmt::Debug for AnyConsumerStore {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("AnyConsumerStore")
-    }
-}
-
-/// Any [`ConsumerDecider`], chosen at start.
-#[derive(Clone)]
-pub struct AnyConsumerDecider(pub Arc<dyn ConsumerDecider + Send + Sync>);
-
-impl ConsumerDecider for AnyConsumerDecider {
-    fn decide(&self, n: &ConsumerNegotiation) -> ConsumerDecision {
-        self.0.decide(n)
-    }
-}
-
-impl std::fmt::Debug for AnyConsumerDecider {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("AnyConsumerDecider")
-    }
 }
 
 /// The acknowledgement for the provider and, possibly, our next message.
@@ -202,12 +160,12 @@ impl Consumer {
                 ),
             )));
         }
-        let (n, out) = self
+        let (negotiation, out) = self
             .service
             .start(provider_address, provider_id, offer)
             .map_err(Box::new)?;
         tokio::spawn(outbox::deliver(Arc::clone(self), out));
-        Ok(n)
+        Ok(negotiation)
     }
 
     /// Sends every message saved as pending, for example after a
@@ -296,7 +254,8 @@ impl Outbox for Consumer {
     }
 
     fn reached(out: &Outgoing, state: Value) -> bool {
-        serde_json::from_value::<ContractNegotiation>(state).is_ok_and(|n| n.state == out.to)
+        serde_json::from_value::<ContractNegotiation>(state)
+            .is_ok_and(|negotiation| negotiation.state == out.to)
     }
 
     fn delivered(
@@ -317,8 +276,11 @@ impl Outbox for Consumer {
 }
 
 /// `GET <callback>/negotiations/{consumerPid}`.
-pub(crate) async fn get(State(c): State<Arc<Consumer>>, Path(cpid): Path<String>) -> Response {
-    match c.service.get(&cpid) {
+pub(crate) async fn get(
+    State(consumer): State<Arc<Consumer>>,
+    Path(cpid): Path<String>,
+) -> Response {
+    match consumer.service.get(&cpid) {
         Ok(ack) => Json(ack).into_response(),
         Err(f) => failed(f),
     }
@@ -326,56 +288,57 @@ pub(crate) async fn get(State(c): State<Arc<Consumer>>, Path(cpid): Path<String>
 
 /// `POST <callback>/negotiations/{consumerPid}/offers`.
 pub(crate) async fn offer(
-    State(c): State<Arc<Consumer>>,
+    State(consumer): State<Arc<Consumer>>,
     Path(cpid): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
-    let msg: ContractOfferMessage = match c.read(body, "ContractOfferMessage", &cpid) {
+    let msg: ContractOfferMessage = match consumer.read(body, "ContractOfferMessage", &cpid) {
         Ok(m) => m,
         Err(e) => return bad_request(*e),
     };
-    c.answer(c.service.offer(&cpid, &msg))
+    consumer.answer(consumer.service.offer(&cpid, &msg))
 }
 
 /// `POST <callback>/negotiations/{consumerPid}/agreement`.
 pub(crate) async fn agreement(
-    State(c): State<Arc<Consumer>>,
+    State(consumer): State<Arc<Consumer>>,
     Path(cpid): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
-    let msg: ContractAgreementMessage = match c.read(body, "ContractAgreementMessage", &cpid) {
+    let msg: ContractAgreementMessage = match consumer.read(body, "ContractAgreementMessage", &cpid)
+    {
         Ok(m) => m,
         Err(e) => return bad_request(*e),
     };
-    c.answer(c.service.agreement(&cpid, &msg))
+    consumer.answer(consumer.service.agreement(&cpid, &msg))
 }
 
 /// `POST <callback>/negotiations/{consumerPid}/events`.
 pub(crate) async fn event(
-    State(c): State<Arc<Consumer>>,
+    State(consumer): State<Arc<Consumer>>,
     Path(cpid): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
     let msg: ContractNegotiationEventMessage =
-        match c.read(body, "ContractNegotiationEventMessage", &cpid) {
+        match consumer.read(body, "ContractNegotiationEventMessage", &cpid) {
             Ok(m) => m,
             Err(e) => return bad_request(*e),
         };
-    c.answer(c.service.event(&cpid, &msg))
+    consumer.answer(consumer.service.event(&cpid, &msg))
 }
 
 /// `POST <callback>/negotiations/{consumerPid}/termination`.
 pub(crate) async fn terminate(
-    State(c): State<Arc<Consumer>>,
+    State(consumer): State<Arc<Consumer>>,
     Path(cpid): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
     let msg: ContractNegotiationTerminationMessage =
-        match c.read(body, "ContractNegotiationTerminationMessage", &cpid) {
+        match consumer.read(body, "ContractNegotiationTerminationMessage", &cpid) {
             Ok(m) => m,
             Err(e) => return bad_request(*e),
         };
-    c.answer(c.service.terminate(&cpid, &msg))
+    consumer.answer(consumer.service.terminate(&cpid, &msg))
 }
 
 #[cfg(test)]
@@ -403,7 +366,8 @@ mod tests {
 
     #[test]
     fn in_memory_store_compares_before_replacing() {
-        let store = AnyConsumerStore(Arc::new(InMemoryConsumerNegotiations::default()));
+        let store: AnyConsumerStore =
+            crate::ports::Shared(Arc::new(InMemoryConsumerNegotiations::default()));
         let n = negotiation(NegotiationState::Requested);
         assert!(store.get("c").unwrap().is_none());
         store.insert(&n).unwrap();
@@ -423,6 +387,6 @@ mod tests {
         assert_eq!(store.list(Some("c"), 10).unwrap()[0].consumer_pid, "d");
         assert!(store.list(Some("d"), 10).unwrap().is_empty());
         assert_eq!(store.list(None, 1).unwrap().len(), 1);
-        assert_eq!(format!("{store:?}"), "AnyConsumerStore");
+        assert_eq!(format!("{store:?}"), "Shared");
     }
 }

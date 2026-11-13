@@ -14,7 +14,8 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
-use portitor_connector::negotiation::{Retry, SendFuture, Sender};
+use portitor_connector::http_client::{SendFuture, Sender};
+use portitor_connector::ports::{Retry, Shared};
 use portitor_connector::{Config, Negotiator, Ports};
 use portitor_dsp::Offer;
 use serde_json::{Value, json};
@@ -486,8 +487,8 @@ async fn pending_messages_are_sent_after_a_restart() {
     let provider = Arc::new(FakeProvider::default());
     let mut ports = Ports::new(Arc::clone(&provider) as Arc<dyn Sender>);
     let store = Arc::new(SqliteNegotiations::open(&path).unwrap());
-    ports.store = portitor_connector::negotiation::AnyStore(Arc::clone(&store) as _);
-    ports.consumer_store = portitor_connector::consumer::AnyConsumerStore(Arc::clone(&store) as _);
+    ports.store = Shared(Arc::clone(&store) as _);
+    ports.consumer_store = Shared(Arc::clone(&store) as _);
     let config = Config {
         participant_id: "did:web:consumer.example".into(),
         public_url: "https://consumer.example/".into(),

@@ -5,9 +5,14 @@
 //! Dataspace Protocol (DSP 2025-1) message types.
 //!
 //! Messages are processed as plain JSON in their compacted form, which the
-//! specification explicitly allows ("implementations [may] choose whether to
+//! specification explicitly allows ("implementations \[may\] choose whether to
 //! process messages as plain JSON or as JSON-LD"). Every `@type` is a
 //! dedicated marker type, so a message of the wrong type fails to parse.
+//!
+//! Names used across the crate: a *process* is a negotiation or a
+//! transfer; `pid` is a process id; each party picks its own, so a process
+//! has a `provider_pid` and a `consumer_pid` (`cpid` for short in a few
+//! helpers). The *counter-party* is the other connector.
 
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -18,6 +23,16 @@ pub const CONTEXT: &str = "https://w3id.org/dspace/2025/1/context.jsonld";
 /// The protocol version label this crate implements.
 pub const VERSION: &str = "2025-1";
 
+/// Declares a marker type for one `@type` value. A macro (code that writes
+/// code at compile time) is used because the same two `impl` blocks would
+/// otherwise be copied for each of the 25 types. For example
+///
+/// ```text
+/// type_tag!(OfferType, "Offer");
+/// ```
+///
+/// writes `pub struct OfferType;`, which is written to JSON as `"Offer"`
+/// and read from JSON only if the text is exactly `"Offer"`.
 macro_rules! type_tag {
     ($(#[$doc:meta])* $name:ident, $lit:literal) => {
         $(#[$doc])*
@@ -106,11 +121,30 @@ impl<S: ProcessState, T: std::fmt::Debug> std::fmt::Display for TransitionError<
 
 impl<S: ProcessState, T: std::fmt::Debug> std::error::Error for TransitionError<S, T> {}
 
-/// A message with the JSON-LD context, its `@type` and both process ids.
-/// With `code`, it also carries an optional code and reasons (DSP's
-/// `AbstractTransferCodeMessage`, and the same shape in negotiation).
-/// With `error`, it also gets `new(provider_pid, consumer_pid, code,
-/// reason)`. Other fields can follow in braces.
+/// Declares a message with the JSON-LD context, its `@type` and both
+/// process ids. With `code`, it also carries an optional code and reasons
+/// (DSP's `AbstractTransferCodeMessage`, and the same shape in
+/// negotiation). With `error`, it also gets `new(provider_pid,
+/// consumer_pid, code, reason)`. Other fields can follow in braces. For
+/// example
+///
+/// ```text
+/// pid_message!(TransferCompletionMessage, TransferCompletionMessageType);
+/// ```
+///
+/// writes
+///
+/// ```text
+/// pub struct TransferCompletionMessage {
+///     pub context: Context,                       // "@context"
+///     pub kind: TransferCompletionMessageType,    // "@type"
+///     pub provider_pid: String,                   // "providerPid"
+///     pub consumer_pid: String,                   // "consumerPid"
+/// }
+/// ```
+///
+/// The macro keeps the many message types identical in shape without
+/// copying the same fields and attributes into each one.
 macro_rules! pid_message {
     ($(#[$doc:meta])* $name:ident, $tag:ident) => {
         pid_message!(@struct $(#[$doc])* $name, $tag, {});

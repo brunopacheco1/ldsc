@@ -19,9 +19,8 @@
 //!   The consumer's request headers are not passed on.
 
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use axum::body::Body;
 use axum::extract::{Path, State};
@@ -39,7 +38,9 @@ use portitor_dps::port::{DataPlane, SignalError};
 use portitor_dps::state::DataFlowState;
 use portitor_dsp::transfer::{DataAddress, DataAddressType, EndpointProperty};
 
-use crate::negotiation::{HttpsClient, https_client, new_uuid};
+use crate::http_client::{HttpsClient, https_client};
+use crate::ports::AnyFlowStore;
+use crate::system::{hex, new_uuid, now_secs};
 
 /// The `endpointType` of the data address sent over DSP. It is the value
 /// of the DSP 2025-1 examples, the DSP TCK and EDC's DSP tests (ADR 0013);
@@ -115,35 +116,6 @@ pub trait FlowStore {
     ) -> Result<bool, FlowStoreError>;
 }
 
-/// The flow store chosen at start.
-pub type AnyFlowStore = crate::transfer::Shared<dyn FlowStore + Send + Sync>;
-
-impl FlowStore for AnyFlowStore {
-    fn get(&self, id: &str) -> Result<Option<Flow>, FlowStoreError> {
-        self.0.get(id)
-    }
-    fn insert(&self, flow: &Flow) -> Result<bool, FlowStoreError> {
-        self.0.insert(flow)
-    }
-    fn set_state(
-        &self,
-        id: &str,
-        from: DataFlowState,
-        to: DataFlowState,
-    ) -> Result<bool, FlowStoreError> {
-        self.0.set_state(id, from, to)
-    }
-    fn set_token(
-        &self,
-        id: &str,
-        state: DataFlowState,
-        token_hash: &str,
-        expires_at: u64,
-    ) -> Result<bool, FlowStoreError> {
-        self.0.set_token(id, state, token_hash, expires_at)
-    }
-}
-
 /// Adapter: flows kept in memory (lost on restart; tests).
 #[derive(Debug, Clone, Default)]
 pub struct InMemoryFlows(Arc<Mutex<BTreeMap<String, Flow>>>);
@@ -204,23 +176,12 @@ impl FlowStore for InMemoryFlows {
     }
 }
 
-/// The current time in seconds since 1970.
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
-}
-
 /// SHA-256 of `token`, hex. Comparing two such hashes with `==` is safe:
 /// what a timing difference could reveal is a prefix of the hash, and no
 /// one can work back from a hash prefix to a token.
 fn hash(token: &str) -> String {
     let digest = ring::digest::digest(&ring::digest::SHA256, token.as_bytes());
-    let mut hex = String::with_capacity(64);
-    for byte in digest.as_ref() {
-        let _ = write!(hex, "{byte:02x}");
-    }
-    hex
+    hex(digest.as_ref())
 }
 
 /// A new random access token: 32 bytes from the OS generator, base64url.
@@ -550,7 +511,7 @@ mod tests {
 
     fn plane() -> HttpDataPlane {
         let sources = BTreeMap::from([("d1".to_owned(), "http://upstream.example/d1".to_owned())]);
-        let flows = crate::transfer::Shared(Arc::new(InMemoryFlows::default()) as _);
+        let flows = crate::ports::Shared(Arc::new(InMemoryFlows::default()) as _);
         HttpDataPlane::new(flows, sources, "https://provider.example/", 60).unwrap()
     }
 

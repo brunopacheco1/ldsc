@@ -219,18 +219,18 @@ pub struct NegotiationView {
 }
 
 impl From<ConsumerNegotiation> for NegotiationView {
-    fn from(n: ConsumerNegotiation) -> Self {
+    fn from(negotiation: ConsumerNegotiation) -> Self {
         Self {
-            state: state_name(n.state),
-            offer: serde_json::to_value(&n.offer).unwrap_or_default(),
-            agreement: n
+            state: state_name(negotiation.state),
+            offer: serde_json::to_value(&negotiation.offer).unwrap_or_default(),
+            agreement: negotiation
                 .agreement
                 .as_ref()
                 .and_then(|a| serde_json::to_value(a).ok()),
-            consumer_pid: n.consumer_pid,
-            provider_pid: n.provider_pid,
-            provider_address: n.provider_address,
-            provider_id: n.provider_id,
+            consumer_pid: negotiation.consumer_pid,
+            provider_pid: negotiation.provider_pid,
+            provider_address: negotiation.provider_address,
+            provider_id: negotiation.provider_id,
         }
     }
 }
@@ -271,7 +271,7 @@ pub struct PageQuery {
     tag = "Negotiations"
 )]
 async fn start(
-    State(n): State<Negotiator>,
+    State(negotiator): State<Negotiator>,
     body: Result<Json<StartNegotiation>, JsonRejection>,
 ) -> Response {
     let mut req = match body {
@@ -279,7 +279,7 @@ async fn start(
         Err(e) => return problem(StatusCode::BAD_REQUEST, &e.body_text()),
     };
     match (req.offer.target.as_deref(), req.dataset_id.take()) {
-        (Some(t), Some(d)) if t != d => {
+        (Some(target), Some(dataset_id)) if target != dataset_id => {
             return problem(
                 StatusCode::BAD_REQUEST,
                 "datasetId and the offer's target differ",
@@ -288,7 +288,7 @@ async fn start(
         (None, d) => req.offer.target = d,
         _ => {}
     }
-    match n.start(&req.provider_address, &req.provider_id, req.offer) {
+    match negotiator.start(&req.provider_address, &req.provider_id, req.offer) {
         Ok(started) => (StatusCode::CREATED, Json(NegotiationView::from(started))).into_response(),
         Err(f) => failed(&f),
     }
@@ -307,8 +307,8 @@ async fn start(
     security(("api_key" = [])),
     tag = "Negotiations"
 )]
-async fn one(State(n): State<Negotiator>, Path(cpid): Path<String>) -> Response {
-    match n.get(&cpid) {
+async fn one(State(negotiator): State<Negotiator>, Path(cpid): Path<String>) -> Response {
+    match negotiator.get(&cpid) {
         Ok(found) => Json(NegotiationView::from(found)).into_response(),
         Err(f) => failed(&f),
     }
@@ -328,7 +328,7 @@ async fn one(State(n): State<Negotiator>, Path(cpid): Path<String>) -> Response 
     tag = "Negotiations"
 )]
 async fn list(
-    State(n): State<Negotiator>,
+    State(negotiator): State<Negotiator>,
     query: Result<Query<PageQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Response {
     let Query(q) = match query {
@@ -336,9 +336,9 @@ async fn list(
         Err(e) => return problem(StatusCode::BAD_REQUEST, &e.body_text()),
     };
     let limit = q.limit.unwrap_or(MAX_PAGE).clamp(1, MAX_PAGE);
-    match n.list(q.after.as_deref(), limit) {
+    match negotiator.list(q.after.as_deref(), limit) {
         Ok(found) => {
-            let next = next_after(&found, limit, |n| &n.consumer_pid);
+            let next = next_after(&found, limit, |negotiation| &negotiation.consumer_pid);
             Json(NegotiationPage {
                 negotiations: found.into_iter().map(NegotiationView::from).collect(),
                 next,
@@ -401,19 +401,19 @@ pub struct TransferView {
 }
 
 impl From<ConsumerTransfer> for TransferView {
-    fn from(t: ConsumerTransfer) -> Self {
+    fn from(transfer: ConsumerTransfer) -> Self {
         Self {
-            state: state_name(t.state),
-            data_address: t
+            state: state_name(transfer.state),
+            data_address: transfer
                 .data_address
                 .as_ref()
                 .and_then(|a| serde_json::to_value(a).ok()),
-            consumer_pid: t.consumer_pid,
-            provider_pid: t.provider_pid,
-            provider_address: t.provider_address,
-            provider_id: t.provider_id,
-            agreement_id: t.agreement_id,
-            format: t.format,
+            consumer_pid: transfer.consumer_pid,
+            provider_pid: transfer.provider_pid,
+            provider_address: transfer.provider_address,
+            provider_id: transfer.provider_id,
+            agreement_id: transfer.agreement_id,
+            format: transfer.format,
         }
     }
 }
@@ -454,15 +454,15 @@ pub struct TransferPage {
     tag = "Transfers"
 )]
 async fn start_transfer(
-    State(n): State<Negotiator>,
+    State(negotiator): State<Negotiator>,
     body: Result<Json<StartTransfer>, JsonRejection>,
 ) -> Response {
     let req = match body {
         Ok(Json(r)) => r,
         Err(e) => return problem(StatusCode::BAD_REQUEST, &e.body_text()),
     };
-    match n.request_transfer(&req.agreement_id, &req.format) {
-        Ok(t) => (StatusCode::CREATED, Json(TransferView::from(t))).into_response(),
+    match negotiator.request_transfer(&req.agreement_id, &req.format) {
+        Ok(transfer) => (StatusCode::CREATED, Json(TransferView::from(transfer))).into_response(),
         Err(f) => transfer_failed(&f),
     }
 }
@@ -480,9 +480,9 @@ async fn start_transfer(
     security(("api_key" = [])),
     tag = "Transfers"
 )]
-async fn one_transfer(State(n): State<Negotiator>, Path(cpid): Path<String>) -> Response {
-    match n.transfer(&cpid) {
-        Ok(t) => Json(TransferView::from(t)).into_response(),
+async fn one_transfer(State(negotiator): State<Negotiator>, Path(cpid): Path<String>) -> Response {
+    match negotiator.transfer(&cpid) {
+        Ok(transfer) => Json(TransferView::from(transfer)).into_response(),
         Err(f) => transfer_failed(&f),
     }
 }
@@ -501,7 +501,7 @@ async fn one_transfer(State(n): State<Negotiator>, Path(cpid): Path<String>) -> 
     tag = "Transfers"
 )]
 async fn list_transfers(
-    State(n): State<Negotiator>,
+    State(negotiator): State<Negotiator>,
     query: Result<Query<PageQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Response {
     let Query(q) = match query {
@@ -509,9 +509,9 @@ async fn list_transfers(
         Err(e) => return problem(StatusCode::BAD_REQUEST, &e.body_text()),
     };
     let limit = q.limit.unwrap_or(MAX_PAGE).clamp(1, MAX_PAGE);
-    match n.transfers(q.after.as_deref(), limit) {
+    match negotiator.transfers(q.after.as_deref(), limit) {
         Ok(found) => {
-            let next = next_after(&found, limit, |t| &t.consumer_pid);
+            let next = next_after(&found, limit, |transfer| &transfer.consumer_pid);
             Json(TransferPage {
                 transfers: found.into_iter().map(TransferView::from).collect(),
                 next,
@@ -537,8 +537,11 @@ async fn list_transfers(
     security(("api_key" = [])),
     tag = "Transfers"
 )]
-async fn complete_transfer(State(n): State<Negotiator>, Path(cpid): Path<String>) -> Response {
-    act(&n, &cpid, ConsumerTransferDecision::Complete)
+async fn complete_transfer(
+    State(negotiator): State<Negotiator>,
+    Path(cpid): Path<String>,
+) -> Response {
+    act(&negotiator, &cpid, ConsumerTransferDecision::Complete)
 }
 
 /// End a transfer that has not ended yet. The termination is sent in the
@@ -556,13 +559,20 @@ async fn complete_transfer(State(n): State<Negotiator>, Path(cpid): Path<String>
     security(("api_key" = [])),
     tag = "Transfers"
 )]
-async fn terminate_transfer(State(n): State<Negotiator>, Path(cpid): Path<String>) -> Response {
-    act(&n, &cpid, ConsumerTransferDecision::Terminate)
+async fn terminate_transfer(
+    State(negotiator): State<Negotiator>,
+    Path(cpid): Path<String>,
+) -> Response {
+    act(&negotiator, &cpid, ConsumerTransferDecision::Terminate)
 }
 
-fn act(n: &Negotiator, consumer_pid: &str, decision: ConsumerTransferDecision) -> Response {
-    match n.act_on_transfer(consumer_pid, decision) {
-        Ok(t) => (StatusCode::ACCEPTED, Json(TransferView::from(t))).into_response(),
+fn act(
+    negotiator: &Negotiator,
+    consumer_pid: &str,
+    decision: ConsumerTransferDecision,
+) -> Response {
+    match negotiator.act_on_transfer(consumer_pid, decision) {
+        Ok(transfer) => (StatusCode::ACCEPTED, Json(TransferView::from(transfer))).into_response(),
         Err(f) => transfer_failed(&f),
     }
 }

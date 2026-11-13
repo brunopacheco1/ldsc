@@ -22,7 +22,8 @@ use std::sync::Arc;
 use portitor_dsp::guard::{Direction, MessageGuard};
 use serde_json::Value;
 
-use crate::negotiation::{Ports, Retry, Sender};
+use crate::http_client::Sender;
+use crate::ports::{Ports, Retry};
 
 /// What every adapter needs to send: the client, the dataspace's message
 /// rules, and the retry policy.

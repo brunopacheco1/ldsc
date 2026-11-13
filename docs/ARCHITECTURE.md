@@ -174,8 +174,8 @@ project, and to settle in ADR 0013 where it affects us):
 What the transfer work showed about the DSP TCK v1.0.2 (to report to the
 TCK project):
 
-- Its consumer registers a transfer only after it reads the provider's
-  answer to the request, and its start handler is used up by the first
-  start message. A provider that sends its start message at once can hit
+- Its consumer moves a transfer to REQUESTED only after it reads the
+  provider's answer to the request, and its start handler removes itself
+  after the first start message, even one it refused. A provider that sends its start message at once can hit
   the gap; every retry then gets 404. Portitor's TCK build waits 300 ms
   before a start message (ADR 0014).

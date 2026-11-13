@@ -81,12 +81,12 @@ fn tck_datasets() -> Vec<portitor_dsp::Dataset> {
 /// The catalog tests never send anything.
 struct NoSender;
 
-impl portitor_connector::negotiation::Sender for NoSender {
+impl portitor_connector::http_client::Sender for NoSender {
     fn post<'a>(
         &'a self,
         _: &'a str,
         _: &'a Value,
-    ) -> portitor_connector::negotiation::SendFuture<'a> {
+    ) -> portitor_connector::http_client::SendFuture<'a> {
         Box::pin(async { Err("not in this test".to_owned()) })
     }
 }
