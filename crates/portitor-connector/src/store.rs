@@ -182,7 +182,7 @@ fn err(e: rusqlite::Error) -> StoreError {
 
 fn state_text(s: NegotiationState) -> Result<String, StoreError> {
     match serde_json::to_value(s) {
-        Ok(serde_json::Value::String(transfer)) => Ok(transfer),
+        Ok(serde_json::Value::String(text)) => Ok(text),
         _ => Err(StoreError(format!("cannot store state {s:?}"))),
     }
 }

@@ -22,7 +22,7 @@ const TRANSFER_COLUMNS: &str = "provider_pid, consumer_pid, state, callback_addr
 /// A transfer state as stored: its DSP name, for example `STARTED`.
 pub(super) fn transfer_state_text(s: TransferState) -> Result<String, StoreError> {
     match serde_json::to_value(s) {
-        Ok(serde_json::Value::String(transfer)) => Ok(transfer),
+        Ok(serde_json::Value::String(text)) => Ok(text),
         _ => Err(StoreError(format!("cannot store state {s:?}"))),
     }
 }

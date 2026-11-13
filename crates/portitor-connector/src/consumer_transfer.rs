@@ -126,15 +126,15 @@ pub(crate) struct TransferConsumer {
 
 impl TransferConsumer {
     pub(crate) fn new(ports: &Ports, callback_address: String, allow_http: bool) -> Self {
-        let transfer = ports.consumer_transfers.clone();
+        let transfer_ports = ports.consumer_transfers.clone();
         Self {
             service: ConsumerTransferService::new(
-                transfer.store,
-                transfer.decider,
+                transfer_ports.store,
+                transfer_ports.decider,
                 SystemEnvironment,
                 callback_address,
             ),
-            held: transfer.held,
+            held: transfer_ports.held,
             link: Link::new(ports),
             allow_http,
         }
