@@ -294,7 +294,9 @@ pub struct Claims {
     pub iss: String,
     /// Subject: the participant DID.
     pub sub: String,
-    /// Audience: the verifier DID.
+    /// Audience: the verifier DID. A JWT may write it as a list (RFC
+    /// 7519, section 4.1.3); a list of exactly one is read as that one.
+    #[serde(deserialize_with = "one_audience")]
     pub aud: String,
     /// Unique token id, against replay.
     pub jti: String,
@@ -308,6 +310,23 @@ pub struct Claims {
     /// Optional access token for the credential service.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
+}
+
+/// `aud` as a string, or as a list holding exactly one string.
+fn one_audience<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Audience {
+        One(String),
+        List(Vec<String>),
+    }
+    match Audience::deserialize(deserializer)? {
+        Audience::One(one) => Ok(one),
+        Audience::List(list) => match <[String; 1]>::try_from(list) {
+            Ok([only]) => Ok(only),
+            Err(_) => Err(serde::de::Error::custom("aud must name one audience")),
+        },
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -729,6 +748,29 @@ mod tests {
             Err(Error::Invalid("issued in the future"))
         );
         assert!(validate_self_issued(&t, &doc, BOB, 1_550, 60, &mut c).is_ok());
+    }
+
+    #[test]
+    fn audience_may_be_a_list_of_one() {
+        let (key, doc, _) = setup();
+        let claims = |aud: serde_json::Value| serde_json::json!({"iss": ALICE, "sub": ALICE, "aud": aud, "jti": "j", "exp": 2_000, "iat": 1_000});
+        let t = key
+            .sign_json("#key-1", "JWT", &claims(serde_json::json!([BOB])))
+            .unwrap();
+        let mut c = JtiCache::default();
+        assert_eq!(
+            validate_self_issued(&t, &doc, BOB, 1_500, 0, &mut c)
+                .unwrap()
+                .aud,
+            BOB
+        );
+        let t = key
+            .sign_json("#key-1", "JWT", &claims(serde_json::json!([BOB, ALICE])))
+            .unwrap();
+        assert_eq!(
+            validate_self_issued(&t, &doc, BOB, 1_500, 0, &mut c),
+            Err(Error::Malformed("claims json"))
+        );
     }
 
     #[test]
