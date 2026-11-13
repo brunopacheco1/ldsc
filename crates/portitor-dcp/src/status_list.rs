@@ -31,6 +31,13 @@ use base64::alphabet;
 use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use serde::{Deserialize, Serialize};
 
+use crate::credential::Credential;
+
+/// The smallest list Bitstring Status List allows: 16 KiB, that is
+/// 131,072 entries (section 2.1, "MUST be at least 16KB"). Issuers use it;
+/// readers do not enforce it (see the module comment).
+pub const MIN_LIST_BYTES: usize = 16 * 1024;
+
 /// The largest uncompressed list Portitor reads: 16 MiB, that is about
 /// 134 million entries, a thousand times the spec's minimum.
 pub const MAX_LIST_BYTES: usize = 16 * 1024 * 1024;
@@ -70,6 +77,10 @@ pub enum StatusError {
     /// bit each, are supported).
     #[error("status size {0} is not supported")]
     UnsupportedSize(u64),
+    /// The credential at `statusListCredential` is not a status list of
+    /// the entry's kind.
+    #[error("not a status list credential for this entry: {0}")]
+    NotAList(&'static str),
 }
 
 /// The `credentialStatus` of a credential: where to look up its status.
@@ -179,6 +190,64 @@ fn bit_is_set(bits: &[u8], index: u64) -> Result<bool, StatusError> {
     Ok(byte & (1 << shift) != 0)
 }
 
+/// Encodes a bitstring as a Bitstring Status List `encodedList`: GZIP,
+/// then multibase base64url (`u` and base64url without padding). The
+/// reverse of [`decode_list`]. For issuers and test tools.
+#[must_use]
+pub fn encode_list(bits: &[u8]) -> String {
+    let compressed = crate::gzip::compress(bits);
+    format!(
+        "u{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(compressed)
+    )
+}
+
+/// Sets bit `index` (revokes or suspends the credential at that position);
+/// index 0 is the highest bit of byte 0, as [`check`] reads it.
+///
+/// # Errors
+/// The index is past the end of the list.
+pub fn set_bit(bits: &mut [u8], index: u64) -> Result<(), StatusError> {
+    let byte = usize::try_from(index / 8)
+        .ok()
+        .and_then(|at| bits.get_mut(at))
+        .ok_or(StatusError::OutOfRange(index))?;
+    let shift = 7 - (index % 8);
+    *byte |= 1 << shift;
+    Ok(())
+}
+
+/// The list kept in `credential`, the status list credential that
+/// `entry` points to. The kinds must match: a `BitstringStatusListEntry`
+/// needs a `BitstringStatusListCredential` (Bitstring Status List v1.0,
+/// section 2.2), a `StatusList2021Entry` a `StatusList2021Credential`.
+/// The caller checks the credential's signature, issuer and dates first.
+///
+/// # Errors
+/// Another kind of credential, or its subject is not one status list.
+pub fn list_in(
+    credential: &Credential,
+    entry: &StatusEntry,
+) -> Result<StatusListSubject, StatusError> {
+    let (credential_type, subject_type) = match entry.kind.as_str() {
+        "BitstringStatusListEntry" => ("BitstringStatusListCredential", "BitstringStatusList"),
+        "StatusList2021Entry" => ("StatusList2021Credential", "StatusList2021"),
+        _ => return Err(StatusError::NotAList("unknown status entry type")),
+    };
+    if !credential.has_type(credential_type) {
+        return Err(StatusError::NotAList("wrong credential type"));
+    }
+    let [subject] = credential.subjects.as_slice() else {
+        return Err(StatusError::NotAList("not exactly one subject"));
+    };
+    let list = StatusListSubject::deserialize(serde_json::Value::Object(subject.clone()))
+        .map_err(|_| StatusError::NotAList("subject is not a status list"))?;
+    if list.kind != subject_type {
+        return Err(StatusError::NotAList("wrong subject type"));
+    }
+    Ok(list)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -212,6 +281,14 @@ mod tests {
             status_purpose: "revocation".to_owned(),
             encoded_list,
         }
+    }
+
+    #[test]
+    fn encodes_lists() {
+        let bits = [0b0100_0000, 0];
+        let text = encode_list(&bits);
+        assert_eq!(decode_list(&text).unwrap(), bits);
+        assert_eq!(text, encoded(2, &[1]));
     }
 
     #[test]
@@ -267,10 +344,60 @@ mod tests {
     }
 
     #[test]
+    fn set_bits_are_found_in_a_full_size_list() {
+        let mut bits = vec![0u8; MIN_LIST_BYTES];
+        set_bit(&mut bits, 3).unwrap();
+        set_bit(&mut bits, 131_071).unwrap();
+        assert_eq!(
+            set_bit(&mut bits, 131_072),
+            Err(StatusError::OutOfRange(131_072))
+        );
+        let text = encode_list(&bits);
+        assert!(text.starts_with("uH4s"), "multibase u, then GZIP: {text}");
+        let l = list(text);
+        assert_eq!(check(&entry("3"), &l).unwrap(), Status::Set);
+        assert_eq!(check(&entry("4"), &l).unwrap(), Status::Clear);
+        assert_eq!(check(&entry("131071"), &l).unwrap(), Status::Set);
+    }
+
+    #[test]
     fn refuses_lists_that_expand_too_far() {
         // 17 MiB of zeros compress to a few kilobytes
         let huge = encoded(MAX_LIST_BYTES + 1024 * 1024, &[]);
         assert!(huge.len() < 100_000);
         assert_eq!(decode_list(&huge), Err(StatusError::TooLarge));
+    }
+
+    #[test]
+    fn reads_the_list_of_a_status_list_credential() {
+        let key = crate::SigningKey::generate().unwrap();
+        let payload = serde_json::json!({
+            "@context": [crate::credential::VC2_CONTEXT],
+            "type": ["VerifiableCredential", "BitstringStatusListCredential"],
+            "issuer": "did:web:issuer.example",
+            "credentialSubject": {"id": "urn:uuid:list", "type": "BitstringStatusList",
+                "statusPurpose": "revocation", "encodedList": encoded(16, &[1])}
+        });
+        let jwt = key.sign_json("#key-1", "vc+jwt", &payload).unwrap();
+        let credential = Credential::parse(&jwt).unwrap();
+        let found = list_in(&credential, &entry("1")).unwrap();
+        assert_eq!(check(&entry("1"), &found).unwrap(), Status::Set);
+        let mut other = entry("1");
+        other.kind = "StatusList2021Entry".to_owned();
+        assert_eq!(
+            list_in(&credential, &other),
+            Err(StatusError::NotAList("wrong credential type"))
+        );
+        other.kind = "Unknown".to_owned();
+        assert!(list_in(&credential, &other).is_err());
+        let mut two = credential.clone();
+        two.subjects.push(serde_json::Map::new());
+        assert!(list_in(&two, &entry("1")).is_err());
+        let mut wrong = credential;
+        wrong.subjects[0].insert("type".into(), "StatusList2021".into());
+        assert_eq!(
+            list_in(&wrong, &entry("1")),
+            Err(StatusError::NotAList("wrong subject type"))
+        );
     }
 }

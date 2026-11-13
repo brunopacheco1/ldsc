@@ -107,8 +107,8 @@ fn crc32(data: &[u8]) -> u32 {
     !crc
 }
 
-/// Compresses `data` as one GZIP member, for tests.
-#[cfg(test)]
+/// Compresses `data` as one GZIP member (for status lists an issuer
+/// publishes, and for tests).
 pub(crate) fn compress(data: &[u8]) -> Vec<u8> {
     let mut out = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff];
     out.extend(miniz_oxide::deflate::compress_to_vec(data, 6));
