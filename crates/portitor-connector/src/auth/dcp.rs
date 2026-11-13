@@ -30,7 +30,7 @@ use std::time::Duration;
 use portitor_dcp::credential::{Credential, Presentation};
 use portitor_dcp::message::{PresentationQueryMessage, PresentationResponseMessage};
 use portitor_dcp::status_list::{self, Status, StatusEntry};
-use portitor_dcp::{Claims, DidDocument, JtiCache, Jws, validate_self_issued};
+use portitor_dcp::{DidDocument, JtiCache, unverified_claims, validate_self_issued};
 use portitor_runtime::did::{DEFAULT_TTL, DidWebResolver};
 use portitor_runtime::http::{HttpSender, Sender as _};
 use portitor_runtime::system::now_secs;
@@ -175,7 +175,7 @@ impl DcpVerifier {
 
     /// Step 2: the caller's self-issued ID token.
     async fn check_token(&self, token: &str) -> Result<CheckedToken, String> {
-        let unverified = unverified_claims(token)?;
+        let unverified = unverified_claims(token).map_err(|e| format!("ID token: {e}"))?;
         let now = now_secs();
         if unverified.exp > now.saturating_add(MAX_TOKEN_LIFETIME + LEEWAY) {
             return Err("the token is valid for too long".to_owned());
@@ -342,14 +342,6 @@ fn bearer(authorization: Option<&str>) -> Result<&str, String> {
         }
         _ => Err("the Authorization header is not a Bearer token".to_owned()),
     }
-}
-
-/// The claims of `token`, before its signature is checked: only to learn
-/// whose DID document to resolve.
-fn unverified_claims(token: &str) -> Result<Claims, String> {
-    let jws = Jws::parse(token).map_err(|e| format!("ID token: {e}"))?;
-    serde_json::from_slice(jws.payload())
-        .map_err(|_| "ID token: the claims are not a DCP token".to_owned())
 }
 
 /// The presentations of a Credential Service's answer, which must be a

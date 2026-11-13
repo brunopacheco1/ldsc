@@ -200,7 +200,7 @@ jobs:
       - name: Run TCK
         run: java -jar "$RUNNER_TEMP/dcp-tck.jar" -config tck/dcp-verifier-tck.properties | tee dcp-verifier-tck.log
       - name: Check results
-        run: python3 scripts/dcp_verifier_tck_check.py dcp-verifier-tck.log
+        run: python3 scripts/dcp_tck_check.py dcp-verifier-tck.log 22
       - if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

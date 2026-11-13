@@ -15,7 +15,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse as _;
 use portitor_dcp::credential::{VC1_CONTEXT, VC2_CONTEXT};
-use portitor_dcp::{Relationship, Service, SigningKey, VerificationMethod};
+use portitor_dcp::{Claims, Relationship, Service, SigningKey, VerificationMethod};
 use serde_json::json;
 
 use super::*;
