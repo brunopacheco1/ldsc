@@ -100,7 +100,9 @@ pub struct StartNegotiation {
     /// `DataService` `endpointURL`).
     #[schema(example = "https://provider.example/dsp/2025-1")]
     provider_address: String,
-    /// The provider's participant id (the catalog's `participantId`).
+    /// The provider's participant id (the catalog's `participantId`): a
+    /// `did:web` DID. Our DSP requests are tokens for it, and only it may
+    /// answer.
     #[schema(example = "did:web:provider.example")]
     provider_id: String,
     /// The dataset id. Optional if the offer has a `target`; offers in a
@@ -210,6 +212,10 @@ async fn start(
         }
         (None, d) => req.offer.target = d,
         _ => {}
+    }
+    if let Err(e) = portitor_dcp::did_web_url(&req.provider_id) {
+        let detail = format!("providerId must be a did:web DID: {e}");
+        return problem(StatusCode::BAD_REQUEST, &detail);
     }
     match negotiator.start(&req.provider_address, &req.provider_id, req.offer) {
         Ok(started) => (StatusCode::CREATED, Json(NegotiationView::from(started))).into_response(),

@@ -627,7 +627,7 @@
           },
           "providerId": {
             "type": "string",
-            "description": "The provider's participant id (the catalog's `participantId`).",
+            "description": "The provider's participant id (the catalog's `participantId`): a\n`did:web` DID. Our DSP requests are tokens for it, and only it may\nanswer.",
             "example": "did:web:provider.example"
           }
         },

@@ -8,7 +8,8 @@
 //! records what became of a message; [`deliver`] holds the rules they
 //! share:
 //!
-//! 1. Send the message, retrying as [`Retry`] says.
+//! 1. Send the message with a fresh token for the counter-party (ADR
+//!    0016), retrying as [`Retry`] says.
 //! 2. Acknowledged: record it, and send whatever follows.
 //! 3. Refused or unanswered: ask the counter-party for its state. If it
 //!    already shows where our message leads, the message had arrived
@@ -22,13 +23,15 @@ use std::sync::Arc;
 use portitor_dsp::guard::{Direction, MessageGuard};
 use serde_json::Value;
 
+use crate::auth::Prover;
 use crate::http_client::Sender;
 use crate::ports::{Ports, Retry};
 
-/// What every adapter needs to send: the client, the dataspace's message
-/// rules, and the retry policy.
+/// What every adapter needs to send: the client, the source of our
+/// tokens, the dataspace's message rules, and the retry policy.
 pub(crate) struct Link {
     pub(crate) sender: Arc<dyn Sender>,
+    pub(crate) prover: Arc<dyn Prover>,
     pub(crate) guard: Arc<dyn MessageGuard + Send + Sync>,
     pub(crate) retry: Retry,
 }
@@ -37,6 +40,7 @@ impl Link {
     pub(crate) fn new(ports: &Ports) -> Self {
         Self {
             sender: Arc::clone(&ports.sender),
+            prover: Arc::clone(&ports.prover),
             guard: Arc::clone(&ports.guard),
             retry: ports.retry,
         }
@@ -54,6 +58,8 @@ pub(crate) struct Message<'a> {
     /// Where the counter-party reports its state (`GET`); empty when
     /// unknown (a consumer's request: no provider pid yet).
     pub(crate) status_url: &'a str,
+    /// The counter-party's participant id: the audience of our token.
+    pub(crate) audience: &'a str,
     /// A consumer's first message (a request): if it never arrives, the
     /// process never started on the other side.
     pub(crate) first: bool,
@@ -62,13 +68,21 @@ pub(crate) struct Message<'a> {
 }
 
 impl<'a> Message<'a> {
-    /// A message that is neither a first message nor a termination.
-    pub(crate) fn new(pid: &'a str, url: &'a str, body: &'a Value, status_url: &'a str) -> Self {
+    /// A message for the participant `audience` that is neither a first
+    /// message nor a termination.
+    pub(crate) fn new(
+        pid: &'a str,
+        url: &'a str,
+        body: &'a Value,
+        status_url: &'a str,
+        audience: &'a str,
+    ) -> Self {
         Self {
             pid,
             url,
             body,
             status_url,
+            audience,
             first: false,
             terminating: false,
         }
@@ -193,11 +207,11 @@ enum Outcome {
 /// counter-party's state; it is used only when the send failed.
 async fn attempt(link: &Link, msg: &Message<'_>, reached: impl FnOnce(Value) -> bool) -> Outcome {
     let pid = msg.pid;
-    let error = match send(link, msg.url, msg.body).await {
+    let error = match send(link, msg).await {
         Ok(answer) => return Outcome::Acknowledged(answer),
         Err(error) => error,
     };
-    if arrived(&*link.sender, msg.status_url, reached).await {
+    if arrived(link, msg.status_url, msg.audience, reached).await {
         tracing::info!(%pid, %error, "message had arrived before");
         Outcome::ArrivedBefore
     } else if msg.first {
@@ -212,23 +226,36 @@ async fn attempt(link: &Link, msg: &Message<'_>, reached: impl FnOnce(Value) -> 
     }
 }
 
-/// Whether the counter-party's state at `status_url` passes `reached`,
-/// that is, a message that leads there has arrived. `false` when it cannot
-/// tell.
+/// Whether the counter-party `audience`'s state at `status_url` passes
+/// `reached`, that is, a message that leads there has arrived. `false`
+/// when it cannot tell.
 pub(crate) async fn arrived(
-    sender: &dyn Sender,
+    link: &Link,
     status_url: &str,
+    audience: &str,
     reached: impl FnOnce(Value) -> bool,
 ) -> bool {
     if status_url.is_empty() {
         return false;
     }
-    sender.get(status_url).await.is_ok_and(reached)
+    let authorization = match link.prover.authorization(audience).await {
+        Ok(authorization) => authorization,
+        Err(error) => {
+            tracing::warn!(%error, "no token to read the counter-party's state");
+            return false;
+        }
+    };
+    link.sender
+        .get_authorized(status_url, &authorization)
+        .await
+        .is_ok_and(reached)
 }
 
-/// Checks `body` with the guard, then POSTs it to `url`, retrying as the
-/// link's retry policy says. Returns the counter-party's answer.
-async fn send(link: &Link, url: &str, body: &Value) -> Result<Value, String> {
+/// Checks the message's body with the guard, then POSTs it, retrying as
+/// the link's retry policy says. Each try gets a new token: a token is
+/// good for one request only. Returns the counter-party's answer.
+async fn send(link: &Link, msg: &Message<'_>) -> Result<Value, String> {
+    let (url, body) = (msg.url, msg.body);
     let message_type = body
         .get("@type")
         .and_then(Value::as_str)
@@ -243,7 +270,14 @@ async fn send(link: &Link, url: &str, body: &Value) -> Result<Value, String> {
             tokio::time::sleep(delay).await;
             delay = delay.saturating_mul(2);
         }
-        match link.sender.post(url, body).await {
+        let authorization = match link.prover.authorization(msg.audience).await {
+            Ok(authorization) => authorization,
+            Err(e) => {
+                last = format!("no token: {e}");
+                continue;
+            }
+        };
+        match link.sender.post_authorized(url, body, &authorization).await {
             Ok(answer) => return Ok(answer),
             Err(e) => last = e,
         }

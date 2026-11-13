@@ -11,6 +11,9 @@ use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
 
+mod common;
+use common::{CONSUMER, PROVIDER, authenticating, from};
+
 const SCHEMAS: &[(&str, &str)] = &[
     (
         "common/context-schema.json",
@@ -92,7 +95,10 @@ impl portitor_connector::http_client::Sender for NoSender {
 }
 
 fn ports() -> portitor_connector::Ports {
-    portitor_connector::Ports::new(std::sync::Arc::new(NoSender))
+    authenticating(
+        portitor_connector::Ports::new(std::sync::Arc::new(NoSender)),
+        PROVIDER,
+    )
 }
 
 fn app() -> axum::Router {
@@ -119,7 +125,7 @@ async fn call(req: Request<Body>) -> (StatusCode, Value) {
 }
 
 fn post(uri: &str, body: &Value) -> Request<Body> {
-    Request::post(uri)
+    from(Request::post(uri), CONSUMER)
         .header("content-type", "application/json")
         .body(Body::from(body.to_string()))
         .unwrap()
@@ -136,6 +142,38 @@ async fn met_01_01_version_endpoint() {
     assert_eq!(s, StatusCode::OK);
     assert_valid("common/protocol-version-schema.json", &body);
     assert_eq!(body["protocolVersions"][0]["version"], "2025-1");
+    assert_eq!(body["protocolVersions"][0]["auth"]["protocol"], "DCP");
+}
+
+#[tokio::test]
+async fn the_catalog_needs_an_authenticated_caller() {
+    let msg = json!({"@context": ["https://w3id.org/dspace/2025/1/context.jsonld"], "@type": "CatalogRequestMessage"});
+    let anonymous = Request::post("/dsp/2025-1/catalog/request")
+        .header("content-type", "application/json")
+        .body(Body::from(msg.to_string()))
+        .unwrap();
+    let (s, body) = call(anonymous).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    assert_valid("catalog/catalog-error-schema.json", &body);
+    assert!(
+        body["reason"].to_string().contains("unauthorized"),
+        "{body}"
+    );
+    let dataset = Request::get("/dsp/2025-1/catalog/datasets/CAT0102");
+    let (s, _) = call(dataset.body(Body::empty()).unwrap()).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+}
+
+/// The DCP TCK asks for the catalog in expanded JSON-LD.
+#[tokio::test]
+async fn expanded_catalog_requests_are_understood() {
+    let msg = json!({
+        "@type": "https://w3id.org/dspace/2025/1/CatalogRequestMessage",
+        "https://w3id.org/dspace/2025/1/filter": {}
+    });
+    let (s, body) = call(post("/dsp/2025-1/catalog/request", &msg)).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_valid("catalog/catalog-schema.json", &body);
 }
 
 #[tokio::test]
@@ -156,9 +194,12 @@ async fn cat_01_01_catalog_request() {
 #[tokio::test]
 async fn cat_01_02_dataset_request() {
     let (s, body) = call(
-        Request::get("/dsp/2025-1/catalog/datasets/CAT0102")
-            .body(Body::empty())
-            .unwrap(),
+        from(
+            Request::get("/dsp/2025-1/catalog/datasets/CAT0102"),
+            CONSUMER,
+        )
+        .body(Body::empty())
+        .unwrap(),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -169,7 +210,7 @@ async fn cat_01_02_dataset_request() {
 #[tokio::test]
 async fn cat_01_03_dataset_not_found() {
     let (s, body) = call(
-        Request::get("/dsp/2025-1/catalog/datasets/nope")
+        from(Request::get("/dsp/2025-1/catalog/datasets/nope"), CONSUMER)
             .body(Body::empty())
             .unwrap(),
     )

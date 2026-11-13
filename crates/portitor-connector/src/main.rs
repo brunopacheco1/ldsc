@@ -7,7 +7,11 @@
 use std::process::ExitCode;
 use std::sync::Arc;
 
+use portitor_connector::auth::{AuthSettings, CallerVerifier, Prover, dcp_adapters};
 use portitor_runtime::serve::{init_logging, shutdown, wait};
+
+/// The verifier and the prover (ADR 0016).
+type AuthAdapters = (Arc<dyn CallerVerifier>, Arc<dyn Prover>);
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -35,6 +39,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let sender = portitor_connector::tck::LateStart(sender);
     let mut ports = portitor_connector::Ports::new(Arc::new(sender));
     ports.use_sqlite(&store);
+    let settings = AuthSettings::from_env(&config.participant_id, config.allow_http_callbacks)?;
+    (ports.verifier, ports.prover) = auth_adapters(settings).await?;
     let (app, negotiator) = portitor_connector::build(&config, ports)?;
     // messages saved but not acknowledged before the last stop
     match negotiator.resume() {
@@ -81,4 +87,44 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         management.await??;
     }
     Ok(())
+}
+
+/// The DCP adapters. `PORTITOR_STS_URL` and the other DCP settings are
+/// required.
+#[cfg(not(feature = "tck"))]
+async fn auth_adapters(settings: Option<AuthSettings>) -> Result<AuthAdapters, String> {
+    let settings = settings.ok_or(
+        "PORTITOR_STS_URL is required: DSP requests are authenticated with DCP (ADR 0016)",
+    )?;
+    dcp_adapters(&settings).await
+}
+
+/// The DSP TCK build: the fixed header in `PORTITOR_TCK_AUTHORIZATION`
+/// stands for the TCK, in both directions; DCP for everyone else when
+/// `PORTITOR_STS_URL` is set (see `portitor_connector::tck`).
+#[cfg(feature = "tck")]
+async fn auth_adapters(settings: Option<AuthSettings>) -> Result<AuthAdapters, String> {
+    use portitor_connector::auth::{NoTokens, RefuseAll};
+    use portitor_connector::tck::{TckProver, TckVerifier};
+    let (verifier, prover): AuthAdapters = if let Some(settings) = settings {
+        dcp_adapters(&settings).await?
+    } else {
+        tracing::warn!(
+            "TCK build without PORTITOR_STS_URL: only the TCK's fixed header is accepted"
+        );
+        (Arc::new(RefuseAll), Arc::new(NoTokens))
+    };
+    let fixed = std::env::var("PORTITOR_TCK_AUTHORIZATION")
+        .ok()
+        .filter(|header| !header.is_empty());
+    Ok((
+        Arc::new(TckVerifier {
+            fixed: fixed.clone(),
+            inner: verifier,
+        }),
+        Arc::new(TckProver {
+            fixed,
+            inner: prover,
+        }),
+    ))
 }
