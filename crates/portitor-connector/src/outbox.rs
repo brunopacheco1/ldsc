@@ -1,0 +1,251 @@
+// SPDX-FileCopyrightText: Portitor contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
+//! Sending saved DSP messages (the outbox, ADR 0007). Four adapters send
+//! messages: negotiation and transfer, each as provider and as consumer.
+//! Each one implements [`Outbox`], which says how its domain service
+//! records what became of a message; [`deliver`] holds the rules they
+//! share:
+//!
+//! 1. Send the message, retrying as [`Retry`] says.
+//! 2. Acknowledged: record it, and send whatever follows.
+//! 3. Refused or unanswered: ask the counter-party for its state. If it
+//!    already shows where our message leads, the message had arrived
+//!    before (a lost answer, or a resend after a restart): record it.
+//! 4. Otherwise, a consumer's first message means the process never
+//!    started on the other side; a termination may stay unanswered (DSP
+//!    allows it); anything else ends the process.
+
+use std::sync::Arc;
+
+use portitor_dsp::guard::{Direction, MessageGuard};
+use serde_json::Value;
+
+use crate::negotiation::{Ports, Retry, Sender};
+
+/// What every adapter needs to send: the client, the dataspace's message
+/// rules, and the retry policy.
+pub(crate) struct Link {
+    pub(crate) sender: Arc<dyn Sender>,
+    pub(crate) guard: Arc<dyn MessageGuard + Send + Sync>,
+    pub(crate) retry: Retry,
+}
+
+impl Link {
+    pub(crate) fn new(ports: &Ports) -> Self {
+        Self {
+            sender: Arc::clone(&ports.sender),
+            guard: Arc::clone(&ports.guard),
+            retry: ports.retry,
+        }
+    }
+}
+
+/// One saved message, as [`deliver`] needs it.
+pub(crate) struct Message<'a> {
+    /// Our process id, for the log.
+    pub(crate) pid: &'a str,
+    /// Where to POST it.
+    pub(crate) url: &'a str,
+    /// The message.
+    pub(crate) body: &'a Value,
+    /// Where the counter-party reports its state (`GET`); empty when
+    /// unknown (a consumer's request: no provider pid yet).
+    pub(crate) status_url: &'a str,
+    /// A consumer's first message (a request): if it never arrives, the
+    /// process never started on the other side.
+    pub(crate) first: bool,
+    /// A termination, whose missing answer DSP lets us ignore.
+    pub(crate) terminating: bool,
+}
+
+impl<'a> Message<'a> {
+    /// A message that is neither a first message nor a termination.
+    pub(crate) fn new(pid: &'a str, url: &'a str, body: &'a Value, status_url: &'a str) -> Self {
+        Self {
+            pid,
+            url,
+            body,
+            status_url,
+            first: false,
+            terminating: false,
+        }
+    }
+
+    /// Marks a consumer's first message, when `first`.
+    pub(crate) fn first(self, first: bool) -> Self {
+        Self { first, ..self }
+    }
+
+    /// Marks a termination, when `terminating`.
+    pub(crate) fn terminating(self, terminating: bool) -> Self {
+        Self {
+            terminating,
+            ..self
+        }
+    }
+}
+
+/// One adapter's side of the outbox: how its domain service records what
+/// became of a message.
+pub(crate) trait Outbox: Send + Sync + 'static {
+    /// A saved message.
+    type Out: Send + Sync + 'static;
+    /// Why the store could not record it.
+    type Failure: std::fmt::Debug;
+
+    /// How to send.
+    fn link(&self) -> &Link;
+
+    /// The parts of `out` that sending needs.
+    fn message(out: &Self::Out) -> Message<'_>;
+
+    /// Whether `state`, the counter-party's answer at the status URL, shows
+    /// the state that `out` leads to.
+    fn reached(out: &Self::Out, state: Value) -> bool;
+
+    /// `out` arrived (`answer`: the acknowledgement, if there was one).
+    /// Returns the next message, if any.
+    ///
+    /// # Errors
+    ///
+    /// The store failed.
+    fn delivered(
+        &self,
+        out: &Self::Out,
+        answer: Option<&Value>,
+    ) -> Result<Option<Self::Out>, Self::Failure>;
+
+    /// `out`, a first message, never arrived: end the process here. Only
+    /// a consumer sends first messages, so by default there is nothing to
+    /// do.
+    ///
+    /// # Errors
+    ///
+    /// The store failed.
+    fn not_started(&self, out: &Self::Out) -> Result<(), Self::Failure> {
+        let _ = out;
+        Ok(())
+    }
+
+    /// The counter-party cannot be reached: end the process. Returns the
+    /// termination to send, if any.
+    ///
+    /// # Errors
+    ///
+    /// The store failed.
+    fn abort(&self, out: &Self::Out) -> Result<Option<Self::Out>, Self::Failure>;
+}
+
+/// Sends every message in `pending` in the background. Returns how many.
+pub(crate) fn resume<O: Outbox>(outbox: &Arc<O>, pending: Vec<O::Out>) -> usize {
+    let count = pending.len();
+    for out in pending {
+        tokio::spawn(deliver(Arc::clone(outbox), out));
+    }
+    count
+}
+
+/// Sends `out` and whatever follows from it, until the counter-party has
+/// to act or the process ends (the rules are in the module doc).
+pub(crate) async fn deliver<O: Outbox>(outbox: Arc<O>, mut out: O::Out) {
+    loop {
+        let msg = O::message(&out);
+        let (pid, first) = (msg.pid.to_owned(), msg.first);
+        let next = match attempt(outbox.link(), &msg, |state| O::reached(&out, state)).await {
+            Outcome::Acknowledged(answer) => outbox.delivered(&out, Some(&answer)),
+            Outcome::ArrivedBefore | Outcome::TerminationUnanswered => outbox.delivered(&out, None),
+            Outcome::NotStarted => outbox.not_started(&out).map(|()| None),
+            Outcome::Unreachable => outbox.abort(&out),
+        };
+        match next {
+            Ok(Some(n)) => out = n,
+            Ok(None) => return,
+            Err(failure) => {
+                tracing::warn!(%pid, ?failure, "outgoing message not recorded");
+                if first {
+                    // without the counter-party's pid the process cannot go on
+                    let _ = outbox.not_started(&out);
+                }
+                return;
+            }
+        }
+    }
+}
+
+/// What became of a message [`attempt`] sent.
+enum Outcome {
+    /// The counter-party acknowledged it, with this answer.
+    Acknowledged(Value),
+    /// Refused or unanswered, but it had arrived before.
+    ArrivedBefore,
+    /// A first message could not be delivered.
+    NotStarted,
+    /// A termination was not acknowledged.
+    TerminationUnanswered,
+    /// The counter-party could not be reached.
+    Unreachable,
+}
+
+/// Sends `msg` and says what became of it. `reached` reads the
+/// counter-party's state; it is used only when the send failed.
+async fn attempt(link: &Link, msg: &Message<'_>, reached: impl FnOnce(Value) -> bool) -> Outcome {
+    let pid = msg.pid;
+    let error = match send(link, msg.url, msg.body).await {
+        Ok(answer) => return Outcome::Acknowledged(answer),
+        Err(error) => error,
+    };
+    if arrived(&*link.sender, msg.status_url, reached).await {
+        tracing::info!(%pid, %error, "message had arrived before");
+        Outcome::ArrivedBefore
+    } else if msg.first {
+        tracing::warn!(%pid, %error, "counter-party not reachable; process not started");
+        Outcome::NotStarted
+    } else if msg.terminating {
+        tracing::warn!(%pid, %error, "termination not acknowledged");
+        Outcome::TerminationUnanswered
+    } else {
+        tracing::warn!(%pid, %error, "counter-party not reachable; terminating");
+        Outcome::Unreachable
+    }
+}
+
+/// Whether the counter-party's state at `status_url` passes `reached`,
+/// that is, a message that leads there has arrived. `false` when it cannot
+/// tell.
+pub(crate) async fn arrived(
+    sender: &dyn Sender,
+    status_url: &str,
+    reached: impl FnOnce(Value) -> bool,
+) -> bool {
+    if status_url.is_empty() {
+        return false;
+    }
+    sender.get(status_url).await.is_ok_and(reached)
+}
+
+/// Checks `body` with the guard, then POSTs it to `url`, retrying as the
+/// link's retry policy says. Returns the counter-party's answer.
+async fn send(link: &Link, url: &str, body: &Value) -> Result<Value, String> {
+    let message_type = body
+        .get("@type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    link.guard
+        .check(Direction::Outbound, message_type, body)
+        .map_err(|r| r.to_string())?;
+    let mut delay = link.retry.first_delay;
+    let mut last = String::from("not sent");
+    for attempt in 0..link.retry.attempts.max(1) {
+        if attempt > 0 {
+            tokio::time::sleep(delay).await;
+            delay = delay.saturating_mul(2);
+        }
+        match link.sender.post(url, body).await {
+            Ok(answer) => return Ok(answer),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}

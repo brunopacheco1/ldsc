@@ -17,7 +17,6 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use portitor_dsp::guard::MessageGuard;
 use portitor_dsp::transfer::consumer::{
     AgreementProvider, ConsumerTransfer, ConsumerTransferDecider, ConsumerTransferDecision,
     ConsumerTransferService, ConsumerTransferStore, Handled, HeldAgreements, Outgoing,
@@ -28,12 +27,12 @@ use portitor_dsp::transfer::{
     TransferTerminationMessage, Transition,
 };
 use serde::de::DeserializeOwned;
+use serde_json::Value;
 
 use crate::consumer::{InMemoryConsumerNegotiations, page};
-use crate::negotiation::{
-    Message, Outcome, Ports, Retry, Sender, SystemEnvironment, attempt, callback_allowed,
-};
-use crate::transfer::{Body, Shared, arrived, bad_request, failed, read_message};
+use crate::negotiation::{Ports, SystemEnvironment, callback_allowed};
+use crate::outbox::{self, Link, Message, Outbox};
+use crate::transfer::{Body, Shared, bad_request, failed, reached_state, read_message};
 
 /// The consumer transfer store chosen at start.
 pub type AnyConsumerTransferStore = Shared<dyn ConsumerTransferStore + Send + Sync>;
@@ -186,9 +185,7 @@ type Service = ConsumerTransferService<
 pub(crate) struct TransferConsumer {
     service: Service,
     held: AnyHeldAgreements,
-    sender: Arc<dyn Sender>,
-    guard: Arc<dyn MessageGuard + Send + Sync>,
-    retry: Retry,
+    link: Link,
     allow_http: bool,
 }
 
@@ -203,9 +200,7 @@ impl TransferConsumer {
                 callback_address,
             ),
             held: t.held,
-            sender: Arc::clone(&ports.sender),
-            guard: Arc::clone(&ports.guard),
-            retry: ports.retry,
+            link: Link::new(ports),
             allow_http,
         }
     }
@@ -254,7 +249,7 @@ impl TransferConsumer {
             .service
             .start(provider_address, provider_id, agreement_id, format)
             .map_err(Box::new)?;
-        tokio::spawn(Arc::clone(self).deliver(out));
+        tokio::spawn(outbox::deliver(Arc::clone(self), out));
         Ok(t)
     }
 
@@ -272,7 +267,7 @@ impl TransferConsumer {
         decision: ConsumerTransferDecision,
     ) -> Result<ConsumerTransfer, Box<Failure>> {
         let out = self.service.act(consumer_pid, decision).map_err(Box::new)?;
-        tokio::spawn(Arc::clone(self).deliver(out));
+        tokio::spawn(outbox::deliver(Arc::clone(self), out));
         self.transfer(consumer_pid)
     }
 
@@ -296,11 +291,7 @@ impl TransferConsumer {
     /// The store failed.
     pub(crate) fn resume(self: &Arc<Self>) -> Result<usize, Box<Failure>> {
         let pending = self.service.pending().map_err(Box::new)?;
-        let count = pending.len();
-        for out in pending {
-            tokio::spawn(Arc::clone(self).deliver(out));
-        }
-        Ok(count)
+        Ok(outbox::resume(self, pending))
     }
 
     /// Checks the message's shape with the guard, then reads it.
@@ -311,7 +302,7 @@ impl TransferConsumer {
         consumer_pid: &str,
     ) -> Result<T, Box<TransferError>> {
         read_message(
-            &*self.guard,
+            &*self.link.guard,
             body,
             message_type,
             "providerPid",
@@ -324,52 +315,43 @@ impl TransferConsumer {
         match handled {
             Ok((ack, next)) => {
                 if let Some(out) = next {
-                    tokio::spawn(Arc::clone(self).deliver(out));
+                    tokio::spawn(outbox::deliver(Arc::clone(self), out));
                 }
                 (StatusCode::OK, Json(ack)).into_response()
             }
             Err(failure) => failed(failure),
         }
     }
+}
 
-    /// Sends `out` and whatever follows from it, until the consumer waits
-    /// for the provider or the transfer ends.
-    async fn deliver(self: Arc<Self>, mut out: Outgoing) {
-        while let Some(next) = self.step(&out).await {
-            out = next;
-        }
+impl Outbox for TransferConsumer {
+    type Out = Outgoing;
+    type Failure = Failure;
+
+    fn message(out: &Outgoing) -> Message<'_> {
+        Message::new(&out.consumer_pid, &out.url, &out.body, &out.status_url)
+            .first(out.initial)
+            .terminating(out.transition == Transition::Terminate)
     }
 
-    /// Sends one message and records the outcome; returns the next one.
-    async fn step(&self, out: &Outgoing) -> Option<Outgoing> {
-        let pid = &out.consumer_pid;
-        let msg = Message {
-            pid,
-            url: &out.url,
-            body: &out.body,
-            first: out.initial,
-            terminating: out.transition == Transition::Terminate,
-        };
-        let arrived = arrived(&*self.sender, &out.status_url, out.to);
-        let next = match attempt(&*self.sender, &*self.guard, self.retry, &msg, arrived).await {
-            Outcome::Acknowledged(answer) => self.service.delivered(out, Some(&answer)),
-            Outcome::ArrivedBefore | Outcome::TerminationUnanswered => {
-                self.service.delivered(out, None)
-            }
-            Outcome::NotStarted => self.service.not_started(pid).map(|()| None),
-            Outcome::Unreachable => self.service.abort(out, "the provider could not be reached"),
-        };
-        match next {
-            Ok(n) => n,
-            Err(failure) => {
-                tracing::warn!(%pid, ?failure, "outgoing message not recorded");
-                if out.initial {
-                    // without the provider's pid the transfer cannot go on
-                    let _ = self.service.not_started(pid);
-                }
-                None
-            }
-        }
+    fn reached(out: &Outgoing, state: Value) -> bool {
+        reached_state(state, out.to)
+    }
+
+    fn link(&self) -> &Link {
+        &self.link
+    }
+
+    fn delivered(&self, out: &Outgoing, ack: Option<&Value>) -> Result<Option<Outgoing>, Failure> {
+        self.service.delivered(out, ack)
+    }
+
+    fn abort(&self, out: &Outgoing) -> Result<Option<Outgoing>, Failure> {
+        self.service.abort(out, "the provider could not be reached")
+    }
+
+    fn not_started(&self, out: &Outgoing) -> Result<(), Failure> {
+        self.service.not_started(&out.consumer_pid)
     }
 }
 

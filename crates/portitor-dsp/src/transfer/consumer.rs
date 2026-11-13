@@ -25,6 +25,7 @@
 //! transfer's `version`.
 
 use crate::Context;
+use crate::{WRITE_ATTEMPTS, Write};
 
 pub use super::provider::{Environment, Failure, StoreError};
 use super::{
@@ -505,13 +506,13 @@ where
 
     /// Reads a transfer, changes it and writes it if its version is
     /// unchanged; otherwise reads it again and repeats, a few times.
-    /// Returns what was written, or `None` for [`Write::Skip`].
+    /// Returns what was written, or `None` for `Write::Skip`.
     fn update(
         &self,
         consumer_pid: &str,
         change: impl Fn(&mut ConsumerTransfer) -> Result<Write, Failure>,
     ) -> Result<Option<ConsumerTransfer>, Failure> {
-        for _ in 0..ATTEMPTS {
+        for _ in 0..WRITE_ATTEMPTS {
             let mut t = self.load(consumer_pid)?;
             match change(&mut t)? {
                 Write::Skip => return Ok(None),
@@ -526,21 +527,16 @@ where
                 // an ended transfer keeps no token
                 t.data_address = None;
             }
-            let expected = t.version;
-            t.version = expected.wrapping_add(1);
-            if self
-                .store
-                .replace_if(&t, expected)
-                .map_err(Failure::Store)?
-            {
+            // compare-and-update: written only if nobody wrote in between
+            let read_version = t.version;
+            t.version = read_version.wrapping_add(1);
+            let written = self.store.replace_if(&t, read_version);
+            if written.map_err(Failure::Store)? {
                 return Ok(Some(t));
             }
         }
-        Err(bad(
-            "",
-            consumer_pid,
-            "the transfer keeps changing concurrently; retry",
-        ))
+        let reason = "the transfer keeps changing concurrently; retry";
+        Err(bad("", consumer_pid, reason))
     }
 
     /// The consumer's next message, as the decider says.
@@ -559,19 +555,6 @@ where
             .map_err(Failure::Store)?
             .ok_or_else(|| not_found(consumer_pid))
     }
-}
-
-/// How many times a write is tried when other writes keep coming first.
-const ATTEMPTS: usize = 3;
-
-/// What [`ConsumerTransferService::update`] writes.
-enum Write {
-    /// Nothing.
-    Skip,
-    /// The change, plus the decider's next message.
-    Settle,
-    /// The change only.
-    AsIs,
 }
 
 /// The message for `decision` on `t`, if the state machine allows it and

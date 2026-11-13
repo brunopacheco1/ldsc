@@ -4,12 +4,13 @@
 
 #![allow(clippy::unwrap_used)]
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use serde_json::json;
 
 use super::*;
+use crate::test_support::CountingEnv as Env;
 use crate::transfer::{DataAddressType, EndpointProperty};
 
 #[derive(Default)]
@@ -51,19 +52,6 @@ impl ConsumerTransferStore for &Store {
             .take(limit)
             .cloned()
             .collect())
-    }
-}
-
-#[derive(Default)]
-struct Env(Cell<u32>);
-
-impl Environment for Env {
-    fn new_id(&self) -> String {
-        self.0.set(self.0.get() + 1);
-        format!("urn:uuid:c{}", self.0.get())
-    }
-    fn now(&self) -> String {
-        "2026-11-13T12:00:00Z".to_owned()
     }
 }
 

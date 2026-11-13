@@ -21,6 +21,7 @@
 //! between can only take access away, never give it.
 
 use crate::Context;
+use crate::WRITE_ATTEMPTS;
 use crate::catalog::DatasetStore;
 use crate::negotiation::Agreement;
 pub use crate::negotiation::provider::{Environment, StoreError};
@@ -514,7 +515,7 @@ where
         caller: Option<&str>,
         change: impl Fn(&mut Transfer) -> Result<bool, Failure>,
     ) -> Result<Option<Transfer>, Failure> {
-        for _ in 0..ATTEMPTS {
+        for _ in 0..WRITE_ATTEMPTS {
             let mut t = match self.store.get(pid).map_err(Failure::Store)? {
                 // another consumer's transfer looks like a missing one
                 // (DSP: "if the client is not authorized ... MUST return 404")
@@ -577,9 +578,6 @@ where
         })
     }
 }
-
-/// How many times a write is tried when other writes keep coming first.
-const ATTEMPTS: usize = 3;
 
 fn ack(t: &Transfer) -> TransferProcess {
     TransferProcess::new(&t.provider_pid, &t.consumer_pid, t.state)

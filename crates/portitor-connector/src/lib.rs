@@ -35,6 +35,7 @@ pub mod data_flows;
 pub mod data_plane;
 pub mod management;
 pub mod negotiation;
+mod outbox;
 pub mod store;
 #[cfg(feature = "tck")]
 pub mod tck;

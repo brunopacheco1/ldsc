@@ -34,9 +34,9 @@ use serde_json::Value;
 
 use crate::InMemoryDatasets;
 use crate::negotiation::{
-    InMemoryNegotiations, Message, Outcome, Retry, Sender, SystemEnvironment, UNAUTHENTICATED,
-    attempt, callback_allowed,
+    InMemoryNegotiations, SystemEnvironment, UNAUTHENTICATED, callback_allowed,
 };
+use crate::outbox::{self, Link, Message, Outbox};
 use crate::store::finalized_agreement;
 
 /// Any adapter for a port, chosen at start: `Shared<dyn TransferStore +
@@ -254,9 +254,7 @@ fn default_transfer_decider() -> AnyTransferDecider {
 /// handlers.
 pub(crate) struct TransferProvider {
     service: Service,
-    sender: Arc<dyn Sender>,
-    guard: Arc<dyn MessageGuard + Send + Sync>,
-    retry: Retry,
+    link: Link,
     allow_http: bool,
 }
 
@@ -272,9 +270,7 @@ impl TransferProvider {
                 catalog,
                 SystemEnvironment,
             ),
-            sender: Arc::clone(&ports.sender),
-            guard: Arc::clone(&ports.guard),
-            retry: ports.retry,
+            link: Link::new(ports),
             allow_http,
         }
     }
@@ -287,7 +283,7 @@ impl TransferProvider {
         provider_pid: &str,
     ) -> Result<T, Box<TransferError>> {
         read_message(
-            &*self.guard,
+            &*self.link.guard,
             body,
             message_type,
             "consumerPid",
@@ -299,43 +295,7 @@ impl TransferProvider {
     /// Returns how many.
     pub(crate) fn resume(self: &Arc<Self>) -> Result<usize, Box<Failure>> {
         let pending = self.service.pending().map_err(Box::new)?;
-        let count = pending.len();
-        for out in pending {
-            tokio::spawn(Arc::clone(self).deliver(out));
-        }
-        Ok(count)
-    }
-
-    /// Sends `out`, then the provider's next message, if any. If the
-    /// consumer cannot be reached, the transfer ends and the termination is
-    /// sent instead.
-    async fn deliver(self: Arc<Self>, mut out: Outgoing) {
-        loop {
-            let msg = Message {
-                pid: &out.provider_pid,
-                url: &out.url,
-                body: &out.body,
-                first: false,
-                terminating: out.transition == Transition::Terminate,
-            };
-            let arrived = arrived(&*self.sender, &out.status_url, out.to);
-            let next = match attempt(&*self.sender, &*self.guard, self.retry, &msg, arrived).await {
-                Outcome::Acknowledged(_)
-                | Outcome::ArrivedBefore
-                | Outcome::TerminationUnanswered => self.service.delivered(&out),
-                Outcome::NotStarted | Outcome::Unreachable => self
-                    .service
-                    .abort(&out, "the consumer could not be reached"),
-            };
-            match next {
-                Ok(Some(next)) => out = next,
-                Ok(None) => return,
-                Err(failure) => {
-                    tracing::warn!(pid = %out.provider_pid, ?failure, "outgoing message not recorded");
-                    return;
-                }
-            }
-        }
+        Ok(outbox::resume(self, pending))
     }
 
     /// Turns the service's answer into the HTTP response and starts
@@ -344,13 +304,45 @@ impl TransferProvider {
         match handled {
             Ok((ack, next)) => {
                 if let Some(out) = next {
-                    tokio::spawn(Arc::clone(self).deliver(out));
+                    tokio::spawn(outbox::deliver(Arc::clone(self), out));
                 }
                 (ok, Json(ack)).into_response()
             }
             Err(failure) => failed(failure),
         }
     }
+}
+
+impl Outbox for TransferProvider {
+    type Out = Outgoing;
+    type Failure = Failure;
+
+    fn link(&self) -> &Link {
+        &self.link
+    }
+
+    fn message(out: &Outgoing) -> Message<'_> {
+        Message::new(&out.provider_pid, &out.url, &out.body, &out.status_url)
+            .terminating(out.transition == Transition::Terminate)
+    }
+
+    fn reached(out: &Outgoing, state: Value) -> bool {
+        reached_state(state, out.to)
+    }
+
+    fn delivered(&self, out: &Outgoing, _: Option<&Value>) -> Result<Option<Outgoing>, Failure> {
+        self.service.delivered(out)
+    }
+
+    fn abort(&self, out: &Outgoing) -> Result<Option<Outgoing>, Failure> {
+        self.service.abort(out, "the consumer could not be reached")
+    }
+}
+
+/// Whether `state`, a counter-party's answer to a transfer state query,
+/// is `to`.
+pub(crate) fn reached_state(state: Value, to: TransferState) -> bool {
+    serde_json::from_value::<TransferProcess>(state).is_ok_and(|t| t.state == to)
 }
 
 /// Checks a message's shape with `guard`, then reads it. A refusal is
@@ -374,19 +366,6 @@ pub(crate) fn read_message<T: DeserializeOwned>(
         .check(Direction::Inbound, message_type, &value)
         .map_err(|r| refuse(&other_pid, &r.to_string()))?;
     serde_json::from_value(value).map_err(|e| refuse(&other_pid, &e.to_string()))
-}
-
-/// Whether the other party reports, at `status_url`, the state `to` that
-/// our message leads to, that is, our message has arrived. `false` when it
-/// cannot tell.
-pub(crate) async fn arrived(sender: &dyn Sender, status_url: &str, to: TransferState) -> bool {
-    if status_url.is_empty() {
-        return false;
-    }
-    let answer = sender.get(status_url).await;
-    answer.is_ok_and(|value| {
-        serde_json::from_value::<TransferProcess>(value).is_ok_and(|t| t.state == to)
-    })
 }
 
 pub(crate) fn bad_request(e: TransferError) -> Response {

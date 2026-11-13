@@ -30,13 +30,14 @@ use portitor_dsp::negotiation::provider::{
 use portitor_dsp::negotiation::{
     ContractAgreementVerificationMessage, ContractNegotiation, ContractNegotiationError,
     ContractNegotiationEventMessage, ContractNegotiationTerminationMessage, ContractRequestMessage,
-    NegotiationState, Transition,
+    Transition,
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::InMemoryDatasets;
 pub use crate::consumer::{AnyConsumerDecider, AnyConsumerStore, InMemoryConsumerNegotiations};
+use crate::outbox::{self, Link, Message, Outbox};
 
 /// The identity of every caller until DSP requests are authenticated with
 /// DCP (release 0.5). It is the `assignee` of agreements until then.
@@ -504,9 +505,7 @@ type Service = ProviderService<AnyStore, AnyDecider, InMemoryDatasets, SystemEnv
 /// The provider side of negotiation, as used by the HTTP handlers.
 pub(crate) struct Provider {
     service: Service,
-    sender: Arc<dyn Sender>,
-    guard: Arc<dyn MessageGuard + Send + Sync>,
-    retry: Retry,
+    link: Link,
     allow_http: bool,
 }
 
@@ -518,6 +517,7 @@ impl Provider {
         allow_http: bool,
     ) -> Self {
         Self {
+            link: Link::new(&ports),
             service: ProviderService::new(
                 ports.store,
                 ports.decider,
@@ -525,9 +525,6 @@ impl Provider {
                 SystemEnvironment,
                 participant_id,
             ),
-            sender: ports.sender,
-            guard: ports.guard,
-            retry: ports.retry,
             allow_http,
         }
     }
@@ -545,7 +542,8 @@ impl Provider {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
-        self.guard
+        self.link
+            .guard
             .check(Direction::Inbound, message_type, &value)
             .map_err(|r| Box::new(invalid(provider_pid, &consumer_pid, &r.to_string())))?;
         serde_json::from_value(value)
@@ -560,147 +558,34 @@ impl Provider {
     /// The store failed.
     pub(crate) fn resume(self: &Arc<Self>) -> Result<usize, Box<Failure>> {
         let pending = self.service.pending().map_err(Box::new)?;
-        let count = pending.len();
-        for out in pending {
-            tokio::spawn(Arc::clone(self).deliver(out));
-        }
-        Ok(count)
-    }
-
-    /// Sends `out` and whatever follows from it, until the provider waits
-    /// for the consumer or the negotiation ends.
-    async fn deliver(self: Arc<Self>, mut out: Outgoing) {
-        loop {
-            let msg = Message {
-                pid: &out.provider_pid,
-                url: &out.url,
-                body: &out.body,
-                first: false,
-                terminating: out.transition == Transition::Terminate,
-            };
-            let arrived = arrived(&*self.sender, &out.status_url, out.to);
-            let next = match attempt(&*self.sender, &*self.guard, self.retry, &msg, arrived).await {
-                Outcome::Acknowledged(_)
-                | Outcome::ArrivedBefore
-                | Outcome::TerminationUnanswered => self.service.delivered(&out),
-                Outcome::NotStarted | Outcome::Unreachable => self
-                    .service
-                    .abort(&out, "the consumer could not be reached"),
-            };
-            match next {
-                Ok(Some(n)) => out = n,
-                Ok(None) => return,
-                Err(failure) => {
-                    tracing::warn!(pid = %out.provider_pid, ?failure, "outgoing message not recorded");
-                    return;
-                }
-            }
-        }
+        Ok(outbox::resume(self, pending))
     }
 }
 
-/// Whether the counter-party reports state `to` at `status_url`, that is,
-/// a message that leads there has arrived. `false` when it cannot tell.
-pub(crate) async fn arrived(sender: &dyn Sender, status_url: &str, to: NegotiationState) -> bool {
-    if status_url.is_empty() {
-        return false;
+impl Outbox for Provider {
+    type Out = Outgoing;
+    type Failure = Failure;
+
+    fn link(&self) -> &Link {
+        &self.link
     }
-    sender.get(status_url).await.is_ok_and(|answer| {
-        serde_json::from_value::<ContractNegotiation>(answer).is_ok_and(|n| n.state == to)
-    })
-}
 
-/// One saved message to send (ADR 0007), as [`attempt`] needs it.
-pub(crate) struct Message<'a> {
-    /// Our process id, for the log.
-    pub pid: &'a str,
-    /// Where to POST it.
-    pub url: &'a str,
-    /// The message.
-    pub body: &'a Value,
-    /// The consumer's first message (a request): if it never arrives, the
-    /// process never started on the other side.
-    pub first: bool,
-    /// A termination, whose missing answer DSP allows to ignore.
-    pub terminating: bool,
-}
-
-/// What became of a message [`attempt`] sent.
-pub(crate) enum Outcome {
-    /// The counter-party acknowledged it, with this answer.
-    Acknowledged(Value),
-    /// The counter-party refused it or did not answer, but its state shows
-    /// the message had arrived before (a lost answer, or a resend after a
-    /// restart).
-    ArrivedBefore,
-    /// The first message could not be delivered.
-    NotStarted,
-    /// A termination was not acknowledged; DSP lets us ignore that.
-    TerminationUnanswered,
-    /// The counter-party could not be reached: the process must end.
-    Unreachable,
-}
-
-/// Sends `msg` (see [`send`]) and says what became of it. `arrived` asks
-/// the counter-party whether the message had arrived before; it runs only
-/// when the send failed. The four adapters that send DSP messages share
-/// these rules and map the outcome to their own domain service.
-pub(crate) async fn attempt(
-    sender: &dyn Sender,
-    guard: &(dyn MessageGuard + Send + Sync),
-    retry: Retry,
-    msg: &Message<'_>,
-    arrived: impl Future<Output = bool>,
-) -> Outcome {
-    let pid = msg.pid;
-    let error = match send(sender, guard, retry, msg.url, msg.body).await {
-        Ok(answer) => return Outcome::Acknowledged(answer),
-        Err(error) => error,
-    };
-    if arrived.await {
-        tracing::info!(%pid, %error, "message had arrived before");
-        Outcome::ArrivedBefore
-    } else if msg.first {
-        tracing::warn!(%pid, %error, "counter-party not reachable; process not started");
-        Outcome::NotStarted
-    } else if msg.terminating {
-        tracing::warn!(%pid, %error, "termination not acknowledged");
-        Outcome::TerminationUnanswered
-    } else {
-        tracing::warn!(%pid, %error, "counter-party not reachable; terminating");
-        Outcome::Unreachable
+    fn message(out: &Outgoing) -> Message<'_> {
+        Message::new(&out.provider_pid, &out.url, &out.body, &out.status_url)
+            .terminating(out.transition == Transition::Terminate)
     }
-}
 
-/// Checks `body` with the guard, then POSTs it to `url`, retrying as
-/// `retry` says. Returns the counter-party's answer.
-pub(crate) async fn send(
-    sender: &dyn Sender,
-    guard: &(dyn MessageGuard + Send + Sync),
-    retry: Retry,
-    url: &str,
-    body: &Value,
-) -> Result<Value, String> {
-    let message_type = body
-        .get("@type")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    guard
-        .check(Direction::Outbound, message_type, body)
-        .map_err(|r| r.to_string())?;
-    let mut delay = retry.first_delay;
-    let mut last = String::from("not sent");
-    for attempt in 0..retry.attempts.max(1) {
-        if attempt > 0 {
-            tokio::time::sleep(delay).await;
-            delay = delay.saturating_mul(2);
-        }
-        match sender.post(url, body).await {
-            Ok(answer) => return Ok(answer),
-            Err(e) => last = e,
-        }
+    fn reached(out: &Outgoing, state: Value) -> bool {
+        serde_json::from_value::<ContractNegotiation>(state).is_ok_and(|n| n.state == out.to)
     }
-    Err(last)
+
+    fn delivered(&self, out: &Outgoing, _: Option<&Value>) -> Result<Option<Outgoing>, Failure> {
+        self.service.delivered(out)
+    }
+
+    fn abort(&self, out: &Outgoing) -> Result<Option<Outgoing>, Failure> {
+        self.service.abort(out, "the consumer could not be reached")
+    }
 }
 
 pub(crate) fn invalid(
@@ -725,7 +610,7 @@ fn finish(
     match handled {
         Ok((ack, next)) => {
             if let Some(out) = next {
-                tokio::spawn(Arc::clone(p).deliver(out));
+                tokio::spawn(outbox::deliver(Arc::clone(p), out));
             }
             (ok, Json(ack)).into_response()
         }
@@ -838,6 +723,7 @@ pub(crate) async fn terminate(
 mod tests {
     use super::*;
     use portitor_dsp::Offer;
+    use portitor_dsp::negotiation::NegotiationState;
 
     #[test]
     fn callback_urls() {
@@ -967,6 +853,14 @@ mod tests {
         fn post<'a>(&'a self, _: &'a str, _: &'a Value) -> SendFuture<'a> {
             Box::pin(async { Ok(Value::Null) })
         }
+    }
+
+    /// Whether `sender` reads state `to` at `url`.
+    async fn arrived(sender: &dyn Sender, url: &str, to: NegotiationState) -> bool {
+        let reached = |state: Value| {
+            serde_json::from_value::<ContractNegotiation>(state).is_ok_and(|n| n.state == to)
+        };
+        outbox::arrived(sender, url, reached).await
     }
 
     #[tokio::test]

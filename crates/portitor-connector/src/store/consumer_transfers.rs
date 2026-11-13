@@ -23,17 +23,10 @@ const COLUMNS: &str = "consumer_pid, provider_pid, state, provider_address, prov
 
 /// The pending message as stored in the `pending` column.
 fn pending_text(o: Option<&Outgoing>) -> Result<Option<String>, StoreError> {
-    o.map(|o| {
-        json(&StoredMessage::new(
-            &o.url,
-            &o.status_url,
-            &o.body,
-            o.transition.name(),
-            o.to,
-            o.initial,
-        ))
-    })
-    .transpose()
+    let Some(o) = o else { return Ok(None) };
+    let (url, status_url, transition) = (&o.url, &o.status_url, o.transition.name());
+    let stored = StoredMessage::new(url, status_url, &o.body, transition, o.to, o.initial);
+    json(&stored).map(Some)
 }
 
 /// The pending message read back from the `pending` column.
