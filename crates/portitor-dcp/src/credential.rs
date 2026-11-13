@@ -31,7 +31,7 @@ pub const VC1_CONTEXT: &str = "https://www.w3.org/2018/credentials/v1";
 /// The VC Data Model 2.0 context.
 pub const VC2_CONTEXT: &str = "https://www.w3.org/ns/credentials/v2";
 
-const VC_JWT_DATA: &str = "data:application/vc+jwt,";
+pub(crate) const VC_JWT_DATA: &str = "data:application/vc+jwt,";
 const VP_JWT_DATA: &str = "data:application/vp+jwt,";
 
 /// A DCP profile (DCP v1.0.1, "Profiles of the Decentralized Claims

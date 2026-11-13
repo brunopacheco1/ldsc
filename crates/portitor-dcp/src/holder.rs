@@ -25,7 +25,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::credential::{Profile, VC1_CONTEXT, VC2_CONTEXT};
+use crate::credential::{Profile, VC_JWT_DATA, VC1_CONTEXT, VC2_CONTEXT};
 use crate::{Error, Jwk, Jws, SigningKey};
 
 /// The JWS `typ` of Portitor's access tokens (RFC 9068).
@@ -102,7 +102,7 @@ fn envelope(jwt: &str) -> Value {
     json!({
         "@context": [VC2_CONTEXT],
         "type": "EnvelopedVerifiableCredential",
-        "id": format!("data:application/vc+jwt,{jwt}"),
+        "id": format!("{VC_JWT_DATA}{jwt}"),
     })
 }
 
