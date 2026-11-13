@@ -3,8 +3,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! The provider side of the transfer process over HTTP (ADR 0013), with a
-//! fake data plane, a fixed agreement, and the outgoing messages captured
-//! by a fake sender.
+//! fixed agreement and the outgoing messages captured by a fake sender.
+//! Most tests use a fake data plane; the last ones use the built-in one
+//! and fetch data from a local upstream.
 #![allow(clippy::unwrap_used, missing_docs)]
 
 use std::sync::{Arc, Mutex};
@@ -85,7 +86,7 @@ impl FakeFlows {
 }
 
 impl DataFlows for FakeFlows {
-    fn supports(&self, format: &str) -> bool {
+    fn supports(&self, _: &str, format: &str) -> bool {
         format == "HttpData-PULL"
     }
     fn start(&self, t: &Transfer) -> Result<DataAddress, String> {
@@ -126,6 +127,8 @@ fn config() -> Config {
         datasets: portitor_connector::read_datasets(std::path::Path::new(path)).unwrap(),
         allow_http_callbacks: false,
         db_file: "unused.db".into(),
+        sources: std::collections::BTreeMap::new(),
+        data_token_seconds: 3_600,
     }
 }
 
@@ -137,6 +140,9 @@ fn ports(sender: &Arc<FakeSender>, flows: &Arc<FakeFlows>) -> Ports {
     };
     p.transfers.agreements = Shared(Arc::new(OneAgreement));
     p.transfers.flows = Shared(Arc::clone(flows) as _);
+    // without a flow store the built-in data plane does not start, so it
+    // does not replace the fake one
+    p.flow_store = None;
     p
 }
 
@@ -342,6 +348,7 @@ async fn without_a_data_plane_every_request_is_refused() {
     let sender = Arc::new(FakeSender::default());
     let mut p = Ports::new(Arc::clone(&sender) as Arc<dyn Sender>);
     p.transfers.agreements = Shared(Arc::new(OneAgreement));
+    p.flow_store = None;
     let app = portitor_connector::router(&config(), p).unwrap();
     let (status, error) = call(&app, post(&format!("{BASE}/request"), &request("a1"))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -362,4 +369,102 @@ async fn sqlite_ports_use_the_stored_agreements() {
     let app = portitor_connector::router(&config(), p).unwrap();
     let (status, _) = call(&app, post(&format!("{BASE}/request"), &request("a1"))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+/// Serves `hello` as CSV at `/file` on a free local port; returns its URL.
+#[cfg(feature = "data-plane")]
+async fn upstream() -> String {
+    let app = Router::new().route(
+        "/file",
+        axum::routing::get(|| async { ([("content-type", "text/csv")], "hello") }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/file", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    url
+}
+
+/// The built-in data plane, with `source` as the data of dataset `CAT0101`.
+fn built_in(sender: &Arc<FakeSender>, source: Option<String>) -> Router {
+    let mut config = config();
+    config
+        .sources
+        .extend(source.map(|url| ("CAT0101".to_owned(), url)));
+    let mut p = Ports::new(Arc::clone(sender) as Arc<dyn Sender>);
+    p.transfers.agreements = Shared(Arc::new(OneAgreement));
+    portitor_connector::router(&config, p).unwrap()
+}
+
+/// `GET` of a data address path with `token`: the status and the body.
+#[cfg(feature = "data-plane")]
+async fn fetch(app: &Router, path: &str, token: &str) -> (StatusCode, String) {
+    let req = Request::get(path)
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let bytes = to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    (status, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+#[cfg(feature = "data-plane")] // the built-in data plane is behind it
+#[tokio::test]
+async fn the_built_in_data_plane_serves_the_data_while_the_transfer_is_started() {
+    let sender = Arc::new(FakeSender::default());
+    let app = built_in(&sender, Some(upstream().await));
+    let (status, ack) = call(&app, post(&format!("{BASE}/request"), &request("a1"))).await;
+    assert_eq!(status, StatusCode::CREATED, "{ack}");
+    let pid = ack["providerPid"].as_str().unwrap().to_owned();
+
+    // the start message carries the data address and its token
+    let address = sent(&sender, 1).await[0].1["dataAddress"].clone();
+    assert_eq!(address["endpointType"], "https://w3id.org/idsa/v4.1/HTTP");
+    let endpoint = address["endpoint"].as_str().unwrap();
+    let path = endpoint.strip_prefix("https://provider.example").unwrap();
+    assert!(path.starts_with("/data/"), "{endpoint}");
+    let property = |name: &str| {
+        address["endpointProperties"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == name)
+            .map(|p| p["value"].as_str().unwrap().to_owned())
+            .unwrap()
+    };
+    assert_eq!(property("authType"), "bearer");
+    let token = property("authorization");
+    wait_for(&app, &pid, "STARTED").await;
+
+    assert_eq!(
+        fetch(&app, path, &token).await,
+        (StatusCode::OK, "hello".to_owned())
+    );
+    assert_eq!(fetch(&app, path, "wrong").await.0, StatusCode::UNAUTHORIZED);
+
+    // suspended: refused; started again: served with the same token
+    let suspend = message("TransferSuspensionMessage", &pid);
+    call(&app, post(&format!("{BASE}/{pid}/suspension"), &suspend)).await;
+    assert_eq!(fetch(&app, path, &token).await.0, StatusCode::UNAUTHORIZED);
+    let restart = message("TransferStartMessage", &pid);
+    call(&app, post(&format!("{BASE}/{pid}/start"), &restart)).await;
+    assert_eq!(fetch(&app, path, &token).await.0, StatusCode::OK);
+
+    // completed: refused for good
+    let complete = message("TransferCompletionMessage", &pid);
+    call(&app, post(&format!("{BASE}/{pid}/completion"), &complete)).await;
+    assert_eq!(fetch(&app, path, &token).await.0, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn a_dataset_without_a_source_cannot_be_transferred() {
+    let sender = Arc::new(FakeSender::default());
+    let app = built_in(&sender, None);
+    let (status, error) = call(&app, post(&format!("{BASE}/request"), &request("a1"))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        error["reason"].to_string().contains("cannot transfer"),
+        "{error}"
+    );
+    assert!(sender.sent().is_empty());
 }

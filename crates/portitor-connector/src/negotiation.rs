@@ -220,7 +220,7 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 /// connector buffer an unbounded body.
 const MAX_ANSWER: usize = 64 * 1024;
 
-type HttpsClient = Client<hyper_rustls::HttpsConnector<HttpConnector>, Full<Bytes>>;
+pub(crate) type HttpsClient = Client<hyper_rustls::HttpsConnector<HttpConnector>, Full<Bytes>>;
 
 /// Adapter: HTTP(S) client. TLS uses rustls with the ring provider and the
 /// system's CA certificates.
@@ -254,35 +254,49 @@ impl HttpSender {
     /// The ring provider supports no safe TLS version (does not happen with
     /// the rustls versions in `Cargo.lock`).
     pub fn new(allow_http: bool) -> Result<Self, String> {
-        let provider = Arc::new(rustls::crypto::ring::default_provider());
-        let (https, has_ca_certificates) = match hyper_rustls::HttpsConnectorBuilder::new()
-            .with_provider_and_native_roots(Arc::clone(&provider))
-        {
-            Ok(b) => (b, true),
-            Err(e) => {
-                tracing::warn!(error = %e, "no CA certificates: https callbacks will fail");
-                let tls = rustls::ClientConfig::builder_with_provider(provider)
-                    .with_safe_default_protocol_versions()
-                    .map_err(|e| e.to_string())?
-                    .with_root_certificates(rustls::RootCertStore::empty())
-                    .with_no_client_auth();
-                (
-                    hyper_rustls::HttpsConnectorBuilder::new().with_tls_config(tls),
-                    false,
-                )
-            }
-        };
-        let connector = if allow_http {
-            https.https_or_http().enable_http1().build()
-        } else {
-            https.https_only().enable_http1().build()
-        };
+        let (client, has_ca_certificates) = https_client(allow_http)?;
         Ok(Self {
-            client: Client::builder(TokioExecutor::new()).build(connector),
+            client,
             allow_http,
             has_ca_certificates,
         })
     }
+}
+
+/// An HTTP client on rustls with the ring provider and the system's CA
+/// certificates, and whether those certificates were found. Plain
+/// `http://` is refused unless `allow_http`.
+///
+/// # Errors
+///
+/// The ring provider supports no safe TLS version (does not happen with
+/// the rustls versions in `Cargo.lock`).
+pub(crate) fn https_client(allow_http: bool) -> Result<(HttpsClient, bool), String> {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let (https, has_ca_certificates) = match hyper_rustls::HttpsConnectorBuilder::new()
+        .with_provider_and_native_roots(Arc::clone(&provider))
+    {
+        Ok(b) => (b, true),
+        Err(e) => {
+            tracing::warn!(error = %e, "no CA certificates: https calls will fail");
+            let tls = rustls::ClientConfig::builder_with_provider(provider)
+                .with_safe_default_protocol_versions()
+                .map_err(|e| e.to_string())?
+                .with_root_certificates(rustls::RootCertStore::empty())
+                .with_no_client_auth();
+            (
+                hyper_rustls::HttpsConnectorBuilder::new().with_tls_config(tls),
+                false,
+            )
+        }
+    };
+    let connector = if allow_http {
+        https.https_or_http().enable_http1().build()
+    } else {
+        https.https_only().enable_http1().build()
+    };
+    let client = Client::builder(TokioExecutor::new()).build(connector);
+    Ok((client, has_ca_certificates))
 }
 
 impl Sender for HttpSender {
@@ -399,6 +413,10 @@ pub struct Ports {
     pub consumer_decider: AnyConsumerDecider,
     /// The adapters for transfers as provider.
     pub transfers: crate::transfer::TransferPorts,
+    /// Where the built-in data plane keeps its flows. With a store (and
+    /// the `data-plane` feature) the connector runs its HTTP pull data
+    /// plane and uses it for transfers; `None` keeps `transfers.flows`.
+    pub flow_store: Option<crate::data_plane::AnyFlowStore>,
 }
 
 impl std::fmt::Debug for Ports {
@@ -421,6 +439,9 @@ impl Ports {
         Self {
             store: AnyStore(Arc::new(negotiations.clone())),
             transfers: crate::transfer::TransferPorts::in_memory(negotiations),
+            flow_store: Some(crate::transfer::Shared(Arc::new(
+                crate::data_plane::InMemoryFlows::default(),
+            ))),
             decider: default_decider(),
             sender,
             guard: Arc::new(AllowAll),
@@ -439,6 +460,9 @@ impl Ports {
         self.consumer_store = AnyConsumerStore(Arc::clone(store) as _);
         self.transfers.store = crate::transfer::Shared(Arc::clone(store) as _);
         self.transfers.agreements = crate::transfer::Shared(Arc::clone(store) as _);
+        if self.flow_store.is_some() {
+            self.flow_store = Some(crate::transfer::Shared(Arc::clone(store) as _));
+        }
     }
 }
 

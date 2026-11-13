@@ -114,7 +114,7 @@ impl Flows {
 }
 
 impl DataFlows for &Flows {
-    fn supports(&self, format: &str) -> bool {
+    fn supports(&self, _: &str, format: &str) -> bool {
         format == "HttpData-PULL"
     }
     fn start(&self, t: &Transfer) -> Result<DataAddress, String> {
@@ -280,7 +280,11 @@ fn requests_that_break_a_rule_are_refused_before_anything_starts() {
         ("a-other", "HttpData-PULL", "no finalized agreement"),
         ("a-expired", "HttpData-PULL", "does not allow it now"),
         ("a1", "S3-PULL", "not offered in this format"),
-        ("a1", "HttpData-PUSH", "cannot transfer this format"),
+        (
+            "a1",
+            "HttpData-PUSH",
+            "cannot transfer this dataset in this format",
+        ),
     ];
     for (agreement_id, format, expected) in cases {
         let (store, flows) = (Store::default(), Flows::default());

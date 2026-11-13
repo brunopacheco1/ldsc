@@ -6,7 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # ADR 0013: Transfer process and the built-in data plane
 
-- Status: **Proposed**
+- Status: **Accepted** (decided by the maintainer, 2026-11-13)
 - Date: 2026-11-13
 - Scope: release 0.4 (transfer process and HTTP pull data plane). Builds on
   ADR 0003 (data plane in the connector, behind Data Plane Signaling),
@@ -100,15 +100,34 @@ difference upstream (ROADMAP 0.4).
 Each dataset in the datasets file may name an upstream HTTP URL. The data
 plane fetches it and streams the answer to the consumer that presents a
 valid token. The URL is never shown in the catalog. A dataset without one
-cannot be transferred. Details come with the data plane (0.4 PR 4): token
-length and lifetime, which upstream headers are passed, and HTTPS rules.
+cannot be transferred: the request is refused with 400 before any data
+flow starts. Settled with the data plane (0.4 PR 4):
+
+- The URL is `portitor:source` in the dataset's entry of the datasets
+  file. Plain `http://` is allowed, because the operator sets it.
+- The data address is `{public URL}/data/{flowId}` with a bearer token
+  (`authorization`, `authType: bearer`), 32 random bytes from `ring` in
+  base64url. Only its SHA-256 hash is stored, with the flow in the SQLite
+  file.
+- The token works while the flow is STARTED and until
+  `PORTITOR_DATA_TOKEN_SECONDS` (default one hour) after the start. It is
+  not renewed: DSP 2025-1 has no message for it, so the consumer asks for
+  a new transfer.
+- Every refusal (no token, wrong token, unknown flow, suspended, ended,
+  expired) gets the same 401, so a caller learns nothing about other
+  flows.
+- The data plane sends a plain `GET` to the source, with no caller
+  headers and no credentials, and passes back a 2xx body as a stream with
+  its `Content-Type`. Anything else is a 502; the log names the flow, not
+  the URL. The source must start its answer within 30 seconds.
 
 ### `endpointType` in the `dataAddress`
 
-Open, to settle in 0.4 PR 4 with what EDC sends: the Data Plane Signaling
-HTTP profile uses `https://w3id.org/dspace-sig/profile/http-pull`; DSP's
-own examples use `https://w3id.org/idsa/v4.1/HTTP`. The EDC interop test
-(0.5) confirms the choice.
+`https://w3id.org/idsa/v4.1/HTTP` (settled in 0.4 PR 4). DSP's own
+examples, the DSP TCK and EDC's DSP tests use it. The Data Plane Signaling
+HTTP profile uses `https://w3id.org/dspace-sig/profile/http-pull` between
+control plane and data plane; that value stays inside Portitor. The EDC
+interop test (0.5) confirms the choice.
 
 ## Consequences
 

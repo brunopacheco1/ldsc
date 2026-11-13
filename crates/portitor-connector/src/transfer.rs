@@ -84,8 +84,8 @@ impl Agreements for AnyAgreements {
 }
 
 impl DataFlows for AnyDataFlows {
-    fn supports(&self, format: &str) -> bool {
-        self.0.supports(format)
+    fn supports(&self, dataset_id: &str, format: &str) -> bool {
+        self.0.supports(dataset_id, format)
     }
     fn start(&self, t: &Transfer) -> Result<DataAddress, String> {
         self.0.start(t)
@@ -172,7 +172,7 @@ impl Agreements for InMemoryNegotiations {
 pub struct NoDataFlows;
 
 impl DataFlows for NoDataFlows {
-    fn supports(&self, _: &str) -> bool {
+    fn supports(&self, _: &str, _: &str) -> bool {
         false
     }
     fn start(&self, _: &Transfer) -> Result<DataAddress, String> {

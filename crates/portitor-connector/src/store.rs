@@ -18,6 +18,7 @@ use portitor_dsp::negotiation::provider::{self, Negotiation, NegotiationStore, S
 use portitor_dsp::negotiation::{NegotiationState, Transition};
 use rusqlite::{Connection, Row, params};
 
+mod data_flows;
 mod transfers;
 use serde::{Deserialize, Serialize};
 pub use transfers::finalized_agreement;
@@ -65,6 +66,15 @@ const MIGRATIONS: &[&str] = &[
         format           TEXT NOT NULL,
         pending          TEXT,
         version          INTEGER NOT NULL DEFAULT 0
+    )",
+    // 0.4: the built-in data plane's flows (ADR 0013); the token is kept
+    // only as its SHA-256 hash
+    "CREATE TABLE data_flow (
+        id         TEXT PRIMARY KEY,
+        state      TEXT NOT NULL,
+        dataset_id TEXT NOT NULL,
+        token_hash TEXT NOT NULL,
+        expires_at INTEGER NOT NULL
     )",
 ];
 

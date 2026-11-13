@@ -103,6 +103,8 @@ fn app() -> axum::Router {
             datasets: tck_datasets(),
             allow_http_callbacks: false,
             db_file: "unused.db".into(),
+            sources: std::collections::BTreeMap::new(),
+            data_token_seconds: 3_600,
         },
         ports(),
     )
@@ -231,6 +233,8 @@ async fn example_datasets_file_is_valid() {
             datasets,
             allow_http_callbacks: false,
             db_file: "unused.db".into(),
+            sources: std::collections::BTreeMap::new(),
+            data_token_seconds: 3_600,
         },
         ports(),
     )
@@ -265,11 +269,49 @@ fn broken_definitions_stop_the_start() {
             datasets,
             allow_http_callbacks: false,
             db_file: "unused.db".into(),
+            sources: std::collections::BTreeMap::new(),
+            data_token_seconds: 3_600,
         },
         ports(),
     )
     .unwrap_err();
     assert!(err.to_string().contains("no offer"));
+}
+
+/// A dataset's source is read, taken out of the dataset, and never
+/// shown in the catalog; a source that is not an HTTP URL stops the start.
+#[tokio::test]
+async fn sources_are_read_but_never_shown() {
+    let dir = std::env::temp_dir().join(format!("portitor-sources-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("datasets.json");
+    let mut items: Value = serde_json::from_slice(
+        &std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tck/datasets.json"
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    items[0]["portitor:source"] = json!("https://upstream.internal/secret.csv");
+    let id = items[0]["@id"].as_str().unwrap().to_owned();
+    std::fs::write(&file, items.to_string()).unwrap();
+    let (datasets, sources) = portitor_connector::read_datasets_and_sources(&file).unwrap();
+    assert_eq!(sources[&id], "https://upstream.internal/secret.csv");
+    assert_eq!(datasets.len(), items.as_array().unwrap().len());
+    let shown = serde_json::to_string(&datasets).unwrap();
+    assert!(!shown.contains("upstream.internal"), "{shown}");
+
+    items[0]["portitor:source"] = json!("file:///etc/passwd");
+    std::fs::write(&file, items.to_string()).unwrap();
+    assert!(matches!(
+        portitor_connector::read_datasets_and_sources(&file),
+        Err(portitor_connector::ConfigError::Invalid(
+            "portitor:source",
+            _
+        ))
+    ));
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
