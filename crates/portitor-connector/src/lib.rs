@@ -33,15 +33,19 @@ pub mod consumer;
 pub mod consumer_transfer;
 pub mod data_flows;
 pub mod data_plane;
+pub mod http_client;
 pub mod management;
 pub mod negotiation;
 mod outbox;
+pub mod ports;
 pub mod store;
+pub mod system;
 #[cfg(feature = "tck")]
 pub mod tck;
 pub mod transfer;
 
-pub use negotiation::{HttpSender, Ports};
+pub use http_client::HttpSender;
+pub use ports::Ports;
 
 /// Path prefix of the DSP 2025-1 endpoints.
 pub const DSP_PATH: &str = "/dsp/2025-1";
@@ -417,7 +421,7 @@ pub fn build(
     #[cfg(feature = "tck")]
     {
         let stored = ports.transfers.agreements.clone();
-        ports.transfers.agreements = transfer::Shared(Arc::new(tck::TckAgreements(stored)));
+        ports.transfers.agreements = ports::Shared(Arc::new(tck::TckAgreements(stored)));
     }
     let data_plane = start_data_plane(config, &mut ports);
     let transfers = Arc::new(transfer::TransferProvider::new(
@@ -568,7 +572,7 @@ fn start_data_plane(config: &Config, ports: &mut Ports) -> Option<Arc<data_plane
         "default",
         config.sources.keys().cloned(),
     );
-    ports.transfers.flows = transfer::Shared(Arc::new(flows));
+    ports.transfers.flows = ports::Shared(Arc::new(flows));
     Some(Arc::new(plane))
 }
 

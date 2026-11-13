@@ -48,7 +48,7 @@ use serde::Deserialize;
 
 use crate::consumer::Consumer;
 use crate::consumer_transfer::TransferConsumer;
-use crate::negotiation::{SendFuture, Sender};
+use crate::http_client::{SendFuture, Sender};
 
 /// The TCK's provider scripts, keyed by dataset id.
 #[derive(Debug, Default)]

@@ -18,8 +18,8 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use portitor_dsp::transfer::consumer::{
-    AgreementProvider, ConsumerTransfer, ConsumerTransferDecider, ConsumerTransferDecision,
-    ConsumerTransferService, ConsumerTransferStore, Handled, HeldAgreements, Outgoing,
+    AgreementProvider, ConsumerTransfer, ConsumerTransferDecision, ConsumerTransferService,
+    ConsumerTransferStore, Handled, HeldAgreements, Outgoing,
 };
 use portitor_dsp::transfer::provider::{Failure, StoreError};
 use portitor_dsp::transfer::{
@@ -30,46 +30,13 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::consumer::{InMemoryConsumerNegotiations, page};
-use crate::negotiation::{Ports, SystemEnvironment, callback_allowed};
+use crate::http_client::callback_allowed;
 use crate::outbox::{self, Link, Message, Outbox};
-use crate::transfer::{Body, Shared, bad_request, failed, reached_state, read_message};
-
-/// The consumer transfer store chosen at start.
-pub type AnyConsumerTransferStore = Shared<dyn ConsumerTransferStore + Send + Sync>;
-/// The consumer transfer policy chosen at start.
-pub type AnyConsumerTransferDecider = Shared<dyn ConsumerTransferDecider + Send + Sync>;
-/// The held agreements chosen at start (the negotiation store's).
-pub type AnyHeldAgreements = Shared<dyn HeldAgreements + Send + Sync>;
-
-impl ConsumerTransferStore for AnyConsumerTransferStore {
-    fn get(&self, consumer_pid: &str) -> Result<Option<ConsumerTransfer>, StoreError> {
-        self.0.get(consumer_pid)
-    }
-    fn insert(&self, t: &ConsumerTransfer) -> Result<(), StoreError> {
-        self.0.insert(t)
-    }
-    fn replace_if(&self, t: &ConsumerTransfer, expected: u64) -> Result<bool, StoreError> {
-        self.0.replace_if(t, expected)
-    }
-    fn pending(&self) -> Result<Vec<ConsumerTransfer>, StoreError> {
-        self.0.pending()
-    }
-    fn list(&self, after: Option<&str>, limit: usize) -> Result<Vec<ConsumerTransfer>, StoreError> {
-        self.0.list(after, limit)
-    }
-}
-
-impl ConsumerTransferDecider for AnyConsumerTransferDecider {
-    fn decide(&self, t: &ConsumerTransfer) -> ConsumerTransferDecision {
-        self.0.decide(t)
-    }
-}
-
-impl HeldAgreements for AnyHeldAgreements {
-    fn provider_of(&self, agreement_id: &str) -> Result<Option<AgreementProvider>, StoreError> {
-        self.0.provider_of(agreement_id)
-    }
-}
+use crate::ports::{
+    AnyConsumerTransferDecider, AnyConsumerTransferStore, AnyHeldAgreements, Ports,
+};
+use crate::system::SystemEnvironment;
+use crate::transfer::{Body, bad_request, failed, reached_state, read_message};
 
 /// Adapter: consumer transfers kept in memory (lost on restart). The
 /// `SQLite` adapter replaces it for real use.
@@ -137,41 +104,6 @@ impl HeldAgreements for InMemoryConsumerNegotiations {
                 id: n.provider_id.clone(),
             }))
     }
-}
-
-/// The adapters behind transfers as consumer (part of [`crate::Ports`]).
-#[derive(Clone, Debug)]
-pub struct ConsumerTransferPorts {
-    /// Where transfers are kept.
-    pub store: AnyConsumerTransferStore,
-    /// What the consumer does on its own.
-    pub decider: AnyConsumerTransferDecider,
-    /// The agreements a transfer may be requested under.
-    pub held: AnyHeldAgreements,
-}
-
-impl ConsumerTransferPorts {
-    /// Transfers in memory, agreements from `negotiations`, and the default
-    /// policy: act only when asked through the management API. With the
-    /// `tck` feature the policy follows the DSP TCK scripts instead.
-    #[must_use]
-    pub fn in_memory(negotiations: InMemoryConsumerNegotiations) -> Self {
-        Self {
-            store: Shared(Arc::new(InMemoryConsumerTransfers::default())),
-            decider: default_decider(),
-            held: Shared(Arc::new(negotiations)),
-        }
-    }
-}
-
-#[cfg(feature = "tck")]
-fn default_decider() -> AnyConsumerTransferDecider {
-    Shared(Arc::new(crate::tck::TckConsumerTransferDecider))
-}
-
-#[cfg(not(feature = "tck"))]
-fn default_decider() -> AnyConsumerTransferDecider {
-    Shared(Arc::new(portitor_dsp::transfer::consumer::OnlyWhenAsked))
 }
 
 type Service = ConsumerTransferService<
@@ -428,6 +360,7 @@ mod tests {
     use portitor_dsp::transfer::TransferState;
 
     use super::*;
+    use crate::ports::Shared;
 
     fn transfer(pid: &str) -> ConsumerTransfer {
         ConsumerTransfer {

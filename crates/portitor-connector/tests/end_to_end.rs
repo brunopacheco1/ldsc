@@ -19,7 +19,7 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
-use portitor_connector::negotiation::{SendFuture, Sender};
+use portitor_connector::http_client::{SendFuture, Sender};
 use portitor_connector::{Config, Negotiator, Ports};
 use portitor_dsp::negotiation::NegotiationState;
 use portitor_dsp::transfer::TransferState;

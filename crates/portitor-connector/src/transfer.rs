@@ -6,9 +6,6 @@
 //! binding (DSP 2025-1, "Transfer Process HTTPS Binding"), in-memory
 //! transfers and agreements, and the sending of the provider's messages
 //! (ADR 0013).
-//!
-//! The ports are kept behind [`Shared`], one wrapper that lets any adapter
-//! be chosen at start.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -21,8 +18,8 @@ use axum::response::{IntoResponse, Response};
 use portitor_dsp::guard::{Direction, MessageGuard};
 use portitor_dsp::negotiation::Agreement;
 use portitor_dsp::transfer::provider::{
-    Agreements, DataFlows, Failure, Handled, Outgoing, StoreError, Transfer, TransferDecider,
-    TransferDecision, TransferService, TransferStore,
+    Agreements, DataFlows, Failure, Handled, Outgoing, StoreError, Transfer, TransferService,
+    TransferStore,
 };
 use portitor_dsp::transfer::{
     DataAddress, TransferCompletionMessage, TransferError, TransferProcess, TransferRequestMessage,
@@ -33,87 +30,12 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::InMemoryDatasets;
-use crate::negotiation::{
-    InMemoryNegotiations, SystemEnvironment, UNAUTHENTICATED, callback_allowed,
-};
+use crate::http_client::callback_allowed;
+use crate::negotiation::{InMemoryNegotiations, UNAUTHENTICATED};
 use crate::outbox::{self, Link, Message, Outbox};
+use crate::ports::{AnyAgreements, AnyDataFlows, AnyTransferDecider, AnyTransferStore};
 use crate::store::finalized_agreement;
-
-/// Any adapter for a port, chosen at start: `Shared<dyn TransferStore +
-/// Send + Sync>` is a transfer store, and so on.
-pub struct Shared<T: ?Sized>(pub Arc<T>);
-
-impl<T: ?Sized> Clone for Shared<T> {
-    fn clone(&self) -> Self {
-        Self(Arc::clone(&self.0))
-    }
-}
-
-impl<T: ?Sized> std::fmt::Debug for Shared<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Shared")
-    }
-}
-
-/// The transfer store chosen at start.
-pub type AnyTransferStore = Shared<dyn TransferStore + Send + Sync>;
-/// The agreements chosen at start (the negotiation store's).
-pub type AnyAgreements = Shared<dyn Agreements + Send + Sync>;
-/// The data plane chosen at start.
-pub type AnyDataFlows = Shared<dyn DataFlows + Send + Sync>;
-/// The transfer policy chosen at start.
-pub type AnyTransferDecider = Shared<dyn TransferDecider + Send + Sync>;
-
-impl TransferStore for AnyTransferStore {
-    fn get(&self, provider_pid: &str) -> Result<Option<Transfer>, StoreError> {
-        self.0.get(provider_pid)
-    }
-    fn insert(&self, t: &Transfer) -> Result<(), StoreError> {
-        self.0.insert(t)
-    }
-    fn replace_if(&self, t: &Transfer, expected: u64) -> Result<bool, StoreError> {
-        self.0.replace_if(t, expected)
-    }
-    fn pending(&self) -> Result<Vec<Transfer>, StoreError> {
-        self.0.pending()
-    }
-}
-
-impl Agreements for AnyAgreements {
-    fn finalized(&self, agreement_id: &str) -> Result<Option<Agreement>, StoreError> {
-        self.0.finalized(agreement_id)
-    }
-}
-
-impl DataFlows for AnyDataFlows {
-    fn supports(&self, dataset_id: &str, format: &str) -> bool {
-        self.0.supports(dataset_id, format)
-    }
-    fn start(&self, t: &Transfer) -> Result<DataAddress, String> {
-        self.0.start(t)
-    }
-    fn suspend(&self, pid: &str) -> Result<(), String> {
-        self.0.suspend(pid)
-    }
-    fn restart(&self, pid: &str) -> Result<DataAddress, String> {
-        self.0.restart(pid)
-    }
-    fn resume(&self, pid: &str) -> Result<(), String> {
-        self.0.resume(pid)
-    }
-    fn complete(&self, pid: &str) -> Result<(), String> {
-        self.0.complete(pid)
-    }
-    fn terminate(&self, pid: &str) -> Result<(), String> {
-        self.0.terminate(pid)
-    }
-}
-
-impl TransferDecider for AnyTransferDecider {
-    fn decide(&self, t: &Transfer) -> TransferDecision {
-        self.0.decide(t)
-    }
-}
+use crate::system::SystemEnvironment;
 
 /// Adapter: transfers kept in memory (lost on restart). The `SQLite`
 /// adapter replaces it for real use.
@@ -211,44 +133,6 @@ type Service = TransferService<
     InMemoryDatasets,
     SystemEnvironment,
 >;
-
-/// The adapters behind the transfer endpoints (part of [`crate::Ports`]).
-#[derive(Clone, Debug)]
-pub struct TransferPorts {
-    /// Where transfers are kept.
-    pub store: AnyTransferStore,
-    /// Where the agreements are found: the negotiation store.
-    pub agreements: AnyAgreements,
-    /// The data plane.
-    pub flows: AnyDataFlows,
-    /// What to do with a requested transfer.
-    pub decider: AnyTransferDecider,
-}
-
-impl TransferPorts {
-    /// Transfers in memory, agreements from `negotiations`, no data plane,
-    /// and the default policy: start every accepted request. With the
-    /// `tck` feature the policy follows the DSP TCK scripts instead.
-    #[must_use]
-    pub fn in_memory(negotiations: InMemoryNegotiations) -> Self {
-        Self {
-            store: Shared(Arc::new(InMemoryTransfers::default())),
-            agreements: Shared(Arc::new(negotiations)),
-            flows: Shared(Arc::new(NoDataFlows)),
-            decider: default_transfer_decider(),
-        }
-    }
-}
-
-#[cfg(feature = "tck")]
-fn default_transfer_decider() -> AnyTransferDecider {
-    Shared(Arc::new(crate::tck::TckTransferDecider::default()))
-}
-
-#[cfg(not(feature = "tck"))]
-fn default_transfer_decider() -> AnyTransferDecider {
-    Shared(Arc::new(portitor_dsp::transfer::provider::StartAtOnce))
-}
 
 /// The provider side of the transfer process, as used by the HTTP
 /// handlers.

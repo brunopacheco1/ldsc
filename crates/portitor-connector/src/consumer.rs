@@ -21,8 +21,7 @@ use axum::response::{IntoResponse, Response};
 use portitor_dsp::Offer;
 use portitor_dsp::guard::Direction;
 use portitor_dsp::negotiation::consumer::{
-    ConsumerDecider, ConsumerDecision, ConsumerNegotiation, ConsumerService, ConsumerStore,
-    Outgoing,
+    ConsumerNegotiation, ConsumerService, ConsumerStore, Outgoing,
 };
 use portitor_dsp::negotiation::provider::{Failure, StoreError};
 use portitor_dsp::negotiation::{
@@ -33,8 +32,11 @@ use portitor_dsp::negotiation::{
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::negotiation::{Ports, SystemEnvironment, bad_request, callback_allowed, failed};
+use crate::http_client::callback_allowed;
+use crate::negotiation::{bad_request, failed};
 use crate::outbox::{self, Link, Message, Outbox};
+use crate::ports::{AnyConsumerDecider, AnyConsumerStore, Ports};
+use crate::system::SystemEnvironment;
 
 /// Adapter: consumer negotiations kept in memory (lost on restart).
 #[derive(Debug, Clone, Default)]
@@ -102,54 +104,6 @@ pub(crate) fn page<V: Clone>(
         None => map.range::<str, _>(..),
     };
     range.take(limit).map(|(_, v)| v.clone()).collect()
-}
-
-/// Any [`ConsumerStore`], chosen at start.
-#[derive(Clone)]
-pub struct AnyConsumerStore(pub Arc<dyn ConsumerStore + Send + Sync>);
-
-impl ConsumerStore for AnyConsumerStore {
-    fn get(&self, consumer_pid: &str) -> Result<Option<ConsumerNegotiation>, StoreError> {
-        self.0.get(consumer_pid)
-    }
-    fn insert(&self, n: &ConsumerNegotiation) -> Result<(), StoreError> {
-        self.0.insert(n)
-    }
-    fn replace_if(&self, n: &ConsumerNegotiation, expected: u64) -> Result<bool, StoreError> {
-        self.0.replace_if(n, expected)
-    }
-    fn list(
-        &self,
-        after: Option<&str>,
-        limit: usize,
-    ) -> Result<Vec<ConsumerNegotiation>, StoreError> {
-        self.0.list(after, limit)
-    }
-    fn pending(&self) -> Result<Vec<ConsumerNegotiation>, StoreError> {
-        self.0.pending()
-    }
-}
-
-impl std::fmt::Debug for AnyConsumerStore {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("AnyConsumerStore")
-    }
-}
-
-/// Any [`ConsumerDecider`], chosen at start.
-#[derive(Clone)]
-pub struct AnyConsumerDecider(pub Arc<dyn ConsumerDecider + Send + Sync>);
-
-impl ConsumerDecider for AnyConsumerDecider {
-    fn decide(&self, n: &ConsumerNegotiation) -> ConsumerDecision {
-        self.0.decide(n)
-    }
-}
-
-impl std::fmt::Debug for AnyConsumerDecider {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("AnyConsumerDecider")
-    }
 }
 
 /// The acknowledgement for the provider and, possibly, our next message.
@@ -403,7 +357,8 @@ mod tests {
 
     #[test]
     fn in_memory_store_compares_before_replacing() {
-        let store = AnyConsumerStore(Arc::new(InMemoryConsumerNegotiations::default()));
+        let store: AnyConsumerStore =
+            crate::ports::Shared(Arc::new(InMemoryConsumerNegotiations::default()));
         let n = negotiation(NegotiationState::Requested);
         assert!(store.get("c").unwrap().is_none());
         store.insert(&n).unwrap();
@@ -423,6 +378,6 @@ mod tests {
         assert_eq!(store.list(Some("c"), 10).unwrap()[0].consumer_pid, "d");
         assert!(store.list(Some("d"), 10).unwrap().is_empty());
         assert_eq!(store.list(None, 1).unwrap().len(), 1);
-        assert_eq!(format!("{store:?}"), "AnyConsumerStore");
+        assert_eq!(format!("{store:?}"), "Shared");
     }
 }

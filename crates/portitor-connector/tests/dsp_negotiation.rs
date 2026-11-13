@@ -12,7 +12,8 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
-use portitor_connector::negotiation::{AnyDecider, Retry, SendFuture, Sender};
+use portitor_connector::http_client::{SendFuture, Sender};
+use portitor_connector::ports::{Retry, Shared};
 use portitor_connector::{Config, Ports};
 use portitor_dsp::guard::{Direction, MessageGuard, Rejection};
 use portitor_dsp::negotiation::provider::{Decider, Decision, Negotiation};
@@ -260,7 +261,7 @@ async fn request_agree_verify_finalize() {
 async fn consumer_terminates() {
     let sender = Arc::new(FakeSender::default());
     let mut p = ports(&sender);
-    p.decider = AnyDecider(Arc::new(WaitDecider));
+    p.decider = Shared(Arc::new(WaitDecider));
     let app = app(p);
     let pid = start(&app).await;
     let msg = with(
@@ -281,7 +282,7 @@ async fn consumer_terminates() {
 async fn invalid_transition_is_400() {
     let sender = Arc::new(FakeSender::default());
     let mut p = ports(&sender);
-    p.decider = AnyDecider(Arc::new(WaitDecider));
+    p.decider = Shared(Arc::new(WaitDecider));
     let app = app(p);
     let pid = start(&app).await;
     let verify = with(
@@ -308,7 +309,7 @@ async fn invalid_transition_is_400() {
 async fn counter_offer_on_an_existing_negotiation() {
     let sender = Arc::new(FakeSender::default());
     let mut p = ports(&sender);
-    p.decider = AnyDecider(Arc::new(WaitDecider));
+    p.decider = Shared(Arc::new(WaitDecider));
     let app = app(p);
     let pid = start(&app).await;
     // REQUESTED -> REQUESTED is not a transition
