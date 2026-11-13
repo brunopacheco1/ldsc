@@ -125,7 +125,7 @@ all checks green, Scorecard published.
   with proof of delivery (ADR 0007), minimal ODRL (ADR 0009), and the
   rename to Portitor (ADR 0008).
 
-## 0.4 Transfer process and HTTP data plane
+## 0.4 Transfer process and HTTP data plane (released 2026-11-13 as v0.4.0)
 
 - Transfer process state machines (provider and consumer).
 - Data plane in the same binary, behind a feature flag: HTTP pull with a
@@ -155,6 +155,13 @@ all checks green, Scorecard published.
   instances in Docker Compose. The EDC interop test moved to 0.5, so it
   runs once with real identity (DCP) instead of EDC's mock (maintainer,
   2026-11-12).
+- Result (2026-11-13): met. The DSP TCK passes the 15 provider and 15
+  consumer transfer tests (TP:01 to TP:03, TP_C:01 to TP_C:03; TP:02-04
+  and TP_C:02-04 are disabled in the TCK itself), 65 tests in all with
+  metadata, catalog and negotiation. `scripts/demo-compose.sh` has two
+  connectors in Docker Compose negotiate a contract and fetch the data
+  over HTTP pull; CI runs it on every pull request. The upstream reports
+  are drafted; the maintainer files them, and their links are added here.
 
 ## 0.5 DCP: identity and presentation
 
