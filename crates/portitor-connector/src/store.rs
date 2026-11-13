@@ -107,7 +107,7 @@ impl SqliteNegotiations {
     /// The file cannot be opened or created, it is not a `SQLite` database,
     /// or it was written by a newer Portitor version.
     pub fn open(path: &Path) -> Result<Self, StoreError> {
-        Self::setup(Connection::open(path).map_err(err)?)
+        Self::open_at(Some(path))
     }
 
     /// An in-memory database, for tests.
@@ -116,19 +116,13 @@ impl SqliteNegotiations {
     ///
     /// `SQLite` cannot allocate the database.
     pub fn in_memory() -> Result<Self, StoreError> {
-        Self::setup(Connection::open_in_memory().map_err(err)?)
+        Self::open_at(None)
     }
 
-    fn setup(mut conn: Connection) -> Result<Self, StoreError> {
-        // WAL: readers do not block the writer; FULL: a negotiation step
-        // acknowledged to the counter-party survives a power cut
-        conn.pragma_update(None, "journal_mode", "WAL")
-            .map_err(err)?;
-        conn.pragma_update(None, "synchronous", "FULL")
-            .map_err(err)?;
-        conn.busy_timeout(std::time::Duration::from_secs(5))
-            .map_err(err)?;
-        migrate(&mut conn)?;
+    /// The file at `path`, or an in-memory database when `None`, opened
+    /// and migrated the way every Portitor store is (`portitor_runtime::sqlite`).
+    fn open_at(path: Option<&Path>) -> Result<Self, StoreError> {
+        let conn = portitor_runtime::sqlite::open(path, MIGRATIONS).map_err(StoreError)?;
         Ok(Self(Mutex::new(conn)))
     }
 
@@ -152,27 +146,6 @@ impl SqliteNegotiations {
         }
         Ok(out)
     }
-}
-
-fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
-    let tx = conn.transaction().map_err(err)?;
-    let stored: i64 = tx
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .map_err(err)?;
-    let known = i64::try_from(MIGRATIONS.len()).unwrap_or(i64::MAX);
-    let Ok(version) = usize::try_from(stored) else {
-        return Err(StoreError(format!("invalid schema version {stored}")));
-    };
-    if stored > known {
-        return Err(StoreError(format!(
-            "database schema version {stored} is newer than this Portitor ({known})"
-        )));
-    }
-    for sql in &MIGRATIONS[version..] {
-        tx.execute_batch(sql).map_err(err)?;
-    }
-    tx.pragma_update(None, "user_version", known).map_err(err)?;
-    tx.commit().map_err(err)
 }
 
 #[allow(clippy::needless_pass_by_value)] // used as map_err(err)
@@ -516,6 +489,17 @@ mod tests {
     use super::*;
     use portitor_dsp::negotiation::Agreement;
 
+    /// Brings `conn` up to date, as `open` does.
+    fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
+        portitor_runtime::sqlite::migrate(conn, MIGRATIONS).map_err(StoreError)
+    }
+
+    /// A store on a connection a test prepared.
+    fn setup(mut conn: Connection) -> Result<SqliteNegotiations, StoreError> {
+        migrate(&mut conn)?;
+        Ok(SqliteNegotiations(Mutex::new(conn)))
+    }
+
     fn sample(pid: &str, state: NegotiationState) -> Negotiation {
         Negotiation {
             provider_pid: pid.into(),
@@ -616,12 +600,12 @@ mod tests {
     fn refuses_a_newer_schema_and_garbage() {
         let conn = Connection::open_in_memory().unwrap();
         conn.pragma_update(None, "user_version", 99).unwrap();
-        let e = SqliteNegotiations::setup(conn).unwrap_err();
+        let e = setup(conn).unwrap_err();
         assert!(e.0.contains("newer"), "{e}");
 
         let conn = Connection::open_in_memory().unwrap();
         migrate(&mut Connection::open_in_memory().unwrap()).unwrap();
-        let store = SqliteNegotiations::setup(conn).unwrap();
+        let store = setup(conn).unwrap();
         store
             .conn()
             .execute(
@@ -740,7 +724,7 @@ mod tests {
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
         assert_eq!(version, i64::try_from(MIGRATIONS.len()).unwrap());
-        let store = SqliteNegotiations::setup(conn).unwrap();
+        let store = setup(conn).unwrap();
         let n = NegotiationStore::get(&store, "p").unwrap().unwrap();
         assert_eq!((n.pending, n.version), (None, 0));
         ConsumerStore::insert(&store, &consumer_sample(NegotiationState::Requested)).unwrap();
