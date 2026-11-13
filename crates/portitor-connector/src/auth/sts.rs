@@ -24,7 +24,8 @@ use std::sync::Arc;
 use portitor_runtime::http::HttpSender;
 use serde_json::Value;
 
-use super::{AuthFuture, AuthSettings, Prover};
+use super::{AuthSettings, Prover};
+use portitor_runtime::BoxFuture;
 
 /// What to ask the STS for.
 #[derive(Debug, Clone, Copy)]
@@ -46,7 +47,7 @@ pub trait SecureTokenService: Send + Sync {
     /// # Errors
     ///
     /// The STS cannot be reached or refused.
-    fn token<'a>(&'a self, request: TokenRequest<'a>) -> AuthFuture<'a, Result<String, String>>;
+    fn token<'a>(&'a self, request: TokenRequest<'a>) -> BoxFuture<'a, Result<String, String>>;
 }
 
 /// Adapter: the STS over HTTP.
@@ -112,7 +113,7 @@ impl StsClient {
 }
 
 impl SecureTokenService for StsClient {
-    fn token<'a>(&'a self, request: TokenRequest<'a>) -> AuthFuture<'a, Result<String, String>> {
+    fn token<'a>(&'a self, request: TokenRequest<'a>) -> BoxFuture<'a, Result<String, String>> {
         Box::pin(async move {
             let answer = self
                 .http
@@ -169,7 +170,7 @@ impl StsProver {
 }
 
 impl Prover for StsProver {
-    fn authorization<'a>(&'a self, audience: &'a str) -> AuthFuture<'a, Result<String, String>> {
+    fn authorization<'a>(&'a self, audience: &'a str) -> BoxFuture<'a, Result<String, String>> {
         Box::pin(async move {
             let request = TokenRequest {
                 audience,

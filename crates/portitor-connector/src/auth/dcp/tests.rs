@@ -157,7 +157,7 @@ async fn status_list(
 struct LocalSts(Party);
 
 impl SecureTokenService for LocalSts {
-    fn token<'a>(&'a self, request: TokenRequest<'a>) -> AuthFuture<'a, Result<String, String>> {
+    fn token<'a>(&'a self, request: TokenRequest<'a>) -> BoxFuture<'a, Result<String, String>> {
         let jti = portitor_runtime::system::new_uuid();
         let token = self
             .0

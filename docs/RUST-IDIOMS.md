@@ -170,12 +170,17 @@ waits on the network, the thread does other work. `tokio::spawn(task)`
 runs a task in the background. The outbox uses it to send DSP messages
 after the HTTP answer has gone out.
 
-`SendFuture<'a>` (`http_client.rs`) is a boxed task. Its comment explains
-why the `Sender` trait cannot use `async fn` directly.
+`BoxFuture<'a, T>` (`portitor-runtime/src/lib.rs`) is a boxed task that
+finishes later with a `T`. Every port with async methods returns one:
+the `Sender`, the connector's `CallerVerifier` and `Prover`, the
+identity component's `Directory`. Its comment explains why these traits
+cannot use `async fn` directly. Read `BoxFuture<'a, Result<Value,
+String>>` as "later, a `Value` or an error". (`AuthFuture` in the
+connector is another name for the same thing.)
 
 ## Lifetimes: `'a`
 
-`fn post<'a>(&'a self, url: &'a str, ...) -> SendFuture<'a>` says "the
+`fn post<'a>(&'a self, url: &'a str, ...) -> BoxFuture<'a, ...>` says "the
 returned task borrows `self` and `url`, so it must not outlive them".
 Lifetimes don't change what the code does. They let the compiler check
 borrows.

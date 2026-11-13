@@ -56,10 +56,11 @@ use portitor_dsp::transfer::{TransferError, TransferState};
 use portitor_dsp::{OfferType, Rule};
 use serde::Deserialize;
 
-use crate::auth::{AuthFuture, Caller, CallerVerifier, Prover};
+use crate::auth::{Caller, CallerVerifier, Prover};
 use crate::consumer::Consumer;
 use crate::consumer_transfer::TransferConsumer;
-use crate::http_client::{SendFuture, Sender};
+use crate::http_client::Sender;
+use portitor_runtime::BoxFuture;
 
 /// The TCK's provider scripts, keyed by dataset id.
 #[derive(Debug, Default)]
@@ -231,7 +232,7 @@ impl CallerVerifier for TckVerifier {
     fn verify<'a>(
         &'a self,
         authorization: Option<&'a str>,
-    ) -> AuthFuture<'a, Result<Caller, String>> {
+    ) -> BoxFuture<'a, Result<Caller, String>> {
         if self.fixed.is_some() && authorization == self.fixed.as_deref() {
             return Box::pin(async { Ok(Caller(TCK_PARTICIPANT.to_owned())) });
         }
@@ -249,7 +250,7 @@ pub struct TckProver {
 }
 
 impl Prover for TckProver {
-    fn authorization<'a>(&'a self, audience: &'a str) -> AuthFuture<'a, Result<String, String>> {
+    fn authorization<'a>(&'a self, audience: &'a str) -> BoxFuture<'a, Result<String, String>> {
         if audience == TCK_PARTICIPANT
             && let Some(fixed) = self.fixed.clone()
         {
@@ -276,7 +277,11 @@ pub struct LateStart<S>(pub S);
 const START_DELAY: std::time::Duration = std::time::Duration::from_millis(300);
 
 impl<S: Sender> Sender for LateStart<S> {
-    fn post<'a>(&'a self, url: &'a str, body: &'a serde_json::Value) -> SendFuture<'a> {
+    fn post<'a>(
+        &'a self,
+        url: &'a str,
+        body: &'a serde_json::Value,
+    ) -> BoxFuture<'a, Result<serde_json::Value, String>> {
         Box::pin(async move {
             if is_start(body) {
                 tokio::time::sleep(START_DELAY).await;
@@ -284,7 +289,7 @@ impl<S: Sender> Sender for LateStart<S> {
             self.0.post(url, body).await
         })
     }
-    fn get<'a>(&'a self, url: &'a str) -> SendFuture<'a> {
+    fn get<'a>(&'a self, url: &'a str) -> BoxFuture<'a, Result<serde_json::Value, String>> {
         self.0.get(url)
     }
     fn post_authorized<'a>(
@@ -292,7 +297,7 @@ impl<S: Sender> Sender for LateStart<S> {
         url: &'a str,
         body: &'a serde_json::Value,
         authorization: &'a str,
-    ) -> SendFuture<'a> {
+    ) -> BoxFuture<'a, Result<serde_json::Value, String>> {
         Box::pin(async move {
             if is_start(body) {
                 tokio::time::sleep(START_DELAY).await;
@@ -300,7 +305,11 @@ impl<S: Sender> Sender for LateStart<S> {
             self.0.post_authorized(url, body, authorization).await
         })
     }
-    fn get_authorized<'a>(&'a self, url: &'a str, authorization: &'a str) -> SendFuture<'a> {
+    fn get_authorized<'a>(
+        &'a self,
+        url: &'a str,
+        authorization: &'a str,
+    ) -> BoxFuture<'a, Result<serde_json::Value, String>> {
         self.0.get_authorized(url, authorization)
     }
 }

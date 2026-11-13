@@ -322,10 +322,11 @@ mod tests {
     use portitor_dsp::Offer;
     use portitor_dsp::negotiation::NegotiationState;
 
-    use crate::auth::{AuthFuture, Prover};
-    use crate::http_client::{HttpSender, SendFuture, Sender};
+    use crate::auth::Prover;
+    use crate::http_client::{HttpSender, Sender};
     use crate::outbox::Link;
     use crate::ports::Shared;
+    use portitor_runtime::BoxFuture;
 
     fn negotiation(state: NegotiationState) -> Negotiation {
         Negotiation {
@@ -391,7 +392,7 @@ mod tests {
     struct PostOnly;
 
     impl Sender for PostOnly {
-        fn post<'a>(&'a self, _: &'a str, _: &'a Value) -> SendFuture<'a> {
+        fn post<'a>(&'a self, _: &'a str, _: &'a Value) -> BoxFuture<'a, Result<Value, String>> {
             Box::pin(async { Ok(Value::Null) })
         }
     }
@@ -400,7 +401,7 @@ mod tests {
     struct FixedToken;
 
     impl Prover for FixedToken {
-        fn authorization<'a>(&'a self, _: &'a str) -> AuthFuture<'a, Result<String, String>> {
+        fn authorization<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<String, String>> {
             Box::pin(async { Ok("Bearer t".to_owned()) })
         }
     }

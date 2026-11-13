@@ -14,9 +14,10 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
 use portitor_dcp::{Claims, DidDocument, Relationship, Service, SigningKey, VerificationMethod};
 use portitor_identity::config::Config;
-use portitor_identity::directory::{Directory, Lookup};
+use portitor_identity::directory::Directory;
 use portitor_identity::store::SqliteStore;
 use portitor_identity::{Identity, Ports};
+use portitor_runtime::BoxFuture;
 use portitor_runtime::api_key::ApiKey;
 use portitor_runtime::system::{new_uuid, now_secs};
 use serde_json::{Value, json};
@@ -148,13 +149,13 @@ impl FakeDirectory {
 }
 
 impl Directory for FakeDirectory {
-    fn did_document<'a>(&'a self, did: &'a str) -> Lookup<'a, Arc<DidDocument>> {
+    fn did_document<'a>(&'a self, did: &'a str) -> BoxFuture<'a, Result<Arc<DidDocument>, String>> {
         self.lookups.lock().unwrap().push(did.to_owned());
         let found = self.documents.lock().unwrap().get(did).cloned();
         Box::pin(async move { found.ok_or_else(|| format!("no document for {did}")) })
     }
 
-    fn json<'a>(&'a self, url: &'a str) -> Lookup<'a, Value> {
+    fn json<'a>(&'a self, url: &'a str) -> BoxFuture<'a, Result<Value, String>> {
         self.lookups.lock().unwrap().push(url.to_owned());
         let found = self.json.lock().unwrap().get(url).cloned();
         Box::pin(async move { found.ok_or_else(|| format!("HTTP 404 for {url}")) })

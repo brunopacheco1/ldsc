@@ -6,7 +6,6 @@
 //! [`HttpSender`] for messages to other participants, and the rule for
 //! which URLs a Portitor process may call.
 
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,28 +16,20 @@ use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
 use serde_json::Value;
 
-/// What [`Sender::post`] and [`Sender::get`] return: the counter-party's
-/// JSON answer (`Value::Null` if it sent none or no JSON), or why the
-/// request failed.
-///
-/// Read it as "a task that will finish later with `Result<Value,
-/// String>`". A trait method cannot simply be `async fn` here, because
-/// the connector keeps its sender as `Arc<dyn Sender>` (any sender,
-/// chosen at start), and Rust only allows that for traits whose methods
-/// return a known type. So each method returns the task boxed (`Box`),
-/// pinned in memory (`Pin`, which async tasks need), safe to move between
-/// threads (`Send`), and borrowing its arguments for as long as `'a`.
-pub type SendFuture<'a> = Pin<Box<dyn Future<Output = Result<Value, String>> + Send + 'a>>;
+use crate::BoxFuture;
 
 /// Port: sends a message to a counter-party and waits for its HTTP 2xx.
+/// Each method returns, later ([`BoxFuture`]), the counter-party's JSON
+/// answer (`Value::Null` if it sent none or no JSON), or why the request
+/// failed.
 pub trait Sender: Send + Sync {
     /// POSTs `body` as JSON to `url`.
-    fn post<'a>(&'a self, url: &'a str, body: &'a Value) -> SendFuture<'a>;
+    fn post<'a>(&'a self, url: &'a str, body: &'a Value) -> BoxFuture<'a, Result<Value, String>>;
 
     /// GETs `url`, for example a counter-party's negotiation state. The
     /// default implementation always fails: a sender that cannot read
     /// (a test fake) then never makes a failed message look delivered.
-    fn get<'a>(&'a self, url: &'a str) -> SendFuture<'a> {
+    fn get<'a>(&'a self, url: &'a str) -> BoxFuture<'a, Result<Value, String>> {
         Box::pin(async move { Err(format!("cannot read {url}")) })
     }
 
@@ -51,7 +42,7 @@ pub trait Sender: Send + Sync {
         url: &'a str,
         body: &'a Value,
         authorization: &'a str,
-    ) -> SendFuture<'a> {
+    ) -> BoxFuture<'a, Result<Value, String>> {
         let _ = authorization;
         self.post(url, body)
     }
@@ -59,7 +50,11 @@ pub trait Sender: Send + Sync {
     /// Like [`Sender::get`], with the header `Authorization:
     /// <authorization>`. The default leaves the header out, as
     /// [`Sender::post_authorized`] does.
-    fn get_authorized<'a>(&'a self, url: &'a str, authorization: &'a str) -> SendFuture<'a> {
+    fn get_authorized<'a>(
+        &'a self,
+        url: &'a str,
+        authorization: &'a str,
+    ) -> BoxFuture<'a, Result<Value, String>> {
         let _ = authorization;
         self.get(url)
     }
@@ -156,11 +151,11 @@ pub fn https_client(allow_http: bool) -> Result<(HttpsClient, bool), String> {
 }
 
 impl Sender for HttpSender {
-    fn post<'a>(&'a self, url: &'a str, body: &'a Value) -> SendFuture<'a> {
+    fn post<'a>(&'a self, url: &'a str, body: &'a Value) -> BoxFuture<'a, Result<Value, String>> {
         Box::pin(async move { self.json(json_post(url, body, None)?, url).await })
     }
 
-    fn get<'a>(&'a self, url: &'a str) -> SendFuture<'a> {
+    fn get<'a>(&'a self, url: &'a str) -> BoxFuture<'a, Result<Value, String>> {
         Box::pin(async move { self.json(json_get(url, None)?, url).await })
     }
 
@@ -169,14 +164,18 @@ impl Sender for HttpSender {
         url: &'a str,
         body: &'a Value,
         authorization: &'a str,
-    ) -> SendFuture<'a> {
+    ) -> BoxFuture<'a, Result<Value, String>> {
         Box::pin(async move {
             let request = json_post(url, body, Some(authorization))?;
             self.json(request, url).await
         })
     }
 
-    fn get_authorized<'a>(&'a self, url: &'a str, authorization: &'a str) -> SendFuture<'a> {
+    fn get_authorized<'a>(
+        &'a self,
+        url: &'a str,
+        authorization: &'a str,
+    ) -> BoxFuture<'a, Result<Value, String>> {
         Box::pin(async move { self.json(json_get(url, Some(authorization))?, url).await })
     }
 }
@@ -502,7 +501,7 @@ mod tests {
     struct Plain;
 
     impl Sender for Plain {
-        fn post<'a>(&'a self, _: &'a str, _: &'a Value) -> SendFuture<'a> {
+        fn post<'a>(&'a self, _: &'a str, _: &'a Value) -> BoxFuture<'a, Result<Value, String>> {
             Box::pin(async { Ok(Value::from("posted")) })
         }
     }

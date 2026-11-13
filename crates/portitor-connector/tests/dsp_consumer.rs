@@ -15,10 +15,11 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
-use portitor_connector::http_client::{SendFuture, Sender};
+use portitor_connector::http_client::Sender;
 use portitor_connector::ports::{Retry, Shared};
 use portitor_connector::{Config, Negotiator, Ports};
 use portitor_dsp::Offer;
+use portitor_runtime::BoxFuture;
 use serde_json::{Value, json};
 use tokio::sync::Notify;
 use tower::ServiceExt as _;
@@ -144,12 +145,12 @@ impl Sender for FakeProvider {
         url: &'a str,
         body: &'a Value,
         authorization: &'a str,
-    ) -> SendFuture<'a> {
+    ) -> BoxFuture<'a, Result<Value, String>> {
         assert_eq!(authorization, bearer(CONSUMER));
         self.post(url, body)
     }
 
-    fn post<'a>(&'a self, url: &'a str, body: &'a Value) -> SendFuture<'a> {
+    fn post<'a>(&'a self, url: &'a str, body: &'a Value) -> BoxFuture<'a, Result<Value, String>> {
         Box::pin(async move {
             assert_valid(body);
             self.sent

@@ -40,13 +40,14 @@ use portitor_dcp::credential::{Credential, Presentation};
 use portitor_dcp::message::{PresentationQueryMessage, PresentationResponseMessage};
 use portitor_dcp::status_list::{self, Status, StatusEntry};
 use portitor_dcp::{Claims, DidDocument, JtiCache, unverified_claims, validate_self_issued};
+use portitor_runtime::BoxFuture;
 use portitor_runtime::did::{DEFAULT_TTL, DidWebResolver};
 use portitor_runtime::http::{HttpSender, Sender as _, bearer_token};
 use portitor_runtime::system::now_secs;
 use serde_json::Value;
 
 use super::sts::{SecureTokenService, TokenRequest};
-use super::{AuthFuture, AuthSettings, Caller, CallerVerifier};
+use super::{AuthSettings, Caller, CallerVerifier};
 
 /// Allowed clock difference between participants, in seconds.
 const LEEWAY: u64 = 60;
@@ -374,7 +375,7 @@ impl CallerVerifier for DcpVerifier {
     fn verify<'a>(
         &'a self,
         authorization: Option<&'a str>,
-    ) -> AuthFuture<'a, Result<Caller, String>> {
+    ) -> BoxFuture<'a, Result<Caller, String>> {
         Box::pin(self.check(authorization))
     }
 }

@@ -12,9 +12,10 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
-use portitor_connector::http_client::{SendFuture, Sender};
+use portitor_connector::http_client::Sender;
 use portitor_connector::management::{ApiKey, ManagementConfig, openapi_json, router};
 use portitor_connector::{Config, Ports};
+use portitor_runtime::BoxFuture;
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
 
@@ -27,7 +28,7 @@ const KEY: &str = "test-only-0123456789abcdef0123456789abcdef";
 struct Provider;
 
 impl Sender for Provider {
-    fn post<'a>(&'a self, _: &'a str, body: &'a Value) -> SendFuture<'a> {
+    fn post<'a>(&'a self, _: &'a str, body: &'a Value) -> BoxFuture<'a, Result<Value, String>> {
         Box::pin(async move {
             Ok(json!({
                 "@context": ["https://w3id.org/dspace/2025/1/context.jsonld"],

@@ -13,7 +13,8 @@ use std::sync::{Arc, Mutex};
 
 use axum::http::request::Builder;
 use portitor_connector::Ports;
-use portitor_connector::auth::{AuthFuture, Caller, CallerVerifier, Prover};
+use portitor_connector::auth::{Caller, CallerVerifier, Prover};
+use portitor_runtime::BoxFuture;
 
 /// The consumer's DID in the tests.
 pub const CONSUMER: &str = "did:web:consumer.example";
@@ -27,7 +28,7 @@ impl CallerVerifier for NamedCaller {
     fn verify<'a>(
         &'a self,
         authorization: Option<&'a str>,
-    ) -> AuthFuture<'a, Result<Caller, String>> {
+    ) -> BoxFuture<'a, Result<Caller, String>> {
         let did = authorization.and_then(|value| value.strip_prefix("Bearer "));
         let caller = did
             .map(|did| Caller(did.to_owned()))
@@ -47,7 +48,7 @@ pub struct NameSelf {
 }
 
 impl Prover for NameSelf {
-    fn authorization<'a>(&'a self, audience: &'a str) -> AuthFuture<'a, Result<String, String>> {
+    fn authorization<'a>(&'a self, audience: &'a str) -> BoxFuture<'a, Result<String, String>> {
         self.audiences.lock().unwrap().push(audience.to_owned());
         Box::pin(async move { Ok(bearer(&self.did)) })
     }
