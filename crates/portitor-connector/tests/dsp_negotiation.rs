@@ -12,14 +12,18 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
-use portitor_connector::http_client::{SendFuture, Sender};
+use portitor_connector::http_client::Sender;
 use portitor_connector::ports::{Retry, Shared};
 use portitor_connector::{Config, Ports};
 use portitor_dsp::guard::{Direction, MessageGuard, Rejection};
 use portitor_dsp::negotiation::provider::{Decider, Decision, Negotiation};
+use portitor_runtime::BoxFuture;
 use serde_json::{Value, json};
 use tokio::sync::Notify;
 use tower::ServiceExt as _;
+
+mod common;
+use common::{Audiences, CONSUMER, PROVIDER, from, recording};
 
 const BASE: &str = "/dsp/2025-1/negotiations";
 const CALLBACK: &str = "https://consumer.example/cb";
@@ -37,7 +41,7 @@ struct FakeSender {
 }
 
 impl Sender for FakeSender {
-    fn post<'a>(&'a self, url: &'a str, body: &'a Value) -> SendFuture<'a> {
+    fn post<'a>(&'a self, url: &'a str, body: &'a Value) -> BoxFuture<'a, Result<Value, String>> {
         self.sent
             .lock()
             .unwrap()
@@ -54,7 +58,7 @@ impl Sender for FakeSender {
         })
     }
 
-    fn get<'a>(&'a self, url: &'a str) -> SendFuture<'a> {
+    fn get<'a>(&'a self, url: &'a str) -> BoxFuture<'a, Result<Value, String>> {
         Box::pin(async move {
             assert_eq!(url, format!("{CALLBACK}/negotiations/urn:uuid:consumer-1"));
             let state = self.reported.ok_or("no answer")?;
@@ -115,14 +119,19 @@ fn config(allow_http: bool) -> Config {
 }
 
 fn ports(sender: &Arc<FakeSender>) -> Ports {
-    let mut p = Ports::new(Arc::clone(sender) as Arc<dyn Sender>);
+    recorded_ports(sender).0
+}
+
+/// Like [`ports`], and the audience of each token the provider sends.
+fn recorded_ports(sender: &Arc<FakeSender>) -> (Ports, Audiences) {
+    let (mut p, audiences) = recording(Ports::new(Arc::clone(sender) as Arc<dyn Sender>), PROVIDER);
     // the default build agrees to catalog offers; the tck build scripts
     // only ACN* datasets, so CAT0101 behaves the same in both
     p.retry = Retry {
         attempts: 2,
         first_delay: Duration::from_millis(1),
     };
-    p
+    (p, audiences)
 }
 
 fn app(ports: Ports) -> Router {
@@ -140,14 +149,21 @@ async fn call(app: &Router, req: Request<Body>) -> (StatusCode, Value) {
 }
 
 fn post(uri: &str, body: &Value) -> Request<Body> {
-    Request::post(uri)
+    post_as(uri, body, CONSUMER)
+}
+
+/// A POST of `body` to `uri` by the participant `did`.
+fn post_as(uri: &str, body: &Value, did: &str) -> Request<Body> {
+    from(Request::post(uri), did)
         .header("content-type", "application/json")
         .body(Body::from(body.to_string()))
         .unwrap()
 }
 
 fn get(uri: &str) -> Request<Body> {
-    Request::get(uri).body(Body::empty()).unwrap()
+    from(Request::get(uri), CONSUMER)
+        .body(Body::empty())
+        .unwrap()
 }
 
 fn request(callback: &str) -> Value {
@@ -217,7 +233,8 @@ async fn start(app: &Router) -> String {
 #[tokio::test]
 async fn request_agree_verify_finalize() {
     let sender = Arc::new(FakeSender::default());
-    let app = app(ports(&sender));
+    let (ports, audiences) = recorded_ports(&sender);
+    let app = app(ports);
     let pid = start(&app).await;
     assert!(pid.starts_with("urn:uuid:"));
 
@@ -255,6 +272,8 @@ async fn request_agree_verify_finalize() {
     );
     assert_eq!(event["eventType"], "FINALIZED");
     state(&app, &pid, "FINALIZED").await;
+    // both messages went with a token for the consumer
+    assert_eq!(*audiences.lock().unwrap(), [CONSUMER, CONSUMER]);
 }
 
 #[tokio::test]
@@ -350,7 +369,7 @@ async fn unknown_negotiation_is_404() {
 async fn malformed_and_unknown_offers_are_400() {
     let sender = Arc::new(FakeSender::default());
     let app = app(ports(&sender));
-    let req = Request::post(format!("{BASE}/request"))
+    let req = from(Request::post(format!("{BASE}/request")), CONSUMER)
         .header("content-type", "application/json")
         .body(Body::from("{not json"))
         .unwrap();
@@ -494,4 +513,66 @@ async fn guard_checks_outbound_messages() {
         "ContractNegotiationTerminationMessage"
     );
     state(&app, &pid, "TERMINATED").await;
+}
+
+#[tokio::test]
+async fn only_the_consumer_that_started_a_negotiation_sees_it() {
+    let sender = Arc::new(FakeSender::default());
+    let app = app(ports(&sender));
+    let pid = start(&app).await;
+    let uri = format!("{BASE}/{pid}");
+    let anonymous = Request::get(&uri).body(Body::empty()).unwrap();
+    let (s, err) = call(&app, anonymous).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    assert_eq!(err["@type"], "ContractNegotiationError");
+    assert_eq!(err["code"], "401");
+    let stranger = from(Request::get(&uri), "did:web:stranger.example");
+    let (s, _) = call(&app, stranger.body(Body::empty()).unwrap()).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, body) = call(&app, get(&uri)).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+}
+
+/// A stranger's messages about someone else's negotiation are answered
+/// 404 and change nothing.
+#[tokio::test]
+async fn a_stranger_cannot_change_a_negotiation() {
+    let sender = Arc::new(FakeSender::default());
+    let app = app(ports(&sender));
+    let pid = start(&app).await;
+    state(&app, &pid, "AGREED").await;
+    let messages = [
+        (
+            "request",
+            with(request(CALLBACK), &json!({"providerPid": pid})),
+        ),
+        (
+            "events",
+            with(
+                ids(&pid),
+                &json!({"@type": "ContractNegotiationEventMessage", "eventType": "ACCEPTED"}),
+            ),
+        ),
+        (
+            "agreement/verification",
+            with(
+                ids(&pid),
+                &json!({"@type": "ContractAgreementVerificationMessage"}),
+            ),
+        ),
+        (
+            "termination",
+            with(
+                ids(&pid),
+                &json!({"@type": "ContractNegotiationTerminationMessage", "code": "1"}),
+            ),
+        ),
+    ];
+    for (path, body) in messages {
+        let uri = format!("{BASE}/{pid}/{path}");
+        let (s, err) = call(&app, post_as(&uri, &body, "did:web:stranger.example")).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{path}: {err}");
+        assert_eq!(err["@type"], "ContractNegotiationError", "{path}");
+        state(&app, &pid, "AGREED").await;
+    }
 }

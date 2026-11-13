@@ -12,11 +12,15 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
-use portitor_connector::http_client::{SendFuture, Sender};
+use portitor_connector::http_client::Sender;
 use portitor_connector::management::{ApiKey, ManagementConfig, openapi_json, router};
 use portitor_connector::{Config, Ports};
+use portitor_runtime::BoxFuture;
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
+
+mod common;
+use common::{CONSUMER, authenticating};
 
 const KEY: &str = "test-only-0123456789abcdef0123456789abcdef";
 
@@ -24,7 +28,7 @@ const KEY: &str = "test-only-0123456789abcdef0123456789abcdef";
 struct Provider;
 
 impl Sender for Provider {
-    fn post<'a>(&'a self, _: &'a str, body: &'a Value) -> SendFuture<'a> {
+    fn post<'a>(&'a self, _: &'a str, body: &'a Value) -> BoxFuture<'a, Result<Value, String>> {
         Box::pin(async move {
             Ok(json!({
                 "@context": ["https://w3id.org/dspace/2025/1/context.jsonld"],
@@ -39,7 +43,7 @@ impl Sender for Provider {
 
 fn app() -> Router {
     let config = Config {
-        participant_id: "did:web:consumer.example".into(),
+        participant_id: CONSUMER.into(),
         public_url: "https://consumer.example".into(),
         datasets: Vec::new(),
         allow_http_callbacks: false,
@@ -47,8 +51,8 @@ fn app() -> Router {
         sources: std::collections::BTreeMap::new(),
         data_token_seconds: 3_600,
     };
-    let (_, negotiator) =
-        portitor_connector::build(&config, Ports::new(Arc::new(Provider))).unwrap();
+    let ports = authenticating(Ports::new(Arc::new(Provider)), CONSUMER);
+    let (_, negotiator) = portitor_connector::build(&config, ports).unwrap();
     router(negotiator, ApiKey::new(KEY).unwrap())
 }
 
@@ -203,7 +207,9 @@ async fn bad_requests_are_problems() {
     extra["unknown"] = json!(1);
     let mut differ = start_body("d");
     differ["datasetId"] = json!("other");
-    for body in [http, no_target, extra, differ, json!({})] {
+    let mut not_a_did = start_body("d");
+    not_a_did["providerId"] = json!("provider");
+    for body in [http, no_target, extra, differ, not_a_did, json!({})] {
         let (s, ct, p) = call(&app, start(&body)).await;
         assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
         assert_eq!(ct.as_deref(), Some("application/problem+json"));

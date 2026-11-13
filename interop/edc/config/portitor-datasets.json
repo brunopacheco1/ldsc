@@ -1,0 +1,25 @@
+[
+  {
+    "@id": "portitor-interop",
+    "@type": "Dataset",
+    "portitor:source": "http://data/portitor-provider.csv",
+    "dct:title": "Portitor interop test data",
+    "hasPolicy": [
+      {
+        "@id": "portitor-interop:offer:use",
+        "@type": "Offer",
+        "permission": [
+          {
+            "action": "use"
+          }
+        ]
+      }
+    ],
+    "distribution": [
+      {
+        "@type": "Distribution",
+        "format": "HttpData-PULL"
+      }
+    ]
+  }
+]

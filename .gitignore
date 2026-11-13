@@ -19,5 +19,12 @@ __pycache__/
 !.vscode/tasks.json
 !.vscode/extensions.json
 
-# the demo's management API key (scripts/demo-compose.sh makes one)
-/examples/compose/management.key
+# the Compose demo's generated keys, secrets and authority site
+# (scripts/demo-compose.sh writes them)
+/examples/compose/run/
+
+# the EDC interop test's generated keys, secrets and authority site
+# (scripts/edc-interop.sh writes them), and its Gradle outputs
+/interop/edc/run/
+/interop/edc/runtimes/**/build/
+/interop/edc/runtimes/.gradle/

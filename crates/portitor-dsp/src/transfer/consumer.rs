@@ -91,6 +91,9 @@ pub struct Outgoing {
     pub status_url: String,
     /// The request; its acknowledgement carries the provider pid.
     pub initial: bool,
+    /// The provider's participant id (its DID): who the message is for,
+    /// and the audience of the token it is sent with (ADR 0016).
+    pub counter_party: String,
 }
 
 /// Port: where the consumer keeps its transfers.
@@ -272,6 +275,7 @@ where
             to: state,
             status_url: String::new(),
             initial: true,
+            counter_party: transfer.provider_id.clone(),
         };
         transfer.pending = Some(out.clone());
         self.store.insert(&transfer).map_err(Failure::Store)?;
@@ -285,6 +289,23 @@ where
     /// Unknown transfer or store failure.
     pub fn get(&self, consumer_pid: &str) -> Result<TransferProcess, Failure> {
         Ok(self.load(consumer_pid)?.ack())
+    }
+
+    /// Checks that `caller`, the participant proven by the request's
+    /// token (ADR 0016), is the provider this transfer was requested from.
+    /// Call it before handling any provider message. Another caller gets
+    /// the same answer as for an unknown transfer.
+    ///
+    /// # Errors
+    ///
+    /// Unknown transfer, another provider, or store failure.
+    pub fn from_provider(&self, consumer_pid: &str, caller: &str) -> Result<(), Failure> {
+        let transfer = self.load(consumer_pid)?;
+        if transfer.provider_id == caller {
+            Ok(())
+        } else {
+            Err(not_found(consumer_pid))
+        }
     }
 
     /// The transfer with this consumer pid, as stored.
@@ -556,8 +577,7 @@ where
     }
 
     fn load(&self, consumer_pid: &str) -> Result<ConsumerTransfer, Failure> {
-        // no caller check yet: until DCP (0.5) the provider's identity is
-        // not known; then the caller must be `provider_id`
+        // the caller is checked separately, in `from_provider`
         self.store
             .get(consumer_pid)
             .map_err(Failure::Store)?
@@ -639,6 +659,7 @@ fn message(
         to,
         status_url,
         initial: false,
+        counter_party: transfer.provider_id.clone(),
     })
 }
 

@@ -10,7 +10,9 @@ path = [
     "Cargo.lock",
     "fuzz/Cargo.lock",
     "NOTICE",
-    # test-only key material in binary form
+    # test-only key material: binary DER, and PEM such as the demo authority's
+    # key (crates/portitor-identity/tests/fixtures/test-only-demo-authority.pem,
+    # used by the test-issuer example, ADR 0015); never a real secret
     "crates/*/tests/fixtures/**",
     # JSON has no comments
     "examples/*.json",
@@ -18,6 +20,12 @@ path = [
     # made-up demo data (CSV has no comments)
     "examples/data/*",
     "tck/*.json",
+    # the EDC interop test's datasets (JSON) and made-up data (CSV)
+    "interop/edc/config/*.json",
+    "interop/edc/data/*",
+    # Gradle dependency verification of the EDC runtimes, written by
+    # Gradle (--write-verification-metadata), so no header
+    "interop/edc/runtimes/gradle/verification-metadata.xml",
     "docs/api/*.json",
     # Bruno API client collection (.bru and bruno.json have no comment syntax we rely on)
     "_http/**",
@@ -33,6 +41,13 @@ SPDX-License-Identifier = "Apache-2.0"
 path = ["crates/portitor-dsp/tests/schemas/*.json", "crates/portitor-dsp/tests/examples/**/*.json"]
 precedence = "override"
 SPDX-FileCopyrightText = "Eclipse Dataspace Protocol contributors (https://github.com/eclipse-dataspace-protocol-base/DataspaceProtocol)"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+# JSON Schemas and examples copied unchanged from the Eclipse Decentralized Claims Protocol, tag v1.0.1
+path = ["crates/portitor-dcp/tests/schemas/*.json", "crates/portitor-dcp/tests/examples/*.json"]
+precedence = "override"
+SPDX-FileCopyrightText = "Eclipse Decentralized Claims Protocol contributors (https://github.com/eclipse-dataspace-dcp/decentralized-claims-protocol)"
 SPDX-License-Identifier = "Apache-2.0"
 
 [[annotations]]

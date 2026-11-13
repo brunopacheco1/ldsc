@@ -11,6 +11,9 @@ use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
 
+mod common;
+use common::{CONSUMER, PROVIDER, authenticating, from};
+
 const SCHEMAS: &[(&str, &str)] = &[
     (
         "common/context-schema.json",
@@ -86,13 +89,16 @@ impl portitor_connector::http_client::Sender for NoSender {
         &'a self,
         _: &'a str,
         _: &'a Value,
-    ) -> portitor_connector::http_client::SendFuture<'a> {
+    ) -> portitor_runtime::BoxFuture<'a, Result<serde_json::Value, String>> {
         Box::pin(async { Err("not in this test".to_owned()) })
     }
 }
 
 fn ports() -> portitor_connector::Ports {
-    portitor_connector::Ports::new(std::sync::Arc::new(NoSender))
+    authenticating(
+        portitor_connector::Ports::new(std::sync::Arc::new(NoSender)),
+        PROVIDER,
+    )
 }
 
 fn app() -> axum::Router {
@@ -119,7 +125,7 @@ async fn call(req: Request<Body>) -> (StatusCode, Value) {
 }
 
 fn post(uri: &str, body: &Value) -> Request<Body> {
-    Request::post(uri)
+    from(Request::post(uri), CONSUMER)
         .header("content-type", "application/json")
         .body(Body::from(body.to_string()))
         .unwrap()
@@ -136,6 +142,38 @@ async fn met_01_01_version_endpoint() {
     assert_eq!(s, StatusCode::OK);
     assert_valid("common/protocol-version-schema.json", &body);
     assert_eq!(body["protocolVersions"][0]["version"], "2025-1");
+    assert_eq!(body["protocolVersions"][0]["auth"]["protocol"], "DCP");
+}
+
+#[tokio::test]
+async fn the_catalog_needs_an_authenticated_caller() {
+    let msg = json!({"@context": ["https://w3id.org/dspace/2025/1/context.jsonld"], "@type": "CatalogRequestMessage"});
+    let anonymous = Request::post("/dsp/2025-1/catalog/request")
+        .header("content-type", "application/json")
+        .body(Body::from(msg.to_string()))
+        .unwrap();
+    let (s, body) = call(anonymous).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    assert_valid("catalog/catalog-error-schema.json", &body);
+    assert!(
+        body["reason"].to_string().contains("unauthorized"),
+        "{body}"
+    );
+    let dataset = Request::get("/dsp/2025-1/catalog/datasets/CAT0102");
+    let (s, _) = call(dataset.body(Body::empty()).unwrap()).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+}
+
+/// The DCP TCK asks for the catalog in expanded JSON-LD.
+#[tokio::test]
+async fn expanded_catalog_requests_are_understood() {
+    let msg = json!({
+        "@type": "https://w3id.org/dspace/2025/1/CatalogRequestMessage",
+        "https://w3id.org/dspace/2025/1/filter": {}
+    });
+    let (s, body) = call(post("/dsp/2025-1/catalog/request", &msg)).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_valid("catalog/catalog-schema.json", &body);
 }
 
 #[tokio::test]
@@ -156,9 +194,12 @@ async fn cat_01_01_catalog_request() {
 #[tokio::test]
 async fn cat_01_02_dataset_request() {
     let (s, body) = call(
-        Request::get("/dsp/2025-1/catalog/datasets/CAT0102")
-            .body(Body::empty())
-            .unwrap(),
+        from(
+            Request::get("/dsp/2025-1/catalog/datasets/CAT0102"),
+            CONSUMER,
+        )
+        .body(Body::empty())
+        .unwrap(),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -169,12 +210,72 @@ async fn cat_01_02_dataset_request() {
 #[tokio::test]
 async fn cat_01_03_dataset_not_found() {
     let (s, body) = call(
-        Request::get("/dsp/2025-1/catalog/datasets/nope")
+        from(Request::get("/dsp/2025-1/catalog/datasets/nope"), CONSUMER)
             .body(Body::empty())
             .unwrap(),
     )
     .await;
     assert_eq!(s, StatusCode::NOT_FOUND);
+    assert_valid("catalog/catalog-error-schema.json", &body);
+}
+
+/// EDC v1.0.0-RC7 sends its `QuerySpec` as the filter even when it wants
+/// the whole catalog: `JsonObjectFromQuerySpecTransformer` writes `@type`,
+/// `limit`, `offset`, `sortOrder` and an empty `filterExpression` in the
+/// EDC namespace, and the DSP context compacts `filter` as a set (an
+/// array). Such a request gets the whole catalog; one with a filter
+/// expression gets 400; a filter that is one object, not an array, is not
+/// the DSP shape and gets 400 too.
+#[tokio::test]
+async fn edc_query_specs_over_http() {
+    const EDC: &str = "https://w3id.org/edc/v0.0.1/ns/";
+    let query_spec = |expressions: Value| {
+        json!({"@type": format!("{EDC}QuerySpec"), format!("{EDC}limit"): 50,
+            format!("{EDC}offset"): 0, format!("{EDC}sortOrder"): "ASC",
+            format!("{EDC}filterExpression"): expressions})
+    };
+    let message = |filter: Value| {
+        json!({"@context": ["https://w3id.org/dspace/2025/1/context.jsonld"],
+            "@type": "CatalogRequestMessage", "filter": filter})
+    };
+    // also with EDC's prefix instead of the full IRIs
+    let prefixed = json!({"@type": "edc:QuerySpec", "edc:limit": 50, "edc:offset": 0,
+        "edc:sortOrder": "ASC", "edc:filterExpression": []});
+    for whole in [json!([query_spec(json!([]))]), json!([prefixed])] {
+        let (s, body) = call(post("/dsp/2025-1/catalog/request", &message(whole))).await;
+        assert_eq!(s, StatusCode::OK, "{body}");
+        assert_valid("catalog/catalog-schema.json", &body);
+        assert!(
+            body["dataset"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|d| d["@id"] == "CAT0101"),
+            "the whole catalog"
+        );
+    }
+    let expression = json!([{"@type": format!("{EDC}Criterion"),
+        format!("{EDC}operandLeft"): "id", format!("{EDC}operator"): "=",
+        format!("{EDC}operandRight"): "CAT0101"}]);
+    let (s, body) = call(post(
+        "/dsp/2025-1/catalog/request",
+        &message(json!([query_spec(expression)])),
+    ))
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
+    assert_valid("catalog/catalog-error-schema.json", &body);
+    assert!(
+        body.to_string()
+            .contains("filter expressions are not supported"),
+        "{body}"
+    );
+    // one object instead of an array: refused as malformed
+    let (s, body) = call(post(
+        "/dsp/2025-1/catalog/request",
+        &message(query_spec(json!([]))),
+    ))
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
     assert_valid("catalog/catalog-error-schema.json", &body);
 }
 

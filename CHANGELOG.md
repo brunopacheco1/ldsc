@@ -12,6 +12,188 @@ versions may change behaviour and configuration.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-13
+
+### Added
+- EDC interop test (`scripts/edc-interop.sh`, workflow `EDC interop`):
+  Portitor's connector and identity against an EDC v1.0.0-RC7 control
+  plane, data plane and IdentityHub in Docker Compose. Credentials
+  checked, catalog, negotiation and pull transfer, both ways, and
+  revocation both ways. Runs on pull requests that touch the code and
+  nightly. The EDC runtimes are built from Maven Central
+  (`interop/edc/runtimes`).
+- `test-issuer`, a test-only demo authority (an example of
+  `portitor-identity`, never in a release image; ADR 0015): writes its
+  `did:web` site and a 16 KiB Bitstring Status List, signs
+  `MembershipCredential`s in both DCP profiles, delivers them to an
+  identity component through its management and Storage APIs, and
+  revokes them. `portitor-dcp` gains `status_list::set_bit` and
+  `MIN_LIST_BYTES`.
+- ADR 0017 (proposed): how to join a Simpl-Open data space. No
+  x509/mTLS profile in Portitor; Simpl-Open's connector speaks DSP
+  2025-1 but not DCP, and its agents authenticate at a Tier 2 gateway.
+- DCP v1.0.1 building blocks in `portitor-dcp` (0.5, ADR 0015), used by
+  the identity component and the connector: the presentation query and response
+  messages, the credential and offer messages of the issuance protocol,
+  scopes (`org.eclipse.dspace.dcp.vc.type`, `...vc.id`, and configured
+  aliases such as EDC's), and status list checks for revocation
+  (Bitstring Status List and StatusList2021). The DCP JSON Schemas and
+  examples (tag v1.0.1) are bundled for tests. Two new fuzz targets:
+  `dcp_messages`, `dcp_status_list`.
+- Verifiable credentials and presentations as JWTs in both DCP profiles
+  (ADR 0015): `vc11-sl2021/jwt` (VC Data Model 1.1, `vc` and `vp`
+  claims, as the DCP TCK uses) and `vc20-bssl/jwt` (VC Data Model 2.0,
+  `vc+jwt` and `vp+jwt`, including the `EnvelopedVerifiablePresentation`
+  wrapper EDC Identity Hub sends). Issuer keys need `assertionMethod`,
+  holder keys `authentication`; a presentation may not mix profiles.
+  Fuzz target `dcp_credentials`.
+- `portitor-time`: the `xsd:date` and `xsd:dateTime` parser moves out
+  of the ODRL code, so credentials can use it too.
+- `portitor-runtime`: the adapters the connector and the identity
+  component share (outbound HTTP client, API key check, logging,
+  shutdown) move out of the connector, with a new `did:web` resolver
+  that caches documents for 5 minutes (ADR 0016).
+- `portitor-identity`, the identity component (ADR 0015): its `did:web`
+  document (one P-256 key from a PEM file), a Secure Token Service
+  (`POST /sts/token`, DCP's `identity-trust-sts-api.yaml`: self-issued ID
+  tokens, with an access token for `bearer_access_scope`), the
+  presentation API (scopes only, one presentation per profile), the
+  Storage API (trusted issuers, recorded requests only, proofs checked)
+  and credential offers (sparse ones completed from the issuer's
+  metadata). Management API on its own port: credential requests,
+  credentials, offers (`docs/api/identity-management-openapi.json`).
+  Credentials in SQLite. Settings in `DEPLOYING.md`, section 4.
+- The DCP TCK 1.2.1 credential service tests (presentation and holder
+  side of issuance, 54 tests) run in CI against `portitor-identity`.
+- `portitor-dcp`: presentations and access tokens a holder signs, PEM
+  keys, JWK thumbprints, issuer metadata. Fuzz target `dcp_access_token`.
+- `portitor-runtime`: opening and migrating SQLite files.
+- Caller authentication in the connector (DCP, ADR 0016). Every DSP
+  endpoint, provider endpoints and consumer callbacks alike, needs a
+  self-issued ID token; the connector checks it, queries the caller's
+  credential service, verifies the presentations (both profiles) and
+  requires a `MembershipCredential` about the caller from a trusted
+  issuer, not revoked or suspended (status lists must be signed by the
+  issuer; fail closed). A refusal is HTTP 401 with a DSP error. Every
+  outgoing DSP request carries a fresh token from the participant's STS for
+  the counter-party's DID. At start the connector checks that its DID
+  document and its STS agree. New settings: `PORTITOR_STS_URL`,
+  `PORTITOR_STS_CLIENT_ID`, `PORTITOR_STS_CLIENT_SECRET_FILE`,
+  `PORTITOR_TRUSTED_ISSUERS`, `PORTITOR_DCP_SCOPES`.
+- The DCP TCK 1.2.1 verifier tests (22) run in CI against the connector,
+  with `portitor-identity` as its identity.
+- `/.well-known/dspace-version` names the authentication: DCP 1.0, both
+  profiles.
+- `portitor-dcp`: reading the status list of a status entry from a status
+  list credential (`status_list::list_in`).
+- Release pipeline: a second image, `ghcr.io/brunopacheco1/portitor-identity`
+  (ports 8090 and 8091, state in `/data/portitor-identity.db`), built,
+  signed and attested like the connector's. One `Dockerfile` with a build
+  target per image; the image jobs run as a matrix over the components.
+  CI builds and starts both images.
+- `PORTITOR_STS_ALLOW_HTTP` (connector): plain HTTP for the STS URL only,
+  for an STS on the internal network. An `http://` `PORTITOR_STS_URL`
+  without it stops the start.
+- Fuzz target `dcp_did_document`: DID document parsing and key selection.
+
+### Changed
+- Readability pass for the maintainer's review (no behaviour change
+  apart from the bearer rule above): `portitor-dcp`'s `lib.rs` is split
+  into `jws.rs`, `keys.rs`, `did.rs` and `id_token.rs` (same public
+  paths); `holder::Validity` is now `holder::TokenFrame` (field `jti`);
+  `Credential::verify` and `Presentation::verify` take `u64` seconds;
+  new `Credential::is_only_about`; the unused `DidResolver` trait is
+  gone. In `portitor-runtime`: `BoxFuture` replaces `SendFuture` (and the
+  identity component's `Lookup`), `callback_allowed` is
+  `outbound_url_allowed`, and `settings::comma_list` and
+  `api_key::internal_error` are shared. `docs/RUST-IDIOMS.md` covers the
+  patterns the 0.5 code uses.
+- One rule reads `Authorization: Bearer <token>` everywhere
+  (`portitor_runtime::http::bearer_token`): DSP requests, the data plane,
+  the identity component's STS callers and both management APIs now all
+  accept the scheme name in any case (`bearer`, RFC 7235) and ignore
+  spaces around the token. Before, the identity component and the
+  management API keys required exactly `Bearer `.
+- Release assets: one provenance bundle per image,
+  `<component>-X.Y.Z.intoto.jsonl`, instead of `portitor-X.Y.Z.intoto.jsonl`.
+  `docker build` needs `--target portitor-connector` or
+  `--target portitor-identity` (without it, the connector is built).
+- Self-issued ID tokens with an `iat` in the future are refused, and used
+  token ids are forgotten once their token expires.
+- A presentation query with both `scope` and `presentationDefinition` is
+  an error (DCP 5.4.1); one with only a definition gets 501.
+- A VC 1.1 credential whose `jti` differs from its `id` is accepted (the
+  DCP TCK writes both); the `id` counts.
+- The `DSP TCK` workflow is now called `TCK` and has a second job for the
+  DCP TCK.
+- The demos (`scripts/demo.sh`, `scripts/demo-compose.sh` with
+  `examples/compose`) run with DCP: each participant is a connector and
+  its own `portitor-identity`, holding a `MembershipCredential` the demo
+  authority (`test-issuer`) delivers. The demo checks that a catalog
+  request without a token gets 401. `demo.sh` takes the identity binary
+  as a second argument, `demo-compose.sh` the identity image; both use
+  `TEST_ISSUER`. The Compose demo keeps its keys and secrets in
+  `examples/compose/run/` (written by the script) and the compose file's
+  default images are 0.5.0. CI's connector image check now expects it to
+  refuse to start without the DCP settings.
+- **Breaking:** the connector does not start without `PORTITOR_STS_URL`
+  and the other DCP settings, and refuses unauthenticated DSP requests.
+  Each negotiation and transfer is bound to the participant that started
+  it; as provider, another caller is told it does not exist, and as
+  consumer, only the provider it was started with may use the callbacks.
+  Upgrading from 0.4: finish or terminate negotiations and transfers in
+  progress first, and negotiate again for agreements made by 0.4 (their
+  consumer is `urn:portitor:unauthenticated`, so no transfer starts under
+  them). See `DEPLOYING.md`, "From 0.4 to 0.5".
+- The management API refuses a `providerId` that is not a `did:web` DID,
+  and an agreement whose assigner is not the provider is refused.
+- The catalog request endpoint also reads the expanded JSON-LD request
+  the DCP TCK sends.
+- The VS Code configurations and the `_http/` Bruno collection run with
+  DCP: a task (`scripts/dev-identities.sh`) starts the demo authority and
+  the provider's and consumer's identities with their credentials, the
+  connectors use them, and the collection gets a token from the
+  consumer's STS before every DSP request.
+- The DSP TCK job sends a fixed `Authorization` header, which the `tck`
+  build (`PORTITOR_TCK_AUTHORIZATION`) maps to the TCK participant.
+- The Storage API takes one answer per credential request (ADR 0015):
+  `ISSUED` or `REJECTED` closes it, and a renewal needs a new request.
+  The DCP TCK run records one request per test that delivers.
+- As consumer, an agreement whose `assignee` is not our participant id is
+  refused (400).
+- A scope for the type `VerifiableCredential` is refused (STS
+  `invalid_scope`, presentation API 400), and the connector checks
+  `PORTITOR_DCP_SCOPES` at start.
+- The empty `tck` feature of `portitor-identity` is gone.
+
+- `scripts/measure.sh` runs with DCP: it starts a provider and a
+  consumer identity as the demo does, and measures with the new
+  `dsp-load` example (a fresh token per request) instead of `oha`. The
+  0.5 numbers and the cost of DCP per DSP request (about 2 ms, idle) are
+  in ADR 0002, section 7.
+
+- The EDC interop test's Gradle build verifies the SHA-256 of every
+  downloaded plugin and library
+  (`interop/edc/runtimes/gradle/verification-metadata.xml`).
+
+### Fixed
+- EDC can read Portitor's catalog: a catalog request whose `filter`
+  selects nothing (EDC always sends a `QuerySpec` with only paging) gets
+  the whole catalog instead of 400. Paging is ignored.
+
+### Security
+- Status lists are GZIP data from other parties: decompression is capped
+  at 16 MiB, and uses `miniz_oxide` without its unsafe SIMD feature
+  (banned in `deny.toml`), with Portitor's own CRC-32 check.
+- Both components refuse self-issued ID tokens valid for more than an
+  hour, and remember at most 100,000 used token ids (new tokens are
+  refused when full; expired ids are dropped in order of expiry).
+- The connector's caller check skips credentials from untrusted issuers
+  before fetching anything for them, reads at most 8 presentations, 16
+  credentials each and 4 status entries per credential, and ends after
+  20 s. The `did:web` cache holds at most 1,000 documents. The public
+  ports answer 503 after 60 s and work on at most 256 requests at once.
+
 ## [0.4.0] - 2026-11-13
 
 ### Added

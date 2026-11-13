@@ -4,10 +4,10 @@
 
 [workspace]
 resolver = "3"
-members = ["crates/portitor-dsp", "crates/portitor-dcp", "crates/portitor-dps", "crates/portitor-connector"]
+members = ["crates/portitor-dsp", "crates/portitor-dcp", "crates/portitor-dps", "crates/portitor-time", "crates/portitor-runtime", "crates/portitor-connector", "crates/portitor-identity"]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/brunopacheco1/portitor"
@@ -18,6 +18,9 @@ axum = "0.8"
 # no default features: the default "simd-unsafe" feature (0.23) runs unsafe SIMD code we do not need
 base64 = { version = "0.23", default-features = false, features = ["std"] }
 jsonschema = { version = "0.61", default-features = false }
+# DEFLATE for DCP status lists; no unsafe code (forbid(unsafe_code)), and without its
+# "simd" feature (unsafe SIMD checksums), which flate2 would force on
+miniz_oxide = { version = "0.9", default-features = false, features = ["with-alloc"] }
 # HTTP client for DSP callbacks, on the hyper stack axum already uses. TLS is rustls with
 # the ring provider (already used for JOSE) and the system's CA certificates; no aws-lc-rs,
 # no bundled root store, no proxy support (which would pull base64's unsafe SIMD).

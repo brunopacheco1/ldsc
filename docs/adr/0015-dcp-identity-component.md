@@ -146,6 +146,19 @@ creating the pending request through the management API). It is used by
 `scripts/demo.sh`, the Compose demo and the EDC interop test. It is not
 built into any release image and its key is a test fixture.
 
+### Amended during the 0.5 review (2026-11-13)
+
+The decision stands; two details changed while it was built:
+
+- Used token ids (`jti`) are kept in memory until the token expires, as
+  in ADR 0016, not in the SQLite file, so the connector and the identity
+  component follow the same rule. A restart forgets them; tokens are
+  short-lived, so the window is small.
+- The test-only tool is an example of the identity crate,
+  `crates/portitor-identity/examples/test-issuer`, not a script in
+  `scripts/`: it reuses the signing and status list code of
+  `portitor-dcp`. It is still never built into a release image.
+
 ## Consequences
 
 - The release pipeline builds, signs and attests a second image,

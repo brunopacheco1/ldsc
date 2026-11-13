@@ -1,0 +1,378 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Portitor identity management API",
+    "description": "Credential requests, credentials and offers of the participant this identity component holds. Served on its own port (PORTITOR_MANAGEMENT_BIND), never on the public port. Every call except this description needs the API key.",
+    "license": {
+      "name": "Apache-2.0",
+      "identifier": "Apache-2.0"
+    },
+    "version": "0.5.0"
+  },
+  "paths": {
+    "/v1/credential-requests": {
+      "post": {
+        "tags": [
+          "Credentials"
+        ],
+        "summary": "Record a credential request, so that the Storage API accepts the\nissuer's `CredentialMessage` for it (DCP 6.5). Asking the issuer\n(`CredentialRequestMessage`) comes in 0.6; until then the request is\nmade out of band, for example by the test credential tool.",
+        "operationId": "create_request",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Recorded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestCreated"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body, or the issuer is not trusted",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong API key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A request with this holderPid exists",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/v1/credentials": {
+      "get": {
+        "tags": [
+          "Credentials"
+        ],
+        "summary": "List the credentials the participant holds.",
+        "operationId": "list_credentials",
+        "responses": {
+          "200": {
+            "description": "The credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CredentialView"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong API key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/v1/credentials/{id}": {
+      "delete": {
+        "tags": [
+          "Credentials"
+        ],
+        "summary": "Delete a credential: it is no longer presented.",
+        "operationId": "delete_credential",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The credential's id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "401": {
+            "description": "Missing or wrong API key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such credential",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/v1/offers": {
+      "get": {
+        "tags": [
+          "Credentials"
+        ],
+        "summary": "List the credentials issuers offered, newest first.",
+        "operationId": "list_offers",
+        "responses": {
+          "200": {
+            "description": "The offers",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OfferView"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong API key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CredentialView": {
+        "type": "object",
+        "description": "A credential the participant holds.",
+        "required": [
+          "id",
+          "types",
+          "issuer",
+          "profile"
+        ],
+        "properties": {
+          "expiry": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When it expires (`xsd:dateTime`, UTC), or null if it does not.",
+            "example": "2027-11-13T12:00:00Z"
+          },
+          "id": {
+            "type": "string",
+            "description": "The credential's id.",
+            "example": "urn:uuid:8247b87d-8d72-47e1-8128-9ce47e3d829d"
+          },
+          "issuer": {
+            "type": "string",
+            "description": "The issuer's DID.",
+            "example": "did:web:issuer.example"
+          },
+          "profile": {
+            "type": "string",
+            "description": "The DCP profile: `vc11-sl2021/jwt` or `vc20-bssl/jwt`.",
+            "example": "vc11-sl2021/jwt"
+          },
+          "types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Its types.",
+            "example": [
+              "VerifiableCredential",
+              "MembershipCredential"
+            ]
+          }
+        }
+      },
+      "NewRequest": {
+        "type": "object",
+        "description": "Record a credential request.",
+        "required": [
+          "issuerDid"
+        ],
+        "properties": {
+          "holderPid": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The holder's id for the request, which the issuer sends back as\n`holderPid` in its `CredentialMessage`. A new id if left out.",
+            "example": "urn:uuid:5f7a3c1e-0d2b-4c6e-9a8f-1b2c3d4e5f60"
+          },
+          "issuerDid": {
+            "type": "string",
+            "description": "The issuer that will deliver the credentials; one of\n`PORTITOR_TRUSTED_ISSUERS`.",
+            "example": "did:web:issuer.example"
+          }
+        },
+        "additionalProperties": false
+      },
+      "OfferView": {
+        "type": "object",
+        "description": "A credential an issuer offered (DCP 6.6).",
+        "required": [
+          "issuer",
+          "id",
+          "received"
+        ],
+        "properties": {
+          "credentialType": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The credential type, if the issuer said.",
+            "example": "MembershipCredential"
+          },
+          "id": {
+            "type": "string",
+            "description": "The offered credential's id in the issuer's metadata."
+          },
+          "issuer": {
+            "type": "string",
+            "description": "The issuer's DID.",
+            "example": "did:web:issuer.example"
+          },
+          "offerReason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it is offered, for example `reissue`."
+          },
+          "profile": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The DCP profile, if the issuer said."
+          },
+          "received": {
+            "type": "string",
+            "description": "When the offer arrived (`xsd:dateTime`, UTC)."
+          }
+        }
+      },
+      "Problem": {
+        "type": "object",
+        "description": "An error, as RFC 9457 problem details.",
+        "required": [
+          "title",
+          "status",
+          "detail"
+        ],
+        "properties": {
+          "detail": {
+            "type": "string",
+            "description": "What went wrong in this case."
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The HTTP status code.",
+            "minimum": 0
+          },
+          "title": {
+            "type": "string",
+            "description": "Short summary of the problem type."
+          }
+        }
+      },
+      "RequestCreated": {
+        "type": "object",
+        "description": "A recorded credential request.",
+        "required": [
+          "holderPid"
+        ],
+        "properties": {
+          "holderPid": {
+            "type": "string",
+            "description": "The holder's id for the request."
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "api_key": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "The key from PORTITOR_MANAGEMENT_API_KEY_FILE: Authorization: Bearer <key>"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "Credentials",
+      "description": "The participant's verifiable credentials (DCP v1.0.1)"
+    }
+  ]
+}

@@ -29,8 +29,13 @@ fn pending_text(o: Option<&Outgoing>) -> Result<Option<String>, StoreError> {
     json(&stored).map(Some)
 }
 
-/// The pending message read back from the `pending` column.
-fn pending_message(consumer_pid: &str, text: &str) -> Result<Outgoing, StoreError> {
+/// The pending message read back from the `pending` column; it goes to
+/// the transfer's provider, `provider_id`.
+fn pending_message(
+    consumer_pid: &str,
+    provider_id: &str,
+    text: &str,
+) -> Result<Outgoing, StoreError> {
     let m: StoredMessage<TransferState> = parsed("pending message", text)?;
     let transition = Transition::from_name(&m.transition)
         .ok_or_else(|| StoreError(format!("stored transition {}", m.transition)))?;
@@ -42,19 +47,21 @@ fn pending_message(consumer_pid: &str, text: &str) -> Result<Outgoing, StoreErro
         to: m.to,
         status_url: m.status_url,
         initial: m.initial,
+        counter_party: provider_id.to_owned(),
     })
 }
 
 fn consumer_transfer_from_row(row: &Row<'_>) -> Result<ConsumerTransfer, StoreError> {
     let consumer_pid: String = col(row, 0)?;
+    let provider_id: String = col(row, 4)?;
     let pending = col::<Option<String>>(row, 8)?
-        .map(|text| pending_message(&consumer_pid, &text))
+        .map(|text| pending_message(&consumer_pid, &provider_id, &text))
         .transpose()?;
     Ok(ConsumerTransfer {
         provider_pid: col(row, 1)?,
         state: parsed_transfer_state(col(row, 2)?)?,
         provider_address: col(row, 3)?,
-        provider_id: col(row, 4)?,
+        provider_id,
         agreement_id: col(row, 5)?,
         format: col(row, 6)?,
         data_address: col::<Option<String>>(row, 7)?
@@ -175,6 +182,7 @@ mod tests {
             to: TransferState::Requested,
             status_url: String::new(),
             initial: true,
+            counter_party: "did:web:p.example".to_owned(),
         }
     }
 

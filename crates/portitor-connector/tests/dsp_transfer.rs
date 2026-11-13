@@ -14,8 +14,7 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
-use portitor_connector::http_client::{SendFuture, Sender};
-use portitor_connector::negotiation::UNAUTHENTICATED;
+use portitor_connector::http_client::Sender;
 use portitor_connector::ports::Retry;
 use portitor_connector::ports::Shared;
 use portitor_connector::store::SqliteNegotiations;
@@ -23,8 +22,12 @@ use portitor_connector::{Config, Ports};
 use portitor_dsp::negotiation::Agreement;
 use portitor_dsp::transfer::provider::{Agreements, DataFlows, StoreError, Transfer};
 use portitor_dsp::transfer::{DataAddress, DataAddressType, EndpointProperty};
+use portitor_runtime::BoxFuture;
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
+
+mod common;
+use common::{Audiences, CONSUMER, PROVIDER, authenticating, from, recording};
 
 const BASE: &str = "/dsp/2025-1/transfers";
 const CALLBACK: &str = "https://consumer.example/cb";
@@ -38,7 +41,7 @@ struct FakeSender {
 }
 
 impl Sender for FakeSender {
-    fn post<'a>(&'a self, url: &'a str, body: &'a Value) -> SendFuture<'a> {
+    fn post<'a>(&'a self, url: &'a str, body: &'a Value) -> BoxFuture<'a, Result<Value, String>> {
         self.sent
             .lock()
             .unwrap()
@@ -60,14 +63,14 @@ impl FakeSender {
 }
 
 /// One finalized agreement, `a1`, for dataset `CAT0101`, held by the
-/// (unauthenticated) caller.
+/// consumer.
 struct OneAgreement;
 
 impl Agreements for OneAgreement {
     fn finalized(&self, id: &str) -> Result<Option<Agreement>, StoreError> {
         let agreement = json!({
             "@id": "a1", "@type": "Agreement", "target": "CAT0101",
-            "assigner": "did:web:provider.example", "assignee": UNAUTHENTICATED,
+            "assigner": "did:web:provider.example", "assignee": CONSUMER,
             "timestamp": "2026-11-13T00:00:00Z", "permission": [{"action": "use"}]
         });
         Ok((id == "a1").then(|| serde_json::from_value(agreement).unwrap()))
@@ -139,7 +142,12 @@ fn config() -> Config {
 }
 
 fn ports(sender: &Arc<FakeSender>, flows: &Arc<FakeFlows>) -> Ports {
-    let mut p = Ports::new(Arc::clone(sender) as Arc<dyn Sender>);
+    recorded_ports(sender, flows).0
+}
+
+/// Like [`ports`], and the audience of each token the provider sends.
+fn recorded_ports(sender: &Arc<FakeSender>, flows: &Arc<FakeFlows>) -> (Ports, Audiences) {
+    let (mut p, audiences) = recording(Ports::new(Arc::clone(sender) as Arc<dyn Sender>), PROVIDER);
     p.retry = Retry {
         attempts: 2,
         first_delay: Duration::from_millis(1),
@@ -149,7 +157,15 @@ fn ports(sender: &Arc<FakeSender>, flows: &Arc<FakeFlows>) -> Ports {
     // without a flow store the built-in data plane does not start, so it
     // does not replace the fake one
     p.flow_store = None;
-    p
+    (p, audiences)
+}
+
+/// A POST of `body` to `uri` by the participant `did`.
+fn post_as(uri: &str, body: &Value, did: &str) -> Request<Body> {
+    from(Request::post(uri), did)
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
 }
 
 async fn call(app: &Router, req: Request<Body>) -> (StatusCode, Value) {
@@ -163,7 +179,7 @@ async fn call(app: &Router, req: Request<Body>) -> (StatusCode, Value) {
 }
 
 fn post(uri: &str, body: &Value) -> Request<Body> {
-    Request::post(uri)
+    from(Request::post(uri), CONSUMER)
         .header("content-type", "application/json")
         .body(Body::from(body.to_string()))
         .unwrap()
@@ -203,7 +219,7 @@ async fn sent(sender: &FakeSender, n: usize) -> Vec<(String, Value)> {
 }
 
 async fn state(app: &Router, pid: &str) -> String {
-    let req = Request::get(format!("{BASE}/{pid}"))
+    let req = from(Request::get(format!("{BASE}/{pid}")), CONSUMER)
         .body(Body::empty())
         .unwrap();
     let (status, body) = call(app, req).await;
@@ -229,7 +245,8 @@ async fn request_starts_and_the_consumer_suspends_restarts_and_completes() {
         Arc::new(FakeSender::default()),
         Arc::new(FakeFlows::default()),
     );
-    let app = portitor_connector::router(&config(), ports(&sender, &flows)).unwrap();
+    let (ports, audiences) = recorded_ports(&sender, &flows);
+    let app = portitor_connector::router(&config(), ports).unwrap();
 
     let (status, ack) = call(&app, post(&format!("{BASE}/request"), &request("a1"))).await;
     assert_eq!(status, StatusCode::CREATED, "{ack}");
@@ -249,6 +266,11 @@ async fn request_starts_and_the_consumer_suspends_restarts_and_completes() {
         "https://provider.example/data"
     );
     wait_for(&app, &pid, "STARTED").await;
+    assert_eq!(
+        *audiences.lock().unwrap(),
+        [CONSUMER],
+        "the start went with a token for the consumer"
+    );
 
     let suspend = message("TransferSuspensionMessage", &pid);
     let (status, ack) = call(&app, post(&format!("{BASE}/{pid}/suspension"), &suspend)).await;
@@ -313,13 +335,41 @@ async fn requests_without_a_held_agreement_are_refused() {
 }
 
 #[tokio::test]
+async fn only_the_assignee_may_use_an_agreement() {
+    let (sender, flows) = (
+        Arc::new(FakeSender::default()),
+        Arc::new(FakeFlows::default()),
+    );
+    let app = portitor_connector::router(&config(), ports(&sender, &flows)).unwrap();
+    let uri = format!("{BASE}/request");
+    let body = Body::from(request("a1").to_string());
+    let stranger = from(Request::post(&uri), "did:web:stranger.example")
+        .header("content-type", "application/json")
+        .body(body)
+        .unwrap();
+    let (status, error) = call(&app, stranger).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+    let anonymous = Request::post(&uri)
+        .header("content-type", "application/json")
+        .body(Body::from(request("a1").to_string()))
+        .unwrap();
+    let (status, error) = call(&app, anonymous).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        (error["@type"].as_str(), error["code"].as_str()),
+        (Some("TransferError"), Some("401"))
+    );
+    assert!(flows.calls().is_empty());
+}
+
+#[tokio::test]
 async fn an_unknown_transfer_is_not_found() {
     let (sender, flows) = (
         Arc::new(FakeSender::default()),
         Arc::new(FakeFlows::default()),
     );
     let app = portitor_connector::router(&config(), ports(&sender, &flows)).unwrap();
-    let req = Request::get(format!("{BASE}/urn:uuid:nope"))
+    let req = from(Request::get(format!("{BASE}/urn:uuid:nope")), CONSUMER)
         .body(Body::empty())
         .unwrap();
     assert_eq!(call(&app, req).await.0, StatusCode::NOT_FOUND);
@@ -352,7 +402,7 @@ async fn an_unreachable_consumer_ends_the_transfer_and_its_data_flow() {
 #[tokio::test]
 async fn without_a_data_plane_every_request_is_refused() {
     let sender = Arc::new(FakeSender::default());
-    let mut p = Ports::new(Arc::clone(&sender) as Arc<dyn Sender>);
+    let mut p = authenticating(Ports::new(Arc::clone(&sender) as Arc<dyn Sender>), PROVIDER);
     p.transfers.agreements = Shared(Arc::new(OneAgreement));
     p.flow_store = None;
     let app = portitor_connector::router(&config(), p).unwrap();
@@ -396,7 +446,7 @@ fn built_in(sender: &Arc<FakeSender>, source: Option<String>) -> Router {
     config
         .sources
         .extend(source.map(|url| ("CAT0101".to_owned(), url)));
-    let mut p = Ports::new(Arc::clone(sender) as Arc<dyn Sender>);
+    let mut p = authenticating(Ports::new(Arc::clone(sender) as Arc<dyn Sender>), PROVIDER);
     p.transfers.agreements = Shared(Arc::new(OneAgreement));
     portitor_connector::router(&config, p).unwrap()
 }
@@ -473,4 +523,33 @@ async fn a_dataset_without_a_source_cannot_be_transferred() {
         "{error}"
     );
     assert!(sender.sent().is_empty());
+}
+
+/// A stranger's messages about someone else's transfer are answered 404
+/// and change nothing, not even the data flow.
+#[tokio::test]
+async fn a_stranger_cannot_change_a_transfer() {
+    let (sender, flows) = (
+        Arc::new(FakeSender::default()),
+        Arc::new(FakeFlows::default()),
+    );
+    let app = portitor_connector::router(&config(), ports(&sender, &flows)).unwrap();
+    let (status, ack) = call(&app, post(&format!("{BASE}/request"), &request("a1"))).await;
+    assert_eq!(status, StatusCode::CREATED, "{ack}");
+    let pid = ack["providerPid"].as_str().unwrap().to_owned();
+    wait_for(&app, &pid, "STARTED").await;
+    for (path, kind) in [
+        ("start", "TransferStartMessage"),
+        ("suspension", "TransferSuspensionMessage"),
+        ("completion", "TransferCompletionMessage"),
+        ("termination", "TransferTerminationMessage"),
+    ] {
+        let uri = format!("{BASE}/{pid}/{path}");
+        let request = post_as(&uri, &message(kind, &pid), "did:web:stranger.example");
+        let (status, error) = call(&app, request).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {error}");
+        assert_eq!(error["@type"], "TransferError", "{path}");
+        assert_eq!(state(&app, &pid).await, "STARTED", "{path}");
+    }
+    assert_eq!(flows.calls(), ["start CAT0101"]);
 }

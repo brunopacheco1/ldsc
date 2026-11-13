@@ -166,6 +166,9 @@ pub struct Outgoing {
     /// Where the consumer reports its state for this negotiation (`GET`),
     /// to check whether a message it refused had arrived before.
     pub status_url: String,
+    /// The counter-party's participant id (its DID): who the message is
+    /// for, and the audience of the token it is sent with (ADR 0016).
+    pub counter_party: String,
 }
 
 /// Why a consumer's message was refused, with the HTTPS status it maps to.
@@ -599,6 +602,7 @@ fn outgoing<T: serde::Serialize>(
         to: next_state(Some(negotiation.state), transition, Role::Provider)
             .unwrap_or(negotiation.state),
         status_url,
+        counter_party: negotiation.counter_party.clone(),
     }
 }
 

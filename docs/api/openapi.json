@@ -2,12 +2,12 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Portitor connector",
-    "version": "0.4.0",
+    "version": "0.5.0",
     "license": {
       "name": "Apache-2.0",
       "identifier": "Apache-2.0"
     },
-    "description": "HTTP interface of portitor-connector. The DSP endpoints follow the DSP 2025-1 HTTPS bindings; the message schemas are the official DSP 2025-1 JSON Schemas (copied unchanged in crates/portitor-dsp/tests/schemas). DSP itself publishes no OpenAPI file; this one is written by hand and a test checks that every path in it is served. As consumer, the connector sends callbackAddress = public URL + /dsp/2025-1/callback, so providers call the callback paths below. No authentication until 0.5 (DCP)."
+    "description": "HTTP interface of portitor-connector. The DSP endpoints follow the DSP 2025-1 HTTPS bindings; the message schemas are the official DSP 2025-1 JSON Schemas (copied unchanged in crates/portitor-dsp/tests/schemas). DSP itself publishes no OpenAPI file; this one is written by hand and a test checks that every path in it is served. As consumer, the connector sends callbackAddress = public URL + /dsp/2025-1/callback, so providers call the callback paths below. No authentication until 0.5 (DCP). Every DSP endpoint except /.well-known/dspace-version needs a DCP self-issued ID token (ADR 0016); without a valid one the answer is 401 with the endpoint's DSP error, reason \"unauthorized\"."
   },
   "servers": [
     {
@@ -74,8 +74,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "The caller is not authenticated (DCP); the body is the endpoint's DSP error with code \"401\" and reason \"unauthorized\""
           }
-        }
+        },
+        "security": [
+          {
+            "dcp": []
+          }
+        ]
       }
     },
     "/dsp/2025-1/catalog/datasets/{id}": {
@@ -115,8 +123,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "The caller is not authenticated (DCP); the body is the endpoint's DSP error with code \"401\" and reason \"unauthorized\""
           }
-        }
+        },
+        "security": [
+          {
+            "dcp": []
+          }
+        ]
       }
     },
     "/dsp/2025-1/negotiations/request": {
@@ -157,8 +173,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "The caller is not authenticated (DCP); the body is the endpoint's DSP error with code \"401\" and reason \"unauthorized\""
           }
-        }
+        },
+        "security": [
+          {
+            "dcp": []
+          }
+        ]
       }
     },
     "/dsp/2025-1/negotiations/{providerPid}": {
@@ -199,8 +223,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "The caller is not authenticated (DCP); the body is the endpoint's DSP error with code \"401\" and reason \"unauthorized\""
           }
-        }
+        },
+        "security": [
+          {
+            "dcp": []
+          }
+        ]
       }
     },
     "/dsp/2025-1/negotiations/{providerPid}/request": {
@@ -261,8 +293,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "The caller is not authenticated (DCP); the body is the endpoint's DSP error with code \"401\" and reason \"unauthorized\""
           }
-        }
+        },
+        "security": [
+          {
+            "dcp": []
+          }
+        ]
       }
     },
     "/dsp/2025-1/negotiations/{providerPid}/events": {
@@ -323,8 +363,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "The caller is not authenticated (DCP); the body is the endpoint's DSP error with code \"401\" and reason \"unauthorized\""
           }
-        }
+        },
+        "security": [
+          {
+            "dcp": []
+          }
+        ]
       }
     },
     "/dsp/2025-1/negotiations/{providerPid}/agreement/verification": {
@@ -385,8 +433,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "The caller is not authenticated (DCP); the body is the endpoint's DSP error with code \"401\" and reason \"unauthorized\""
           }
-        }
+        },
+        "security": [
+          {
+            "dcp": []
+          }
+        ]
       }
     },
     "/dsp/2025-1/negotiations/{providerPid}/termination": {
@@ -447,8 +503,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "The caller is not authenticated (DCP); the body is the endpoint's DSP error with code \"401\" and reason \"unauthorized\""
           }
-        }
+        },
+        "security": [
+          {
+            "dcp": []
+          }
+        ]
       }
     },
     "/dsp/2025-1/transfers/request": {
@@ -489,8 +553,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "The caller is not authenticated (DCP); the body is the endpoint's DSP error with code \"401\" and reason \"unauthorized\""
           }
-        }
+        },
+        "security": [
+          {
+            "dcp": []
+          }
+        ]
       }
     },
     "/dsp/2025-1/transfers/{providerPid}": {
@@ -531,8 +603,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "The caller is not authenticated (DCP); the body is the endpoint's DSP error with code \"401\" and reason \"unauthorized\""
           }
-        }
+        },
+        "security": [
+          {
+            "dcp": []
+          }
+        ]
       }
     },
     "/dsp/2025-1/transfers/{providerPid}/start": {
@@ -603,8 +683,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "The caller is not authenticated (DCP); the body is the endpoint's DSP error with code \"401\" and reason \"unauthorized\""
           }
-        }
+        },
+        "security": [
+          {
+            "dcp": []
+          }
+        ]
       }
     },
     "/dsp/2025-1/transfers/{providerPid}/suspension": {
@@ -675,8 +763,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "The caller is not authenticated (DCP); the body is the endpoint's DSP error with code \"401\" and reason \"unauthorized\""
           }
-        }
+        },
+        "security": [
+          {
+            "dcp": []
+          }
+        ]
       }
     },
     "/dsp/2025-1/transfers/{providerPid}/completion": {
@@ -747,8 +843,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "The caller is not authenticated (DCP); the body is the endpoint's DSP error with code \"401\" and reason \"unauthorized\""
           }
-        }
+        },
+        "security": [
+          {
+            "dcp": []
+          }
+        ]
       }
     },
     "/dsp/2025-1/transfers/{providerPid}/termination": {
@@ -819,8 +923,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "The caller is not authenticated (DCP); the body is the endpoint's DSP error with code \"401\" and reason \"unauthorized\""
           }
-        }
+        },
+        "security": [
+          {
+            "dcp": []
+          }
+        ]
       }
     },
     "/dsp/2025-1/callback/negotiations/{consumerPid}": {
@@ -861,8 +973,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "The caller is not authenticated (DCP); the body is the endpoint's DSP error with code \"401\" and reason \"unauthorized\""
           }
-        }
+        },
+        "security": [
+          {
+            "dcp": []
+          }
+        ]
       }
     },
     "/dsp/2025-1/callback/negotiations/{consumerPid}/offers": {
@@ -923,8 +1043,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "The caller is not authenticated (DCP); the body is the endpoint's DSP error with code \"401\" and reason \"unauthorized\""
           }
-        }
+        },
+        "security": [
+          {
+            "dcp": []
+          }
+        ]
       }
     },
     "/dsp/2025-1/callback/negotiations/{consumerPid}/agreement": {
@@ -985,8 +1113,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "The caller is not authenticated (DCP); the body is the endpoint's DSP error with code \"401\" and reason \"unauthorized\""
           }
-        }
+        },
+        "security": [
+          {
+            "dcp": []
+          }
+        ]
       }
     },
     "/dsp/2025-1/callback/negotiations/{consumerPid}/events": {
@@ -1047,8 +1183,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "The caller is not authenticated (DCP); the body is the endpoint's DSP error with code \"401\" and reason \"unauthorized\""
           }
-        }
+        },
+        "security": [
+          {
+            "dcp": []
+          }
+        ]
       }
     },
     "/dsp/2025-1/callback/negotiations/{consumerPid}/termination": {
@@ -1109,8 +1253,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "The caller is not authenticated (DCP); the body is the endpoint's DSP error with code \"401\" and reason \"unauthorized\""
           }
-        }
+        },
+        "security": [
+          {
+            "dcp": []
+          }
+        ]
       }
     },
     "/dsp/2025-1/callback/transfers/{consumerPid}": {
@@ -1151,8 +1303,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "The caller is not authenticated (DCP); the body is the endpoint's DSP error with code \"401\" and reason \"unauthorized\""
           }
-        }
+        },
+        "security": [
+          {
+            "dcp": []
+          }
+        ]
       }
     },
     "/dsp/2025-1/callback/transfers/{consumerPid}/start": {
@@ -1213,8 +1373,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "The caller is not authenticated (DCP); the body is the endpoint's DSP error with code \"401\" and reason \"unauthorized\""
           }
-        }
+        },
+        "security": [
+          {
+            "dcp": []
+          }
+        ]
       }
     },
     "/dsp/2025-1/callback/transfers/{consumerPid}/suspension": {
@@ -1275,8 +1443,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "The caller is not authenticated (DCP); the body is the endpoint's DSP error with code \"401\" and reason \"unauthorized\""
           }
-        }
+        },
+        "security": [
+          {
+            "dcp": []
+          }
+        ]
       }
     },
     "/dsp/2025-1/callback/transfers/{consumerPid}/completion": {
@@ -1337,8 +1513,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "The caller is not authenticated (DCP); the body is the endpoint's DSP error with code \"401\" and reason \"unauthorized\""
           }
-        }
+        },
+        "security": [
+          {
+            "dcp": []
+          }
+        ]
       }
     },
     "/dsp/2025-1/callback/transfers/{consumerPid}/termination": {
@@ -1399,8 +1583,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "The caller is not authenticated (DCP); the body is the endpoint's DSP error with code \"401\" and reason \"unauthorized\""
           }
-        }
+        },
+        "security": [
+          {
+            "dcp": []
+          }
+        ]
       }
     },
     "/health": {
@@ -1423,6 +1615,16 @@
             }
           }
         }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "dcp": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "DCP 1.0 self-issued ID token, signed by the caller's DID key, carrying an access token for its credential service in the token claim"
       }
     }
   }

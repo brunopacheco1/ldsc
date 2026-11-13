@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path, State};
+use axum::extract::{Extension, Path, State};
 use axum::response::{IntoResponse, Response};
 use portitor_dsp::Offer;
 use portitor_dsp::guard::Direction;
@@ -32,7 +32,8 @@ use portitor_dsp::negotiation::{
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::http_client::callback_allowed;
+use crate::auth::Caller;
+use crate::http_client::outbound_url_allowed;
 use crate::negotiation::{bad_request, failed};
 use crate::outbox::{self, Link, Message, Outbox};
 use crate::ports::{AnyConsumerDecider, AnyConsumerStore, Ports};
@@ -123,13 +124,19 @@ pub(crate) struct Consumer {
 }
 
 impl Consumer {
-    pub(crate) fn new(ports: &Ports, callback_address: String, allow_http: bool) -> Self {
+    pub(crate) fn new(
+        ports: &Ports,
+        callback_address: String,
+        participant_id: String,
+        allow_http: bool,
+    ) -> Self {
         Self {
             service: ConsumerService::new(
                 ports.consumer_store.clone(),
                 ports.consumer_decider.clone(),
                 SystemEnvironment,
                 callback_address,
+                participant_id,
             ),
             link: Link::new(ports),
             allow_http,
@@ -150,7 +157,7 @@ impl Consumer {
         provider_id: &str,
         offer: Offer,
     ) -> Result<ConsumerNegotiation, Box<Failure>> {
-        if !callback_allowed(provider_address, self.allow_http) {
+        if !outbound_url_allowed(provider_address, self.allow_http) {
             return Err(Box::new(Failure::BadRequest(
                 ContractNegotiationError::new(
                     "",
@@ -192,6 +199,15 @@ impl Consumer {
         limit: usize,
     ) -> Result<Vec<ConsumerNegotiation>, Box<Failure>> {
         self.service.list(after, limit).map_err(Box::new)
+    }
+
+    /// Refuses the request unless `caller` is the provider of negotiation
+    /// `consumer_pid` (ADR 0016); returns the refusal to send, if any.
+    fn refusal(&self, consumer_pid: &str, caller: &str) -> Option<Response> {
+        self.service
+            .from_provider(consumer_pid, caller)
+            .err()
+            .map(failed)
     }
 
     /// Checks the message's shape with the guard, then reads it.
@@ -248,9 +264,15 @@ impl Outbox for Consumer {
     }
 
     fn message(out: &Outgoing) -> Message<'_> {
-        Message::new(&out.consumer_pid, &out.url, &out.body, &out.status_url)
-            .first(out.initial)
-            .terminating(out.transition == Transition::Terminate)
+        Message::new(
+            &out.consumer_pid,
+            &out.url,
+            &out.body,
+            &out.status_url,
+            &out.counter_party,
+        )
+        .first(out.initial)
+        .terminating(out.transition == Transition::Terminate)
     }
 
     fn reached(out: &Outgoing, state: Value) -> bool {
@@ -278,8 +300,12 @@ impl Outbox for Consumer {
 /// `GET <callback>/negotiations/{consumerPid}`.
 pub(crate) async fn get(
     State(consumer): State<Arc<Consumer>>,
+    Extension(Caller(caller)): Extension<Caller>,
     Path(cpid): Path<String>,
 ) -> Response {
+    if let Some(refused) = consumer.refusal(&cpid, &caller) {
+        return refused;
+    }
     match consumer.service.get(&cpid) {
         Ok(ack) => Json(ack).into_response(),
         Err(f) => failed(f),
@@ -289,9 +315,13 @@ pub(crate) async fn get(
 /// `POST <callback>/negotiations/{consumerPid}/offers`.
 pub(crate) async fn offer(
     State(consumer): State<Arc<Consumer>>,
+    Extension(Caller(caller)): Extension<Caller>,
     Path(cpid): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
+    if let Some(refused) = consumer.refusal(&cpid, &caller) {
+        return refused;
+    }
     let msg: ContractOfferMessage = match consumer.read(body, "ContractOfferMessage", &cpid) {
         Ok(m) => m,
         Err(e) => return bad_request(*e),
@@ -302,9 +332,13 @@ pub(crate) async fn offer(
 /// `POST <callback>/negotiations/{consumerPid}/agreement`.
 pub(crate) async fn agreement(
     State(consumer): State<Arc<Consumer>>,
+    Extension(Caller(caller)): Extension<Caller>,
     Path(cpid): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
+    if let Some(refused) = consumer.refusal(&cpid, &caller) {
+        return refused;
+    }
     let msg: ContractAgreementMessage = match consumer.read(body, "ContractAgreementMessage", &cpid)
     {
         Ok(m) => m,
@@ -316,9 +350,13 @@ pub(crate) async fn agreement(
 /// `POST <callback>/negotiations/{consumerPid}/events`.
 pub(crate) async fn event(
     State(consumer): State<Arc<Consumer>>,
+    Extension(Caller(caller)): Extension<Caller>,
     Path(cpid): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
+    if let Some(refused) = consumer.refusal(&cpid, &caller) {
+        return refused;
+    }
     let msg: ContractNegotiationEventMessage =
         match consumer.read(body, "ContractNegotiationEventMessage", &cpid) {
             Ok(m) => m,
@@ -330,9 +368,13 @@ pub(crate) async fn event(
 /// `POST <callback>/negotiations/{consumerPid}/termination`.
 pub(crate) async fn terminate(
     State(consumer): State<Arc<Consumer>>,
+    Extension(Caller(caller)): Extension<Caller>,
     Path(cpid): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
+    if let Some(refused) = consumer.refusal(&cpid, &caller) {
+        return refused;
+    }
     let msg: ContractNegotiationTerminationMessage =
         match consumer.read(body, "ContractNegotiationTerminationMessage", &cpid) {
             Ok(m) => m,

@@ -180,6 +180,9 @@ pub struct Outgoing {
     pub status_url: String,
     /// The first request; its acknowledgement carries the provider pid.
     pub initial: bool,
+    /// The provider's participant id (its DID): who the message is for,
+    /// and the audience of the token it is sent with (ADR 0016).
+    pub counter_party: String,
 }
 
 /// Result of handling a provider's message: the acknowledgement for the
@@ -193,17 +196,25 @@ pub struct ConsumerService<S, D, E> {
     decider: D,
     env: E,
     callback_address: String,
+    participant_id: String,
 }
 
 impl<S: ConsumerStore, D: ConsumerDecider, E: Environment> ConsumerService<S, D, E> {
-    /// Builds the service. Providers send their messages to
-    /// `callback_address`.
-    pub fn new(store: S, decider: D, env: E, callback_address: String) -> Self {
+    /// Builds the service for consumer `participant_id`. Providers send
+    /// their messages to `callback_address`.
+    pub fn new(
+        store: S,
+        decider: D,
+        env: E,
+        callback_address: String,
+        participant_id: String,
+    ) -> Self {
         Self {
             store,
             decider,
             env,
             callback_address,
+            participant_id,
         }
     }
 
@@ -259,6 +270,7 @@ impl<S: ConsumerStore, D: ConsumerDecider, E: Environment> ConsumerService<S, D,
             to: state,
             status_url: String::new(),
             initial: true,
+            counter_party: negotiation.provider_id.clone(),
         };
         negotiation.pending = Some(out.clone());
         self.store.insert(&negotiation).map_err(Failure::Store)?;
@@ -272,6 +284,24 @@ impl<S: ConsumerStore, D: ConsumerDecider, E: Environment> ConsumerService<S, D,
     /// Unknown negotiation or store failure.
     pub fn get(&self, consumer_pid: &str) -> Result<ContractNegotiation, Failure> {
         Ok(self.load(consumer_pid)?.ack())
+    }
+
+    /// Checks that `caller`, the participant proven by the request's
+    /// token (ADR 0016), is the provider this negotiation was started
+    /// with. Call it before handling any provider message. Another caller
+    /// gets the same answer as for an unknown negotiation, so it learns
+    /// nothing about ours.
+    ///
+    /// # Errors
+    ///
+    /// Unknown negotiation, another provider, or store failure.
+    pub fn from_provider(&self, consumer_pid: &str, caller: &str) -> Result<(), Failure> {
+        let negotiation = self.load(consumer_pid)?;
+        if negotiation.provider_id == caller {
+            Ok(())
+        } else {
+            Err(not_found(consumer_pid))
+        }
     }
 
     /// The negotiation with this consumer pid, as stored.
@@ -318,8 +348,9 @@ impl<S: ConsumerStore, D: ConsumerDecider, E: Environment> ConsumerService<S, D,
     ///
     /// # Errors
     ///
-    /// Unknown negotiation, mismatched ids, invalid transition, or store
-    /// failure.
+    /// Unknown negotiation, mismatched ids, an agreement for another
+    /// dataset, from another provider (its `assigner`) or for another
+    /// consumer (its `assignee`), invalid transition, or store failure.
     pub fn agreement(&self, consumer_pid: &str, msg: &ContractAgreementMessage) -> Handled {
         self.handle(consumer_pid, |negotiation| {
             check_ids(negotiation, &msg.provider_pid, Some(&msg.consumer_pid))?;
@@ -328,6 +359,25 @@ impl<S: ConsumerStore, D: ConsumerDecider, E: Environment> ConsumerService<S, D,
                     &msg.provider_pid,
                     &negotiation.consumer_pid,
                     "the agreement is for another dataset",
+                ));
+            }
+            // the assigner is the provider's participant id, which the
+            // provider proved with its token (ADR 0016)
+            if msg.agreement.assigner != negotiation.provider_id {
+                return Err(bad(
+                    &msg.provider_pid,
+                    &negotiation.consumer_pid,
+                    "the agreement's assigner is not the provider",
+                ));
+            }
+            // the assignee must be us: an agreement for someone else could
+            // not be used for a transfer (the provider checks the caller
+            // against it)
+            if msg.agreement.assignee != self.participant_id {
+                return Err(bad(
+                    &msg.provider_pid,
+                    &negotiation.consumer_pid,
+                    "the agreement's assignee is not this consumer",
                 ));
             }
             receive(negotiation, Transition::Agree)?;
@@ -596,8 +646,7 @@ impl<S: ConsumerStore, D: ConsumerDecider, E: Environment> ConsumerService<S, D,
     }
 
     fn load(&self, consumer_pid: &str) -> Result<ConsumerNegotiation, Failure> {
-        // no caller check yet: until DCP (0.5) the provider's identity is
-        // not known; then the caller must be `provider_id`
+        // the caller is checked separately, in `from_provider`
         self.store
             .get(consumer_pid)
             .map_err(Failure::Store)?
@@ -622,6 +671,7 @@ fn outgoing<T: serde::Serialize>(
             .unwrap_or(negotiation.state),
         status_url,
         initial: false,
+        counter_party: negotiation.provider_id.clone(),
     })
 }
 

@@ -29,6 +29,82 @@ pub enum Outcome<T> {
     NotFound(CatalogError),
 }
 
+/// The DSP 2025-1 namespace: in expanded JSON-LD, every DSP term is this
+/// IRI plus the term (for example `CatalogRequestMessage`).
+pub const DSPACE_NAMESPACE: &str = "https://w3id.org/dspace/2025/1/";
+
+/// Reads a `CatalogRequestMessage` in compacted form (what DSP 2025-1
+/// sends), or in the one expanded form the DCP TCK v1.2.1 sends to start
+/// its verifier tests: `@type` is the full IRI and the filter, if present,
+/// is empty (README, "Testing the verifier"; the TCK's own trigger
+/// message). Both mean the same JSON-LD message. Any other expanded
+/// content is refused, as Portitor does not process JSON-LD.
+///
+/// # Errors
+///
+/// Not a catalog request in either form; the text says why.
+pub fn read_catalog_request(value: serde_json::Value) -> Result<CatalogRequestMessage, String> {
+    let expanded_type = format!("{DSPACE_NAMESPACE}CatalogRequestMessage");
+    let expanded_filter = format!("{DSPACE_NAMESPACE}filter");
+    let is_expanded = value.get("@context").is_none()
+        && value.get("@type").and_then(serde_json::Value::as_str) == Some(&expanded_type);
+    if !is_expanded {
+        return serde_json::from_value(value).map_err(|e| e.to_string());
+    }
+    let Some(fields) = value.as_object() else {
+        return Err("not a JSON object".to_owned());
+    };
+    for (key, field) in fields {
+        let empty_filter = *key == expanded_filter && is_empty_json(field);
+        if key != "@type" && !empty_filter {
+            return Err(format!("expanded field {key} is not supported"));
+        }
+    }
+    Ok(CatalogRequestMessage {
+        context: Context::default(),
+        kind: crate::CatalogRequestMessageType,
+        filter: None,
+    })
+}
+
+/// Whether a `filter` entry asks for no filtering at all.
+///
+/// EDC (checked in v1.0.0-RC7, `JsonObjectFromCatalogRequestMessageTransformer`)
+/// always sends its own `QuerySpec` as the filter, even when it wants the
+/// whole catalog: no filter expressions, only paging (`offset`, `limit`)
+/// and sorting. Such a filter, or an empty `{}`, selects nothing, so
+/// Portitor answers with the whole catalog. Paging and sorting are
+/// ignored. Anything else, for example a `QuerySpec` with filter
+/// expressions or an unknown field, is not supported.
+fn filters_nothing(entry: &serde_json::Value) -> bool {
+    /// The `QuerySpec` fields that do not select datasets.
+    const PAGING: [&str; 4] = ["offset", "limit", "sortOrder", "sortField"];
+    let Some(fields) = entry.as_object() else {
+        return false;
+    };
+    fields.iter().all(|(key, value)| match local_name(key) {
+        "@context" => true,
+        "@type" => value.as_str().map(local_name) == Some("QuerySpec"),
+        "filterExpression" => is_empty_json(value),
+        name => PAGING.contains(&name),
+    })
+}
+
+/// The term at the end of an IRI or a prefixed name
+/// (`https://w3id.org/edc/v0.0.1/ns/limit` and `edc:limit` both give `limit`).
+fn local_name(key: &str) -> &str {
+    key.rsplit(['/', '#', ':']).next().unwrap_or(key)
+}
+
+/// `{}` or `[]`.
+fn is_empty_json(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Object(map) => map.is_empty(),
+        serde_json::Value::Array(list) => list.is_empty(),
+        _ => false,
+    }
+}
+
 /// Why a set of dataset definitions cannot be offered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DatasetDefinitionError {
@@ -173,9 +249,12 @@ impl<S: DatasetStore> CatalogService<S> {
     }
 
     /// Answers a `CatalogRequestMessage`. Filters are not supported, so a
-    /// non-empty filter is a bad request, as DSP 2025-1 requires.
+    /// filter that would select something is a bad request, as DSP 2025-1
+    /// requires. A filter that selects nothing is ignored (see
+    /// [`filters_nothing`]).
     pub fn request(&self, msg: &CatalogRequestMessage) -> Outcome<Catalog> {
-        if msg.filter.as_ref().is_some_and(|f| !f.is_empty()) {
+        let filter = msg.filter.as_deref().unwrap_or_default();
+        if !filter.iter().all(filters_nothing) {
             return Outcome::BadRequest(CatalogError::new(
                 "400",
                 "filter expressions are not supported",
@@ -309,5 +388,54 @@ mod tests {
         let mut d = dataset("a");
         d.distribution[0].access_service = "svc".to_owned();
         assert!(prepare_datasets(vec![d], "svc").is_ok());
+    }
+
+    #[test]
+    fn a_filter_that_selects_nothing_is_ignored() {
+        // what EDC v1.0.0-RC7 sends when it asks for the whole catalog
+        let edc = serde_json::json!({
+            "@type": "https://w3id.org/edc/v0.0.1/ns/QuerySpec",
+            "https://w3id.org/edc/v0.0.1/ns/offset": 0,
+            "https://w3id.org/edc/v0.0.1/ns/limit": 50,
+            "https://w3id.org/edc/v0.0.1/ns/sortOrder": "ASC",
+            "https://w3id.org/edc/v0.0.1/ns/filterExpression": []
+        });
+        let compacted = serde_json::json!({"@type": "QuerySpec", "offset": 0, "limit": 50});
+        for nothing in [edc, compacted, serde_json::json!({})] {
+            assert!(filters_nothing(&nothing), "{nothing}");
+        }
+        for something in [
+            serde_json::json!({"@type": "QuerySpec", "filterExpression": [
+                {"operandLeft": "id", "operator": "=", "operandRight": "a"}]}),
+            serde_json::json!({"@type": "Other"}),
+            serde_json::json!({"keyword": "x"}),
+            serde_json::json!("id = a"),
+        ] {
+            assert!(!filters_nothing(&something), "{something}");
+        }
+    }
+
+    #[test]
+    fn reads_compacted_and_the_tck_expanded_catalog_request() {
+        let compact = serde_json::json!({"@context": [crate::CONTEXT],
+            "@type": "CatalogRequestMessage"});
+        assert!(read_catalog_request(compact).is_ok());
+        // the DCP TCK v1.2.1 trigger message
+        let expanded = serde_json::json!({
+            "@type": "https://w3id.org/dspace/2025/1/CatalogRequestMessage",
+            "https://w3id.org/dspace/2025/1/filter": {}
+        });
+        let msg = read_catalog_request(expanded).unwrap();
+        assert_eq!(msg.filter, None);
+        for refused in [
+            serde_json::json!({"@type": "https://w3id.org/dspace/2025/1/CatalogRequestMessage",
+                "https://w3id.org/dspace/2025/1/filter": {"x": 1}}),
+            serde_json::json!({"@type": "https://w3id.org/dspace/2025/1/CatalogRequestMessage",
+                "other": []}),
+            serde_json::json!({"@type": "https://w3id.org/dspace/2025/1/Other"}),
+            serde_json::json!({"@type": "CatalogRequestMessage"}),
+        ] {
+            assert!(read_catalog_request(refused.clone()).is_err(), "{refused}");
+        }
     }
 }

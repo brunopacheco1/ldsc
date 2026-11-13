@@ -3,6 +3,12 @@
 version = 4
 
 [[package]]
+name = "adler2"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -615,6 +621,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d5848f5a9e8117cf94f2f90faac24a87ff81600ff8628c1e3deaab572e76bfa1"
 
 [[package]]
+name = "miniz_oxide"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b63fbc4a50860e98e7b2aa7804ded1db5cbc3aff9193adaff57a6931bf7c4b4c"
+dependencies = [
+ "adler2",
+]
+
+[[package]]
 name = "mio"
 version = "1.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -773,17 +788,90 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "portitor-connector"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "axum",
  "base64",
  "http-body-util",
  "hyper",
- "hyper-rustls",
- "hyper-util",
  "jsonschema",
+ "portitor-dcp",
  "portitor-dps",
  "portitor-dsp",
+ "portitor-runtime",
+ "ring",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower",
+ "tracing",
+ "utoipa",
+]
+
+[[package]]
+name = "portitor-dcp"
+version = "0.5.0"
+dependencies = [
+ "base64",
+ "jsonschema",
+ "miniz_oxide",
+ "portitor-time",
+ "ring",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "portitor-dps"
+version = "0.5.0"
+dependencies = [
+ "jsonschema",
+ "portitor-dsp",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "portitor-dsp"
+version = "0.5.0"
+dependencies = [
+ "jsonschema",
+ "portitor-time",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "portitor-identity"
+version = "0.5.0"
+dependencies = [
+ "axum",
+ "http-body-util",
+ "hyper",
+ "portitor-dcp",
+ "portitor-runtime",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tower",
+ "tracing",
+ "utoipa",
+]
+
+[[package]]
+name = "portitor-runtime"
+version = "0.5.0"
+dependencies = [
+ "axum",
+ "http-body-util",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
+ "portitor-dcp",
  "ring",
  "rusqlite",
  "rustls",
@@ -797,34 +885,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "portitor-dcp"
-version = "0.4.0"
-dependencies = [
- "base64",
- "ring",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "portitor-dps"
-version = "0.4.0"
-dependencies = [
- "jsonschema",
- "portitor-dsp",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "portitor-dsp"
-version = "0.4.0"
-dependencies = [
- "jsonschema",
- "serde",
- "serde_json",
-]
+name = "portitor-time"
+version = "0.5.0"
 
 [[package]]
 name = "proc-macro2"

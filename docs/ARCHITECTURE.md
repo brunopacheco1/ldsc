@@ -84,6 +84,85 @@ is an external dependency, not a Portitor image.
 | 3 | `portitor-connector` | Control plane: catalog, contract negotiation, transfer; verifies DCP presentations. The data plane is its own module, linked into the connector for 0.x (see below) | Mandatory | DSP, DCP (verifier) |
 | 4 | `portitor-issuer` | Issues and revokes credentials (for example membership); builds and signs the schema and vocabulary bundle ([ADR 0005](adr/0005-schema-and-vocabulary-registry.md), proposed) | Optional: one per dataspace, run by the dataspace authority | DCP (issuance) |
 
+### Images and crates in 0.5
+
+Release 0.5 ships two images, built from one `Dockerfile` (one build
+target per image) and released, signed and attested together
+([RELEASING.md](RELEASING.md)). Until the PostgreSQL adapter exists, each
+image keeps its state in its own SQLite file under `/data`.
+
+```
+ one participant runs both:
+
+   +-----------------------------+        +----------------------------------+
+   | portitor-connector          |  (1)   | portitor-identity                |
+   | 8080 DSP, data plane        |------->| 8090 DID document, STS,          |
+   | 8081 management API         |  STS   |      credential service          |
+   | /data/portitor.db           |        | 8091 management API              |
+   +-----------------------------+        | /data/portitor-identity.db       |
+          | (2) DSP request + token        +----------------------------------+
+          v                                        ^ (3) DID document,
+   partner's connector ----------------------------+     presentation query
+
+ crates (-> means "uses"):
+
+   portitor-connector --> portitor-dsp, portitor-dps, portitor-dcp,
+                          portitor-runtime
+   portitor-identity  --> portitor-dcp, portitor-runtime
+   portitor-runtime   --> portitor-dcp          (adapters: HTTP client,
+                                                 did:web resolver, API key,
+                                                 logging, shutdown)
+   portitor-dsp, portitor-dps, portitor-dcp --> portitor-time
+                                                (domain crates: no I/O)
+```
+
+- `portitor-connector`: binary; DSP control plane, built-in data plane,
+  management API, SQLite store. Authenticates every DSP request with DCP
+  and signs its own (ADR 0016).
+- `portitor-identity`: binary; the participant's DID document, STS,
+  credential service and management API (ADR 0015).
+- `portitor-runtime`: library of adapters both binaries share, so they are
+  not copied.
+- `portitor-dsp`, `portitor-dps`, `portitor-dcp`, `portitor-time`: domain
+  crates (ADR 0004); CI checks they have no I/O dependency.
+
+The flow (DCP v1.0.1): (1) the connector asks its own identity's STS for
+a self-issued ID token addressed to the partner; (2) it sends that token
+with its DSP request; (3) the partner's connector checks the token against
+the participant's DID document and queries the participant's credential
+service for the credentials it needs. The connector never holds the
+participant's private key.
+
+In the connector (ADR 0016) this is two ports in `auth.rs`, with their DCP
+adapters in `auth/dcp.rs` and `auth/sts.rs`:
+
+- `CallerVerifier`, run by a middleware on every DSP route (provider
+  endpoints and consumer callbacks; not `/.well-known/dspace-version`,
+  `/health` or the data plane). The DCP adapter reads the
+  `Authorization: Bearer` ID token, resolves the caller's `did:web` DID,
+  validates the token (`portitor_dcp::validate_self_issued`: key with
+  `capabilityInvocation`, `aud` = our DID, `iss` = `sub`, `exp`/`iat`/`nbf`,
+  `jti` not replayed), then sends a `PresentationQueryMessage` for
+  `PORTITOR_DCP_SCOPES` to the caller's credential service, with a token
+  from our STS that carries the caller's access token. It verifies every
+  presentation and credential (both profiles), fetches and verifies each
+  status list credential (signed by the credential's issuer, fail closed),
+  and requires a `MembershipCredential` from a trusted issuer about the
+  caller. The verified DID goes to the handler as `Caller`; a refusal is
+  HTTP 401 with a DSP error and no detail.
+- `Prover`, used by the outbox before each outgoing DSP request: a fresh
+  token from our STS with `aud` = the counter-party's DID (stored with the
+  negotiation or transfer when it started, never taken from an incoming
+  message) and `bearer_access_scope` = `PORTITOR_DCP_SCOPES`. Tokens are not
+  cached: each `jti` is accepted once.
+
+The domain binds each negotiation and transfer to its counter-party: as
+provider, only the DID that started it may send to or read it; as
+consumer, only the provider it was started with may use its callbacks. At
+start the connector resolves its own DID document and checks that its STS
+signs for it. Tests use fake ports; the `tck` build maps the DSP TCK's
+fixed header to the TCK participant.
+
 The website is a static site published by GitHub Pages; it is not deployed
 by participants.
 

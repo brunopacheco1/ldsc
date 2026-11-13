@@ -11,7 +11,7 @@
 use std::sync::OnceLock;
 
 use portitor_dcp::{
-    Claims, DidDocument, JtiCache, Relationship, SigningKey, VerificationMethod,
+    Claims, DidDocument, JtiCache, MAX_TOKEN_LIFETIME, Relationship, SigningKey, VerificationMethod,
     validate_self_issued,
 };
 use libfuzzer_sys::fuzz_target;
@@ -33,6 +33,7 @@ fn setup() -> &'static (SigningKey, DidDocument) {
                 public_key_jwk: key.public_jwk(),
             }],
             capability_invocation: vec![Relationship::Reference(vm)],
+            ..DidDocument::default()
         };
         (key, doc)
     })
@@ -77,5 +78,10 @@ fuzz_target!(|data: &[u8]| {
         if let Some(nbf) = claims.nbf {
             assert!(u128::from(now) + u128::from(leeway) >= u128::from(nbf));
         }
+        assert!(u128::from(now) + u128::from(leeway) >= u128::from(iat));
+        assert!(
+            u128::from(exp)
+                <= u128::from(now) + u128::from(MAX_TOKEN_LIFETIME) + u128::from(leeway)
+        );
     }
 });

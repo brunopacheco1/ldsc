@@ -19,13 +19,17 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
-use portitor_connector::http_client::{SendFuture, Sender};
+use portitor_connector::http_client::Sender;
 use portitor_connector::{Config, Negotiator, Ports};
 use portitor_dsp::negotiation::NegotiationState;
 use portitor_dsp::transfer::TransferState;
 use portitor_dsp::transfer::consumer::{ConsumerTransfer, ConsumerTransferDecision};
+use portitor_runtime::BoxFuture;
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
+
+mod common;
+use common::{CONSUMER as CONSUMER_DID, PROVIDER as PROVIDER_DID, authenticating, bearer};
 
 const PROVIDER: &str = "https://provider.example";
 const CONSUMER: &str = "https://consumer.example";
@@ -70,16 +74,36 @@ impl Network {
     }
 }
 
+/// Only the connectors' authorized calls are on the network: every DSP
+/// request carries the sender's token.
 impl Sender for Network {
-    fn post<'a>(&'a self, url: &'a str, body: &'a Value) -> SendFuture<'a> {
+    fn post<'a>(&'a self, _: &'a str, _: &'a Value) -> BoxFuture<'a, Result<Value, String>> {
+        Box::pin(async { Err("a DSP message without a token".to_owned()) })
+    }
+
+    fn post_authorized<'a>(
+        &'a self,
+        url: &'a str,
+        body: &'a Value,
+        authorization: &'a str,
+    ) -> BoxFuture<'a, Result<Value, String>> {
         Box::pin(async move {
-            let req = Request::post("/").header(header::CONTENT_TYPE, "application/json");
+            let req = Request::post("/")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::AUTHORIZATION, authorization);
             self.call(url, req, Body::from(body.to_string())).await
         })
     }
 
-    fn get<'a>(&'a self, url: &'a str) -> SendFuture<'a> {
-        Box::pin(async move { self.call(url, Request::get("/"), Body::empty()).await })
+    fn get_authorized<'a>(
+        &'a self,
+        url: &'a str,
+        authorization: &'a str,
+    ) -> BoxFuture<'a, Result<Value, String>> {
+        Box::pin(async move {
+            let req = Request::get("/").header(header::AUTHORIZATION, authorization);
+            self.call(url, req, Body::empty()).await
+        })
     }
 }
 
@@ -110,7 +134,7 @@ fn config(participant: &str, public_url: &str) -> Config {
 /// The provider, offering dataset `weather`, and the consumer, both on
 /// `network`. Returns the provider's router and the consumer's handle.
 async fn connectors(network: &Arc<Network>) -> (Router, Negotiator) {
-    let mut provider = config("did:web:provider.example", PROVIDER);
+    let mut provider = config(PROVIDER_DID, PROVIDER);
     provider.datasets = vec![
         serde_json::from_value(json!({
             "@id": "weather",
@@ -124,11 +148,11 @@ async fn connectors(network: &Arc<Network>) -> (Router, Negotiator) {
         .sources
         .insert("weather".to_owned(), upstream().await);
     let sender = Arc::clone(network) as Arc<dyn Sender>;
-    let (provider_app, _) =
-        portitor_connector::build(&provider, Ports::new(Arc::clone(&sender))).unwrap();
-    let consumer = config("did:web:consumer.example", CONSUMER);
-    let (consumer_app, negotiator) =
-        portitor_connector::build(&consumer, Ports::new(sender)).unwrap();
+    let provider_ports = authenticating(Ports::new(Arc::clone(&sender)), PROVIDER_DID);
+    let (provider_app, _) = portitor_connector::build(&provider, provider_ports).unwrap();
+    let consumer = config(CONSUMER_DID, CONSUMER);
+    let consumer_ports = authenticating(Ports::new(sender), CONSUMER_DID);
+    let (consumer_app, negotiator) = portitor_connector::build(&consumer, consumer_ports).unwrap();
     network.join(PROVIDER, provider_app.clone());
     network.join(CONSUMER, consumer_app);
     (provider_app, negotiator)
@@ -169,8 +193,9 @@ async fn negotiate_transfer_fetch_and_complete() {
     let (provider, consumer) = connectors(&network).await;
 
     // the offer, as the provider's catalog shows it
+    let catalog = format!("{PROVIDER}{DSP}/catalog/datasets/weather");
     let dataset = network
-        .get(&format!("{PROVIDER}{DSP}/catalog/datasets/weather"))
+        .get_authorized(&catalog, &bearer(CONSUMER_DID))
         .await
         .unwrap();
     let mut offer: portitor_dsp::Offer =
@@ -178,11 +203,7 @@ async fn negotiate_transfer_fetch_and_complete() {
     offer.target = Some("weather".to_owned());
 
     let n = consumer
-        .start(
-            &format!("{PROVIDER}{DSP}"),
-            "did:web:provider.example",
-            offer,
-        )
+        .start(&format!("{PROVIDER}{DSP}"), PROVIDER_DID, offer)
         .unwrap();
     let n = until(
         || consumer.get(&n.consumer_pid).unwrap(),
