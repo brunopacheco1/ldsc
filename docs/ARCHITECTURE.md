@@ -106,8 +106,8 @@ image keeps its state in its own SQLite file under `/data`.
 
  crates (-> means "uses"):
 
-   portitor-connector --> portitor-dsp, portitor-dps, portitor-runtime
-                          (and portitor-dcp, with ADR 0016)
+   portitor-connector --> portitor-dsp, portitor-dps, portitor-dcp,
+                          portitor-runtime
    portitor-identity  --> portitor-dcp, portitor-runtime
    portitor-runtime   --> portitor-dcp          (adapters: HTTP client,
                                                  did:web resolver, API key,
@@ -120,7 +120,7 @@ image keeps its state in its own SQLite file under `/data`.
   management API, SQLite store. Authenticates every DSP request with DCP
   and signs its own (ADR 0016).
 - `portitor-identity`: binary; the participant's DID document, STS,
-  credential service and management API (ADR 0015, 0.5 in development).
+  credential service and management API (ADR 0015).
 - `portitor-runtime`: library of adapters both binaries share, so they are
   not copied.
 - `portitor-dsp`, `portitor-dps`, `portitor-dcp`, `portitor-time`: domain

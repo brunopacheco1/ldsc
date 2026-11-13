@@ -52,8 +52,14 @@ jobs:
           start=$(date +%s)
           cargo build --release --locked --target x86_64-unknown-linux-musl -p portitor-connector -p portitor-identity
           echo "release build seconds (with cache): $(( $(date +%s) - start ))" >> "$GITHUB_STEP_SUMMARY"
-      - name: Two connectors agree a contract and transfer a file
-        run: scripts/demo.sh target/x86_64-unknown-linux-musl/release/portitor-connector
+      - name: Build the demo authority (test-issuer example, test-only)
+        run: cargo build --locked -p portitor-identity --example test-issuer
+      - name: Two participants agree a contract and transfer a file
+        env:
+          TEST_ISSUER: target/debug/examples/test-issuer
+        run: |
+          scripts/demo.sh target/x86_64-unknown-linux-musl/release/portitor-connector \
+            target/x86_64-unknown-linux-musl/release/portitor-identity
       - name: Build images
         run: |
           mkdir -p dist/amd64
@@ -61,19 +67,20 @@ jobs:
           docker build --target portitor-connector -t portitor-connector:ci .
           docker build --target portitor-identity -t portitor-identity:ci .
           docker image inspect portitor-identity:ci --format 'identity image bytes: {{.Size}}' >> "$GITHUB_STEP_SUMMARY"
-      - name: Connector image starts
+      - name: Connector image (CA bundle, refuses to start without DCP)
         run: |
           # https callbacks need the CA bundle in the image
           id=$(docker create portitor-connector:ci)
           docker cp "$id:/etc/ssl/certs/ca-certificates.crt" ca.crt
           docker rm "$id"
           grep -q "BEGIN CERTIFICATE" ca.crt
-          # the non-root user can create the SQLite file in /data
-          docker run -d --name smoke -p 8080:8080 portitor-connector:ci
-          for _ in $(seq 50); do curl -sf http://127.0.0.1:8080/health && break; sleep 0.2; done
-          curl -sf http://127.0.0.1:8080/health
-          docker logs smoke
-          docker rm -f smoke
+          # without the DCP settings it refuses to start, and says why (it
+          # starts, and writes its SQLite file in /data, in the Compose demo)
+          if docker run --rm portitor-connector:ci > smoke.log 2>&1; then
+            echo "::error::the connector started without PORTITOR_STS_URL"; exit 1
+          fi
+          cat smoke.log
+          grep -q PORTITOR_STS_URL smoke.log
           docker image inspect portitor-connector:ci --format 'connector image bytes: {{.Size}}' >> "$GITHUB_STEP_SUMMARY"
       - name: Identity image starts
         run: |
@@ -99,8 +106,10 @@ jobs:
           # the non-root user created the SQLite file in /data
           docker cp smoke-identity:/data/portitor-identity.db - > /dev/null
           docker rm -f smoke-identity
-      - name: The same in Docker Compose (0.4 exit check)
-        run: scripts/demo-compose.sh portitor-connector:ci
+      - name: The same in Docker Compose
+        env:
+          TEST_ISSUER: target/debug/examples/test-issuer
+        run: scripts/demo-compose.sh portitor-connector:ci portitor-identity:ci
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: portitor-musl

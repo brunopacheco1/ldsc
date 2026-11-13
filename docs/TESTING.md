@@ -23,9 +23,9 @@ project checks every change. All commands run from the repository root.
 | DCP conformance, identity component (TCK) | see [below](#dcp-conformance-tck) | every PR (`TCK`) |
 | Interoperability with EDC v1.0.0-RC7 | `scripts/edc-interop.sh`, see [below](#edc-interop-test) | PRs that touch `crates/`, `interop/edc/` or the script, and nightly (`EDC interop`) |
 | Fuzzing | see [below](#fuzzing) | every PR (short), weekly (long) |
-| Two connectors agree a contract and transfer a file | `scripts/demo.sh` | every PR (`CI`) |
+| Two participants authenticate with DCP, agree a contract and transfer a file | `scripts/demo.sh`, see [below](#two-connectors) | every PR (`CI`) |
 | The same in Docker Compose | `scripts/demo-compose.sh` | every PR (`CI`) |
-| Images build and start | `docker build --target portitor-connector` / `--target portitor-identity`, then a health check (connector) and the DID document (identity) | every PR (`CI`) |
+| Images build and start | `docker build --target portitor-connector` / `--target portitor-identity`; the connector refuses to start without its DCP settings, the identity serves its DID document | every PR (`CI`) |
 | Static analysis | CodeQL, OpenSSF Scorecard, ORT | every PR or on `main` |
 
 You need: Rust (the version in `.github/workflows/ci.yml`; at least the
@@ -292,12 +292,19 @@ is a bug: add the input that caused it as a regression test.
 
 ## Manual tests
 
-Start a connector with the example datasets:
+A connector needs an identity component and a credential for every DSP
+request (ADR 0016), which is more than a quick test wants. The `tck`
+build (test-only) also accepts one fixed header instead,
+`PORTITOR_TCK_AUTHORIZATION`, and sends it on its own requests. Start it
+with the example datasets:
 
 ```sh
 PORTITOR_DATASETS_FILE=examples/datasets.json PORTITOR_ALLOW_HTTP_CALLBACKS=true \
-PORTITOR_DB_FILE=/tmp/portitor-manual.db cargo run -p portitor-connector
+PORTITOR_TCK_AUTHORIZATION=manual-test \
+PORTITOR_DB_FILE=/tmp/portitor-manual.db cargo run -p portitor-connector --features tck
 ```
+
+and send `-H 'authorization: manual-test'` with each DSP request below.
 
 The endpoints are described in [docs/api/openapi.json](api/openapi.json)
 (OpenAPI 3.1). Any OpenAPI tool that resolves relative `$ref`s from the
@@ -309,7 +316,7 @@ API key in the secret `apiKey` variable). With `curl`:
 ```sh
 curl -s localhost:8080/.well-known/dspace-version
 curl -s -X POST localhost:8080/dsp/2025-1/catalog/request \
-  -H 'content-type: application/json' \
+  -H 'authorization: manual-test' -H 'content-type: application/json' \
   -d '{"@context":["https://w3id.org/dspace/2025/1/context.jsonld"],"@type":"CatalogRequestMessage"}'
 ```
 
@@ -332,7 +339,7 @@ is the `weather-stations` offer of the example file:
 
 ```sh
 curl -s -X POST localhost:8080/dsp/2025-1/negotiations/request \
-  -H 'content-type: application/json' -d '{
+  -H 'authorization: manual-test' -H 'content-type: application/json' -d '{
   "@context": ["https://w3id.org/dspace/2025/1/context.jsonld"],
   "@type": "ContractRequestMessage",
   "consumerPid": "urn:uuid:my-test-1",
@@ -349,46 +356,51 @@ provider sends the `FINALIZED` event. `GET
 
 ### Two connectors
 
-`scripts/demo.sh` does all of this in one go and checks the result: it
-starts a provider and a consumer, copies the `air-quality` offer from the
-catalog, negotiates it to `FINALIZED`, and checks that the same offer id
-without its constraint is `TERMINATED`. Then it requests a transfer under
-the agreement, fetches the file with the token, checks it equals
-`examples/data/air-quality.csv`, completes the transfer and checks that the
-token is refused afterwards. It needs `curl`, `jq`, `openssl` and Python 3
-(to serve the file).
-
-`scripts/demo-compose.sh [image]` runs the same checks
-(`scripts/demo-steps.sh`) against the services in
-`examples/compose/compose.yaml`, with the released image or the one you
-name. CI runs both on every pull request, the second with the image it has
-just built.
-
-By hand, one connector as provider, one as consumer, both on your machine:
+`scripts/demo.sh` does all of this in one go, with DCP, and checks the
+result. Each participant (provider and consumer) is a connector and its
+own `portitor-identity`. The demo authority (the `test-issuer` example,
+[above](#the-demo-authority-test-issuer)) publishes its DID document and
+status list on a local `python3 -m http.server`, and delivers each
+identity its `MembershipCredential` the DCP way. Then the checks
+(`scripts/demo-steps.sh`): a catalog request without a token is refused
+(401), one with a token from the consumer's STS is answered; the
+`air-quality` offer copied from the catalog negotiates to `FINALIZED`, the
+same offer id without its constraint is `TERMINATED`. It requests a
+transfer under the agreement, fetches the file with the token, checks it
+equals `examples/data/air-quality.csv`, completes the transfer and checks
+that the token is refused afterwards. It needs `curl`, `jq`, `openssl` and
+Python 3.
 
 ```sh
-cargo build -p portitor-connector
-openssl rand -hex 32 > /tmp/portitor-key
-PORTITOR_BIND=127.0.0.1:9101 PORTITOR_PUBLIC_URL=http://127.0.0.1:9101 \
-PORTITOR_PARTICIPANT_ID=did:web:provider PORTITOR_DATASETS_FILE=examples/datasets.json \
-PORTITOR_ALLOW_HTTP_CALLBACKS=true PORTITOR_DB_FILE=/tmp/portitor-p.db target/debug/portitor-connector &
-PORTITOR_BIND=127.0.0.1:9201 PORTITOR_PUBLIC_URL=http://127.0.0.1:9201 \
-PORTITOR_PARTICIPANT_ID=did:web:consumer PORTITOR_ALLOW_HTTP_CALLBACKS=true \
-PORTITOR_DB_FILE=/tmp/portitor-c.db PORTITOR_MANAGEMENT_BIND=127.0.0.1:9202 \
-PORTITOR_MANAGEMENT_API_KEY_FILE=/tmp/portitor-key target/debug/portitor-connector &
+scripts/demo.sh                      # builds the debug binaries and test-issuer
+TEST_ISSUER=target/debug/examples/test-issuer \
+  scripts/demo.sh <portitor-connector> [<portitor-identity>]
 ```
 
-Read an offer from the provider's catalog, then start the negotiation
-from the consumer's management API (see the README for the request) and
-read it with `GET localhost:9202/v1/negotiations/<consumerPid>`. Within a
-second its state is `FINALIZED` and it holds the agreement.
+`scripts/demo-compose.sh [connector image [identity image]]` runs the same
+checks against the services in `examples/compose/compose.yaml`, with the
+released images or the ones you name; it writes the keys, secrets and the
+authority's site into `examples/compose/run/` first, and `KEEP=1` leaves
+everything running. CI runs both on every pull request, with the binaries
+and images it has just built.
 
+By hand, a provider and a consumer with their identities: start the
+Compose demo and keep it running, then use the consumer's management API
+on `127.0.0.1:18091` with the key in `examples/compose/run/consumer/management.key`
+(the provider is `http://provider:8080/dsp/2025-1`, `did:web:provider-identity%3A8090`):
+
+```sh
+KEEP=1 scripts/demo-compose.sh
+docker compose -f examples/compose/compose.yaml down --volumes   # when done
+```
+
+Start a negotiation from the consumer's management API (see the README
+for the request) and read it with `GET 127.0.0.1:18091/v1/negotiations/<consumerPid>`.
+Within a second its state is `FINALIZED` and it holds the agreement.
 Then request a transfer under that agreement with
-`POST localhost:9202/v1/transfers` and `{"agreementId": "<agreement @id>"}`.
-`examples/datasets.json` names no data source, so the provider refuses
-it and the transfer ends `TERMINATED`; add `"portitor:source": "<an http
-URL>"` to a dataset there to get `STARTED` and a `dataAddress` to fetch
-from.
+`POST 127.0.0.1:18091/v1/transfers` and `{"agreementId": "<agreement @id>"}`;
+the `air-quality` dataset has a data source, so it gets `STARTED` and a
+`dataAddress` to fetch from (on `127.0.0.1:18080`).
 
 ## Debugging in VS Code
 
