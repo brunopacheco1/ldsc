@@ -2,13 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Runs the Eclipse DSP TCK (built from source at a pinned tag) against Portitor.
+# Runs the Eclipse DSP TCK (built from source at a pinned tag) against Portitor,
+# and the DCP TCK's credential service tests against portitor-identity.
 # Must pass: metadata (MET), catalog (CAT), contract negotiation (CN, CN_C)
 # and transfer process (TP, TP_C), as provider and as consumer. The
 # connector is built with the test-only `tck` feature, which scripts
 # decisions per dataset or agreement and adds the endpoints that start
 # consumer tests.
-name: DSP TCK
+name: TCK
 on:
   push:
     branches: [main]
@@ -22,6 +23,10 @@ env:
   RUST_TOOLCHAIN: "1.97.0"
   DSP_TCK_REF: v1.0.2
   DSP_TCK_COMMIT: ee22d21a2dae9ea387695fd96fc3cab405809a05
+  # the released DCP TCK 1.2.1 jar (git tag v1.2.1 is 58a14449d5b8), checked by
+  # its SHA-256; building it from source needs a Java 17 toolchain as well
+  DCP_TCK_JAR: https://repo1.maven.org/maven2/org/eclipse/dataspacetck/dcp/dcp-tck/1.2.1/dcp-tck-1.2.1-all.jar
+  DCP_TCK_SHA256: 2b21af2213c0e89ac1c10d716e59cca58ca24c9e2f38094329500ca299828bd4
 
 jobs:
   tck:
@@ -70,4 +75,70 @@ jobs:
           path: |
             tck.log
             portitor.log
+          retention-days: 14
+
+  # DCP TCK v1.2.1, credential service: the presentation tests and the
+  # holder side of issuance (Storage API, offers), 54 tests. The TCK plays
+  # verifier and issuer and serves their DIDs at 127.0.0.1:8083; it gets
+  # its ID tokens from portitor-identity's STS. The normal build is used:
+  # nothing in these tests needs the `tck` feature.
+  dcp-tck:
+    name: DCP TCK (credential service)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Download TCK
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/dcp-tck.jar" "$DCP_TCK_JAR"
+          echo "$DCP_TCK_SHA256  $RUNNER_TEMP/dcp-tck.jar" | sha256sum -c -
+      - name: Start portitor-identity
+        env:
+          PORTITOR_PARTICIPANT_ID: did:web:localhost%3A8090
+          PORTITOR_BIND: 127.0.0.1:8090
+          PORTITOR_CREDENTIAL_SERVICE_URL: http://localhost:8090
+          PORTITOR_MANAGEMENT_BIND: 127.0.0.1:8091
+          PORTITOR_TRUSTED_ISSUERS: did:web:127.0.0.1%3A8083:issuer
+          PORTITOR_ALLOW_HTTP_CALLBACKS: "true"
+        run: |
+          mkdir -p "$RUNNER_TEMP/identity"
+          cd "$RUNNER_TEMP/identity"
+          openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out key.pem
+          openssl rand -hex 32 > sts.secret
+          openssl rand -hex 32 > api.key
+          cd "$GITHUB_WORKSPACE"
+          cargo build --locked -p portitor-identity
+          PORTITOR_IDENTITY_KEY_FILE="$RUNNER_TEMP/identity/key.pem" \
+          PORTITOR_STS_CLIENT_SECRET_FILE="$RUNNER_TEMP/identity/sts.secret" \
+          PORTITOR_MANAGEMENT_API_KEY_FILE="$RUNNER_TEMP/identity/api.key" \
+          PORTITOR_DB_FILE="$RUNNER_TEMP/identity/identity.db" \
+            nohup target/debug/portitor-identity > identity.log 2>&1 &
+          for _ in $(seq 50); do curl -sf http://127.0.0.1:8090/health && break; sleep 0.2; done
+          # the request the TCK's test credentials answer
+          # (dataspacetck.credentials.correlation.id in tck/dcp-tck.properties)
+          curl -sf -X POST http://127.0.0.1:8091/v1/credential-requests \
+            -H "Authorization: Bearer $(cat "$RUNNER_TEMP/identity/api.key")" \
+            -H 'Content-Type: application/json' \
+            -d '{"issuerDid": "did:web:127.0.0.1%3A8083:issuer", "holderPid": "portitor-dcp-tck"}'
+      - name: Run TCK
+        run: |
+          DATASPACETCK_STS_CLIENT_SECRET="$(cat "$RUNNER_TEMP/identity/sts.secret")" \
+            java -jar "$RUNNER_TEMP/dcp-tck.jar" -config tck/dcp-tck.properties | tee dcp-tck.log
+      - name: Check results
+        run: python3 scripts/dcp_tck_check.py dcp-tck.log
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dcp-tck-log
+          path: |
+            dcp-tck.log
+            identity.log
           retention-days: 14

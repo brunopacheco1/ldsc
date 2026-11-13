@@ -2,13 +2,16 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Parsing of the DCP messages a Credential Service receives, from any
-//! bytes. Parsing must never panic; a message that parses must be written
-//! back and parse again to the same value.
+//! Parsing of the DCP messages a Credential Service receives (and the
+//! issuer metadata it reads), from any bytes. Parsing must never panic;
+//! a message that parses must be written back and parse again to the
+//! same value.
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use portitor_dcp::message::{CredentialMessage, CredentialOfferMessage, PresentationQueryMessage};
+use portitor_dcp::message::{
+    CredentialMessage, CredentialOfferMessage, IssuerMetadata, PresentationQueryMessage,
+};
 use portitor_dcp::scope::Scope;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -31,4 +34,5 @@ fuzz_target!(|data: &[u8]| {
     }
     let _ = round_trip::<CredentialMessage>(data);
     let _ = round_trip::<CredentialOfferMessage>(data);
+    let _ = round_trip::<IssuerMetadata>(data);
 });

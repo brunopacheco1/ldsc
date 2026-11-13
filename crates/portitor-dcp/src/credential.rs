@@ -53,6 +53,14 @@ impl Profile {
             Self::Vc20 => "vc20-bssl/jwt",
         }
     }
+
+    /// The profile with this alias, if Portitor supports it.
+    #[must_use]
+    pub fn from_alias(alias: &str) -> Option<Self> {
+        [Self::Vc11, Self::Vc20]
+            .into_iter()
+            .find(|profile| profile.alias() == alias)
+    }
 }
 
 /// Why a credential or presentation is refused.
@@ -162,7 +170,10 @@ impl Credential {
             "iss and issuer differ",
         )?
         .ok_or(CredentialError::Unsupported("no issuer"))?;
-        let id = agree(text(claims, "jti"), body.id.as_deref(), "jti and id differ")?;
+        // section 6.3.1 has `jti` stand for `id`. The DCP TCK v1.2.1
+        // (`JwtCredentialGenerator`) sets both, to two different random
+        // values, so the credential's own `id` wins when both are present.
+        let id = body.id.or_else(|| text(claims, "jti").map(str::to_owned));
         let mut subjects = body.subjects;
         if let Some(sub) = text(claims, "sub") {
             match subjects.as_mut_slice() {
@@ -190,7 +201,7 @@ impl Credential {
         };
         Ok(Self {
             profile: Profile::Vc11,
-            id: id.map(str::to_owned),
+            id,
             types: body.types,
             issuer: issuer.to_owned(),
             subjects,

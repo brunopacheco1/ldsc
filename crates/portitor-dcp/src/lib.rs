@@ -10,16 +10,17 @@
 //! Only `ES256` and `PS256` are accepted. Any other `alg`, including
 //! `none`, is rejected before a key is even looked up.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
+use base64::engine::general_purpose::{STANDARD as PEM_B64, URL_SAFE_NO_PAD as B64};
 use ring::rand::SystemRandom;
 use ring::signature::{self, EcdsaKeyPair, KeyPair as _, RsaPublicKeyComponents};
 use serde::{Deserialize, Serialize};
 
 pub mod credential;
 mod gzip;
+pub mod holder;
 pub mod message;
 pub mod scope;
 pub mod status_list;
@@ -76,6 +77,25 @@ pub enum Jwk {
         /// Exponent, base64url.
         e: String,
     },
+}
+
+impl Jwk {
+    /// The key's JWK thumbprint (RFC 7638): the SHA-256 hash of its
+    /// required members in a fixed order, base64url. A stable name for the
+    /// key, used as the fragment of its key id.
+    #[must_use]
+    pub fn thumbprint(&self) -> String {
+        // RFC 7638 section 3.2: required members only, in lexical order,
+        // no white space; serde_json writes the strings with JSON escaping
+        let members = match self {
+            Self::EC { crv, x, y } => serde_json::json!({"crv": crv, "kty": "EC", "x": x, "y": y}),
+            Self::RSA { n, e } => serde_json::json!({"e": e, "kty": "RSA", "n": n}),
+        };
+        // serde_json's map keeps keys sorted (no "preserve_order" feature),
+        // which is the lexical order RFC 7638 asks for
+        let text = members.to_string();
+        B64.encode(ring::digest::digest(&ring::digest::SHA256, text.as_bytes()))
+    }
 }
 
 /// A DID document verification method.
@@ -166,9 +186,16 @@ impl DidDocument {
     /// The URL of the first `CredentialService` listed, if any.
     #[must_use]
     pub fn credential_service(&self) -> Option<&str> {
+        self.service_url("CredentialService")
+    }
+
+    /// The URL of the first service of type `kind` (for example
+    /// `IssuerService`, DCP issuance protocol, section 6.1), if any.
+    #[must_use]
+    pub fn service_url(&self, kind: &str) -> Option<&str> {
         self.service
             .iter()
-            .find(|s| s.kind == "CredentialService")
+            .find(|s| s.kind == kind)
             .and_then(|s| s.service_endpoint.as_str())
     }
 
@@ -267,7 +294,9 @@ pub struct Claims {
     pub iss: String,
     /// Subject: the participant DID.
     pub sub: String,
-    /// Audience: the verifier DID.
+    /// Audience: the verifier DID. A JWT may write it as a list (RFC
+    /// 7519, section 4.1.3); a list of exactly one is read as that one.
+    #[serde(deserialize_with = "one_audience")]
     pub aud: String,
     /// Unique token id, against replay.
     pub jti: String,
@@ -281,6 +310,23 @@ pub struct Claims {
     /// Optional access token for the credential service.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
+}
+
+/// `aud` as a string, or as a list holding exactly one string.
+fn one_audience<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Audience {
+        One(String),
+        List(Vec<String>),
+    }
+    match Audience::deserialize(deserializer)? {
+        Audience::One(one) => Ok(one),
+        Audience::List(list) => match <[String; 1]>::try_from(list) {
+            Ok([only]) => Ok(only),
+            Err(_) => Err(serde::de::Error::custom("aud must name one audience")),
+        },
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -297,6 +343,13 @@ pub struct SigningKey {
     pair: EcdsaKeyPair,
     pkcs8: Vec<u8>,
     rng: SystemRandom,
+}
+
+/// Shows only the public key's thumbprint, never the private key.
+impl std::fmt::Debug for SigningKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SigningKey({})", self.public_jwk().thumbprint())
+    }
 }
 
 impl SigningKey {
@@ -324,6 +377,35 @@ impl SigningKey {
             pkcs8: der.to_vec(),
             rng,
         })
+    }
+
+    /// Loads a P-256 key from PEM text holding an unencrypted PKCS#8 key
+    /// (`-----BEGIN PRIVATE KEY-----`), as written by `openssl genpkey
+    /// -algorithm EC -pkeyopt ec_paramgen_curve:P-256`.
+    ///
+    /// # Errors
+    /// No PKCS#8 block, bad base64, or not a P-256 key. A SEC1 key (`BEGIN
+    /// EC PRIVATE KEY`) gets its own message, with the command to convert
+    /// it.
+    pub fn from_pem(pem: &str) -> Result<Self, Error> {
+        const BEGIN: &str = "-----BEGIN PRIVATE KEY-----";
+        const END: &str = "-----END PRIVATE KEY-----";
+        if pem.contains("-----BEGIN EC PRIVATE KEY-----") {
+            return Err(Error::Key(
+                "SEC1 key; convert it with: openssl pkcs8 -topk8 -nocrypt",
+            ));
+        }
+        let (_, after_begin) = pem
+            .split_once(BEGIN)
+            .ok_or(Error::Key("no PKCS#8 PEM block"))?;
+        let (body, _) = after_begin
+            .split_once(END)
+            .ok_or(Error::Key("PEM block not closed"))?;
+        let base64: String = body.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+        let der = PEM_B64
+            .decode(base64)
+            .map_err(|_| Error::Key("PEM base64"))?;
+        Self::from_pkcs8(&der)
     }
 
     /// The PKCS#8 DER bytes, for storage.
@@ -475,9 +557,37 @@ impl<'a> Jws<'a> {
     }
 }
 
-/// Remembers used `jti` values. A real deployment stores them until `exp`.
+/// Remembers used `jti` values until the token they came from has
+/// expired; after that the token is refused for its age anyway (ADR 0016:
+/// in memory, one replica per store).
 #[derive(Debug, Default)]
-pub struct JtiCache(HashSet<String>);
+pub struct JtiCache(HashMap<String, u64>);
+
+impl JtiCache {
+    /// Records `jti` as used until `until` (seconds since 1970). Returns
+    /// false if it was already used and not yet forgotten. Forgets every
+    /// entry whose time has passed at `now`, so the cache stays small.
+    pub fn remember(&mut self, jti: &str, until: u64, now: u64) -> bool {
+        self.0.retain(|_, kept_until| *kept_until >= now);
+        if self.0.contains_key(jti) {
+            return false;
+        }
+        self.0.insert(jti.to_owned(), until);
+        true
+    }
+
+    /// How many token ids are remembered.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether no token id is remembered.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
 
 /// Validates a self-issued ID token, following DCP 1.0 "Validating
 /// Self-Issued ID Tokens" step by step. `doc` is the resolved DID document
@@ -495,8 +605,7 @@ pub fn validate_self_issued(
     jti_cache: &mut JtiCache,
 ) -> Result<Claims, Error> {
     let jws = Jws::parse(token)?;
-    let claims: Claims =
-        serde_json::from_slice(jws.payload()).map_err(|_| Error::Malformed("claims json"))?;
+    let claims = claims_of(&jws)?;
     // 1. iss == sub
     if claims.iss != claims.sub {
         return Err(Error::Invalid("iss and sub differ"));
@@ -522,11 +631,30 @@ pub fn validate_self_issued(
     if now >= claims.exp.saturating_add(leeway) {
         return Err(Error::Invalid("expired"));
     }
-    // 6. jti not used before
-    if !jti_cache.0.insert(claims.jti.clone()) {
+    // not a DCP step, but a token issued in the future is not trusted
+    // either (the DCP TCK v1.2.1 tests it on the Storage and Offer APIs)
+    if now.saturating_add(leeway) < claims.iat {
+        return Err(Error::Invalid("issued in the future"));
+    }
+    // 6. jti not used before; remembered as long as the token is valid
+    if !jti_cache.remember(&claims.jti, claims.exp.saturating_add(leeway), now) {
         return Err(Error::Invalid("jti replayed"));
     }
     Ok(claims)
+}
+
+/// The claims of a self-issued ID token, **not verified**: only to learn
+/// whose DID document is needed (`sub`) before [`validate_self_issued`]
+/// checks the token.
+///
+/// # Errors
+/// Not a JWS with an allowed algorithm, or the claims are not a token's.
+pub fn unverified_claims(token: &str) -> Result<Claims, Error> {
+    claims_of(&Jws::parse(token)?)
+}
+
+fn claims_of(jws: &Jws<'_>) -> Result<Claims, Error> {
+    serde_json::from_slice(jws.payload()).map_err(|_| Error::Malformed("claims json"))
 }
 
 #[cfg(test)]
@@ -607,6 +735,94 @@ mod tests {
         claims.nbf = None;
         let t = key.sign(&format!("{ALICE}#key-1"), &claims).unwrap();
         assert!(validate_self_issued(&t, &doc, BOB, 1_500, 60, &mut c).is_ok());
+    }
+
+    #[test]
+    fn rejects_tokens_issued_in_the_future() {
+        let (key, doc, mut claims) = setup();
+        claims.iat = 1_600;
+        let t = key.sign(&format!("{ALICE}#key-1"), &claims).unwrap();
+        let mut c = JtiCache::default();
+        assert_eq!(
+            validate_self_issued(&t, &doc, BOB, 1_500, 60, &mut c),
+            Err(Error::Invalid("issued in the future"))
+        );
+        assert!(validate_self_issued(&t, &doc, BOB, 1_550, 60, &mut c).is_ok());
+    }
+
+    #[test]
+    fn audience_may_be_a_list_of_one() {
+        let (key, doc, _) = setup();
+        let claims = |aud: serde_json::Value| serde_json::json!({"iss": ALICE, "sub": ALICE, "aud": aud, "jti": "j", "exp": 2_000, "iat": 1_000});
+        let t = key
+            .sign_json("#key-1", "JWT", &claims(serde_json::json!([BOB])))
+            .unwrap();
+        let mut c = JtiCache::default();
+        assert_eq!(
+            validate_self_issued(&t, &doc, BOB, 1_500, 0, &mut c)
+                .unwrap()
+                .aud,
+            BOB
+        );
+        let t = key
+            .sign_json("#key-1", "JWT", &claims(serde_json::json!([BOB, ALICE])))
+            .unwrap();
+        assert_eq!(
+            validate_self_issued(&t, &doc, BOB, 1_500, 0, &mut c),
+            Err(Error::Malformed("claims json"))
+        );
+    }
+
+    #[test]
+    fn used_ids_are_forgotten_after_expiry() {
+        let mut cache = JtiCache::default();
+        assert!(cache.remember("a", 100, 10));
+        assert!(!cache.remember("a", 100, 50));
+        assert!(cache.remember("b", 300, 200), "a is forgotten at 200");
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn keys_load_from_pem() {
+        let key = SigningKey::generate().unwrap();
+        let pem = format!(
+            "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\n",
+            PEM_B64.encode(key.pkcs8())
+        );
+        assert_eq!(
+            SigningKey::from_pem(&pem).unwrap().public_jwk(),
+            key.public_jwk()
+        );
+        // written by `openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256`
+        let openssl = include_str!("../tests/fixtures/test-only-p256.pem");
+        assert!(SigningKey::from_pem(openssl).is_ok());
+        assert_eq!(
+            SigningKey::from_pem(
+                "-----BEGIN EC PRIVATE KEY-----\nAA==\n-----END EC PRIVATE KEY-----"
+            )
+            .err(),
+            Some(Error::Key(
+                "SEC1 key; convert it with: openssl pkcs8 -topk8 -nocrypt"
+            ))
+        );
+        assert!(SigningKey::from_pem("no key here").is_err());
+        assert!(
+            SigningKey::from_pem("-----BEGIN PRIVATE KEY-----\n!!\n-----END PRIVATE KEY-----")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn thumbprint_matches_rfc_7638() {
+        // RFC 7638 section 3.1, the RSA example key
+        let jwk = Jwk::RSA {
+            n: "0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM78LhWx4cbbfAAtVT86zwu1RK7aPFFxuhDR1L6tSoc_BJECPebWKRXjBZCiFV4n3oknjhMstn64tZ_2W-5JsGY4Hc5n9yBXArwl93lqt7_RN5w6Cf0h4QyQ5v-65YGjQR0_FDW2QvzqY368QQMicAtaSqzs8KJZgnYb9c7d0zgdAZHzu6qMQvRL5hajrn1n91CbOpbISD08qNLyrdkt-bFTWhAI4vMQFh6WeZu0fM4lFd2NcRwr3XPksINHaQ-G_xBniIqbw0Ls1jF44-csFCur-kEgU8awapJzKnqDKgw".to_owned(),
+            e: "AQAB".to_owned(),
+        };
+        assert_eq!(
+            jwk.thumbprint(),
+            "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs"
+        );
     }
 
     #[test]

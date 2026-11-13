@@ -78,5 +78,6 @@ fuzz_target!(|data: &[u8]| {
         if let Some(nbf) = claims.nbf {
             assert!(u128::from(now) + u128::from(leeway) >= u128::from(nbf));
         }
+        assert!(u128::from(now) + u128::from(leeway) >= u128::from(iat));
     }
 });

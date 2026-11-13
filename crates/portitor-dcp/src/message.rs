@@ -107,6 +107,10 @@ type_name!(
     /// `type` of a [`CredentialObject`].
     CredentialObjectType = "CredentialObject"
 );
+type_name!(
+    /// `type` of an [`IssuerMetadata`].
+    IssuerMetadataType = "IssuerMetadata"
+);
 
 /// A verifier asks a Credential Service for presentations (DCP section
 /// 5.4.1, `POST /presentations/query`).
@@ -135,12 +139,21 @@ pub enum QueryError {
     /// 5.4.1: the message "MUST contain either").
     #[error("the query has neither a scope nor a presentation definition")]
     NothingAsked,
+    /// Both are present: DCP 5.4.1 says "it is an error and the server
+    /// MUST return an `HTTP 400 BAD REQUEST` response".
+    #[error("the query has both a scope and a presentation definition")]
+    ScopeAndDefinition,
     /// The `scope` array is empty (DCP 5.4.1.2: "If the array is empty,
     /// the Credential Service MUST return HTTP 4xx").
     #[error("the scope array is empty")]
     EmptyScope,
+    /// The presentation definition is empty or not an object; DCP 5.4.1
+    /// asks for "a non-empty, valid" one.
+    #[error("the presentation definition is empty")]
+    EmptyDefinition,
     /// Only a presentation definition was sent; Portitor 0.5 supports
-    /// scopes only (ADR 0015).
+    /// scopes only (ADR 0015). DCP 5.4.1.1: an implementation without
+    /// them "MUST return `501 Not Implemented`".
     #[error("presentation definitions are not supported, use scopes")]
     DefinitionNotSupported,
 }
@@ -160,13 +173,18 @@ impl PresentationQueryMessage {
     /// The scopes asked for.
     ///
     /// # Errors
-    /// The query asks nothing, has an empty scope list, or uses only a
-    /// presentation definition.
+    /// The query asks nothing, has an empty scope list, has both scopes
+    /// and a presentation definition, or uses only a presentation
+    /// definition.
     pub fn scopes(&self) -> Result<&[String], QueryError> {
         match (&self.scope, &self.presentation_definition) {
-            (Some(scopes), _) if scopes.is_empty() => Err(QueryError::EmptyScope),
-            (Some(scopes), _) => Ok(scopes),
-            (None, Some(_)) => Err(QueryError::DefinitionNotSupported),
+            (Some(_), Some(_)) => Err(QueryError::ScopeAndDefinition),
+            (Some(scopes), None) if scopes.is_empty() => Err(QueryError::EmptyScope),
+            (Some(scopes), None) => Ok(scopes),
+            (None, Some(Value::Object(definition))) if !definition.is_empty() => {
+                Err(QueryError::DefinitionNotSupported)
+            }
+            (None, Some(_)) => Err(QueryError::EmptyDefinition),
             (None, None) => Err(QueryError::NothingAsked),
         }
     }
@@ -294,6 +312,36 @@ pub struct CredentialObject {
     pub issuance_policy: Option<Value>,
 }
 
+impl CredentialObject {
+    /// Whether the offer names the credential by `id` only (DCP 6.6:
+    /// "sparse"), so its other properties must be read from the issuer's
+    /// [`IssuerMetadata`]. Portitor counts an object without a
+    /// `credentialType` as sparse, since that is what a holder needs to
+    /// know.
+    #[must_use]
+    pub fn is_sparse(&self) -> bool {
+        self.credential_type.is_none()
+    }
+}
+
+/// What an issuer can issue (DCP section 6.7, Issuer Metadata API, `GET
+/// /metadata` on the issuer's `IssuerService`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IssuerMetadata {
+    /// JSON-LD context.
+    #[serde(rename = "@context")]
+    pub context: Context,
+    /// Always `IssuerMetadata`.
+    #[serde(rename = "type")]
+    pub kind: IssuerMetadataType,
+    /// The issuer's DID.
+    pub issuer: String,
+    /// The credentials the issuer offers.
+    #[serde(default)]
+    pub credentials_supported: Vec<CredentialObject>,
+}
+
 /// An issuer tells a holder that credentials are available (DCP section
 /// 6.6, `POST /offers`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -340,6 +388,19 @@ mod tests {
         .unwrap();
         assert_eq!(definition.scopes(), Err(QueryError::DefinitionNotSupported));
 
+        let both: PresentationQueryMessage = serde_json::from_value(json!({
+            "@context": [CONTEXT], "type": "PresentationQueryMessage", "scope": ["a:b"],
+            "presentationDefinition": {"id": "x", "input_descriptors": []}
+        }))
+        .unwrap();
+        assert_eq!(both.scopes(), Err(QueryError::ScopeAndDefinition));
+
+        let empty_definition: PresentationQueryMessage = serde_json::from_value(json!({
+            "@context": [CONTEXT], "type": "PresentationQueryMessage", "presentationDefinition": {}
+        }))
+        .unwrap();
+        assert_eq!(empty_definition.scopes(), Err(QueryError::EmptyDefinition));
+
         let nothing: PresentationQueryMessage = serde_json::from_value(json!({
             "@context": [CONTEXT], "type": "PresentationQueryMessage"
         }))
@@ -380,6 +441,18 @@ mod tests {
         .unwrap();
         assert_eq!(offer.credentials[0].id, "membership");
         assert_eq!(offer.credentials[0].kind, None);
+        assert!(offer.credentials[0].is_sparse());
+    }
+
+    #[test]
+    fn issuer_metadata_parses() {
+        let metadata: IssuerMetadata = serde_json::from_value(json!({
+            "@context": [CONTEXT], "type": "IssuerMetadata", "issuer": "did:web:issuer.example",
+            "credentialsSupported": [{"id": "m-1", "type": "CredentialObject",
+                "credentialType": "MembershipCredential", "profile": "vc11-sl2021/jwt"}]
+        }))
+        .unwrap();
+        assert!(!metadata.credentials_supported[0].is_sparse());
     }
 
     #[test]

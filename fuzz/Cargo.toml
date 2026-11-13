@@ -85,3 +85,10 @@ path = "fuzz_targets/dcp_credentials.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "dcp_access_token"
+path = "fuzz_targets/dcp_access_token.rs"
+test = false
+doc = false
+bench = false

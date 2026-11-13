@@ -28,10 +28,10 @@ use portitor_dsp::transfer::consumer::{ConsumerTransfer, ConsumerTransferDecisio
 use portitor_dsp::transfer::provider::Failure as TransferFailure;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
-use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
+use utoipa::{IntoParams, OpenApi, ToSchema};
 
 use crate::Negotiator;
+use portitor_runtime::api_key::BearerKey;
 pub use portitor_runtime::api_key::{ApiKey, MIN_KEY_LEN, Problem, problem, require_key};
 
 /// Where the management API listens, and its key.
@@ -505,25 +505,6 @@ fn next_after<T>(found: &[T], limit: usize, key: impl Fn(&T) -> &String) -> Opti
     (found.len() == limit)
         .then(|| found.last().map(|l| key(l).clone()))
         .flatten()
-}
-
-struct BearerKey;
-
-impl Modify for BearerKey {
-    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
-        let components = openapi.components.get_or_insert_with(Default::default);
-        components.add_security_scheme(
-            "api_key",
-            SecurityScheme::Http(
-                HttpBuilder::new()
-                    .scheme(HttpAuthScheme::Bearer)
-                    .description(Some(
-                        "The key from PORTITOR_MANAGEMENT_API_KEY_FILE: Authorization: Bearer <key>",
-                    ))
-                    .build(),
-            ),
-        );
-    }
 }
 
 /// The `OpenAPI` description of the management API.

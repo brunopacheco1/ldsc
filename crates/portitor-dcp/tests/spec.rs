@@ -21,7 +21,7 @@
 #![allow(clippy::unwrap_used, missing_docs)]
 
 use portitor_dcp::message::{
-    CredentialMessage, CredentialOfferMessage, PresentationQueryMessage,
+    CredentialMessage, CredentialOfferMessage, IssuerMetadata, PresentationQueryMessage,
     PresentationResponseMessage,
 };
 use serde::Serialize;
@@ -53,6 +53,10 @@ const SCHEMAS: &[(&str, &str)] = &[
     (
         "https://w3id.org/dspace-dcp/v1.0/issuance/credential-object-schema.json",
         include_str!("schemas/credential-object-schema.json"),
+    ),
+    (
+        "https://w3id.org/dspace-dcp/v1.0/issuance/issuer-metadata-schema.json",
+        include_str!("schemas/issuer-metadata-schema.json"),
     ),
 ];
 
@@ -135,6 +139,11 @@ fn offer_message() {
         "credential-offer-message-schema.json",
         &example("credential-offer-message"),
     );
+}
+
+#[test]
+fn issuer_metadata() {
+    check::<IssuerMetadata>("issuer-metadata-schema.json", &example("issuer-metadata"));
 }
 
 #[test]

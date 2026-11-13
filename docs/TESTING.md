@@ -19,7 +19,8 @@ project checks every change. All commands run from the repository root.
 | Coverage | `cargo llvm-cov --workspace` | every PR (`CI`, sent to SonarQube Cloud) |
 | Dependencies: advisories, licences, sources | `cargo deny check` | every PR |
 | Licence headers | `reuse lint` | every PR (`REUSE compliance`) |
-| DSP conformance (TCK) | see [below](#dsp-conformance-tck) | every PR (`DSP TCK`) |
+| DSP conformance (TCK) | see [below](#dsp-conformance-tck) | every PR (`TCK`) |
+| DCP conformance, identity component (TCK) | see [below](#dcp-conformance-tck) | every PR (`TCK`) |
 | Fuzzing | see [below](#fuzzing) | every PR (short), weekly (long) |
 | Two connectors agree a contract and transfer a file | `scripts/demo.sh` | every PR (`CI`) |
 | The same in Docker Compose | `scripts/demo-compose.sh` | every PR (`CI`) |
@@ -97,7 +98,7 @@ command above but not counted.
 ## DSP conformance (TCK)
 
 The Eclipse DSP Technology Compatibility Kit (TCK) acts as the other
-connector and checks that Portitor follows DSP 2025-1. The `DSP TCK` workflow
+connector and checks that Portitor follows DSP 2025-1. The `TCK` workflow
 builds it from source at a pinned commit. Required today: metadata (MET),
 catalog (CAT), contract negotiation as provider (CN:01 to CN:03) and as
 consumer (CN_C:01 to CN_C:03), and the transfer process as provider
@@ -138,6 +139,53 @@ To add a TCK group: add its datasets to `tck/datasets.json`, its
 properties to `tck/dsp-tck.properties`, scripted behaviour (if any) to
 `src/tck.rs`, and its test ids to `REQUIRED` in `scripts/tck_check.py`.
 
+## DCP conformance (TCK)
+
+The Eclipse DCP TCK v1.2.1 checks the identity component
+(`portitor-identity`) as a credential service: the presentation tests
+(DCP sections 4 and 5) and the holder side of issuance (Storage API and
+credential offers, section 6), 54 tests. The TCK plays the verifier and
+the issuer, serves their DID documents itself, and gets its ID tokens from
+the identity component's STS. Before each test it delivers two test
+credentials through the Storage API, so the run needs the TCK's issuer in
+`PORTITOR_TRUSTED_ISSUERS` and a credential request with the TCK's
+correlation id (`dataspacetck.credentials.correlation.id` in
+`tck/dcp-tck.properties`). The three presentation definition tests are
+disabled in the TCK itself. The `TCK` workflow downloads the released TCK
+jar, checks its SHA-256, and runs it against the normal build of
+`portitor-identity` (building the TCK from source needs a Java 17
+toolchain as well as 21).
+
+To run it locally:
+
+```sh
+# 1. Get the TCK and check it against the .sha1 file next to it
+curl -LO https://repo1.maven.org/maven2/org/eclipse/dataspacetck/dcp/dcp-tck/1.2.1/dcp-tck-1.2.1-all.jar
+curl -L https://repo1.maven.org/maven2/org/eclipse/dataspacetck/dcp/dcp-tck/1.2.1/dcp-tck-1.2.1-all.jar.sha1; echo
+sha1sum dcp-tck-1.2.1-all.jar
+
+# 2. Start the identity component with the TCK's issuer trusted
+cargo build -p portitor-identity
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out /tmp/id-key.pem
+openssl rand -hex 32 > /tmp/id-sts.secret
+openssl rand -hex 32 > /tmp/id-api.key
+PORTITOR_PARTICIPANT_ID='did:web:localhost%3A8090' PORTITOR_BIND=127.0.0.1:8090 \
+PORTITOR_CREDENTIAL_SERVICE_URL=http://localhost:8090 PORTITOR_IDENTITY_KEY_FILE=/tmp/id-key.pem \
+PORTITOR_STS_CLIENT_SECRET_FILE=/tmp/id-sts.secret PORTITOR_MANAGEMENT_API_KEY_FILE=/tmp/id-api.key \
+PORTITOR_TRUSTED_ISSUERS='did:web:127.0.0.1%3A8083:issuer' PORTITOR_ALLOW_HTTP_CALLBACKS=true \
+PORTITOR_DB_FILE=/tmp/portitor-identity-tck.db target/debug/portitor-identity &
+
+# 3. Record the request the test credentials answer
+curl -X POST localhost:8091/v1/credential-requests -H "Authorization: Bearer $(cat /tmp/id-api.key)" \
+  -H 'Content-Type: application/json' \
+  -d '{"issuerDid": "did:web:127.0.0.1%3A8083:issuer", "holderPid": "portitor-dcp-tck"}'
+
+# 4. Run it and check that all 54 tests passed
+DATASPACETCK_STS_CLIENT_SECRET=$(cat /tmp/id-sts.secret) \
+  java -jar dcp-tck-1.2.1-all.jar -config tck/dcp-tck.properties > dcp-tck.log
+python3 scripts/dcp_tck_check.py dcp-tck.log
+```
+
 ## Fuzzing
 
 Parsers and state machines are fuzzed with `cargo-fuzz` (libFuzzer). It
@@ -151,7 +199,7 @@ cargo +nightly fuzz run dsp_negotiation -- -max_total_time=60
 
 Targets (`fuzz/fuzz_targets`): `dsp_messages`, `dsp_negotiation`, `dsp_transfer`,
 `odrl_policy`, `dcp_token_parse`, `dcp_token_validate`, `dcp_messages`,
-`dcp_status_list`, `dcp_credentials`. A new parser of untrusted input
+`dcp_status_list`, `dcp_credentials`, `dcp_access_token`. A new parser of untrusted input
 gets a target. In CI, ClusterFuzzLite fuzzes every pull request briefly
 (`cflite_pr.yml`) and runs longer each week (`cflite_batch.yml`). A crash
 is a bug: add the input that caused it as a regression test.

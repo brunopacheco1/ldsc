@@ -169,6 +169,27 @@ fn vc11_credential_from_the_tck_shape() {
 }
 
 #[test]
+fn vc11_credential_id_wins_over_jti() {
+    // the DCP TCK v1.2.1 writes a random `jti` and another random `id`
+    let issuer = Party::new(ISSUER);
+    let jwt = issuer.sign(
+        "JWT",
+        &json!({
+            "iss": ISSUER, "sub": ALICE, "jti": "5e1d0c44-random", "exp": NOW + 300,
+            "vc": {
+                "@context": [VC1_CONTEXT], "id": "urn:uuid:c-9",
+                "type": ["VerifiableCredential", "MembershipCredential"],
+                "issuer": ISSUER, "issuanceDate": "2026-11-13T16:59:00.123456Z",
+                "credentialSubject": {"id": ALICE}
+            }
+        }),
+    );
+    let credential = Credential::parse(&jwt).unwrap();
+    assert_eq!(credential.id.as_deref(), Some("urn:uuid:c-9"));
+    credential.verify(&issuer.doc, NOW, 0).unwrap();
+}
+
+#[test]
 fn vc20_credential() {
     let issuer = Party::new(ISSUER);
     let status = json!({"credentialStatus": {
