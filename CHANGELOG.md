@@ -30,8 +30,8 @@ versions may change behaviour and configuration.
 - ADR 0017 (proposed): how to join a Simpl-Open data space. No
   x509/mTLS profile in Portitor; Simpl-Open's connector speaks DSP
   2025-1 but not DCP, and its agents authenticate at a Tier 2 gateway.
-- DCP v1.0.1 building blocks in `portitor-dcp` (0.5, ADR 0015), not yet
-  used by a running service: the presentation query and response
+- DCP v1.0.1 building blocks in `portitor-dcp` (0.5, ADR 0015), used by
+  the identity component and the connector: the presentation query and response
   messages, the credential and offer messages of the issuance protocol,
   scopes (`org.eclipse.dspace.dcp.vc.type`, `...vc.id`, and configured
   aliases such as EDC's), and status list checks for revocation
@@ -118,6 +118,10 @@ versions may change behaviour and configuration.
   Each negotiation and transfer is bound to the participant that started
   it; as provider, another caller is told it does not exist, and as
   consumer, only the provider it was started with may use the callbacks.
+  Upgrading from 0.4: finish or terminate negotiations and transfers in
+  progress first, and negotiate again for agreements made by 0.4 (their
+  consumer is `urn:portitor:unauthenticated`, so no transfer starts under
+  them). See `DEPLOYING.md`, "From 0.4 to 0.5".
 - The management API refuses a `providerId` that is not a `did:web` DID,
   and an agreement whose assigner is not the provider is refused.
 - The catalog request endpoint also reads the expanded JSON-LD request
