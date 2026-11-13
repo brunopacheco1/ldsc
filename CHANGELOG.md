@@ -27,6 +27,9 @@ versions may change behaviour and configuration.
 
 ### Fixed
 
+- The CI check that domain crates have no I/O dependencies (ADR 0004) also
+  refuses SQLite, TLS and low-level network crates; ADR 0004 records why
+  `portitor-dcp` takes signing randomness from the operating system.
 - The website publishes the identity's OpenAPI descriptions next to the
   connector's, and its API page links all of them.
 - `docs/ARCHITECTURE.md` no longer lists PostgreSQL as required: each

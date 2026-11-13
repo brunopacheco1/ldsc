@@ -42,6 +42,28 @@ Clean code is enforced by tools: rustfmt, clippy pedantic as errors, no
 `unsafe` or `unwrap` outside tests, and the Sonar quality gate
 (duplication, complexity, coverage on new code).
 
+### Amended after the 0.5 release (2026-11-14)
+
+The decision stands; two details are now written down:
+
+- **The CI check names more crates.** It refused only axum, hyper,
+  tokio, sqlx and reqwest, so a domain crate could have added SQLite or
+  TLS unnoticed. It now also refuses hyper-util, hyper-rustls, mio,
+  socket2, ureq, rusqlite, libsqlite3-sys, postgres and rustls
+  (`.github/workflows/ci.yml`, "Domain crates have no I/O
+  dependencies"). No domain crate used any of them.
+- **One exception to "randomness only through ports":** `portitor-dcp`
+  signs with ECDSA P-256 (`SigningKey` in `keys.rs`), which needs a fresh
+  random number for every signature (and for `SigningKey::generate`, used
+  in tests). It takes
+  that randomness from the operating system through `ring`'s
+  `SystemRandom`, not through a port. A port would let a caller pass a
+  weak or repeated source, and a repeated ECDSA nonce reveals the private
+  key; keeping the source inside the crypto library is the safer design.
+  Ids and the clock still come through ports
+  (`Environment` in `portitor-dsp`; the time is passed in as `now` in
+  `portitor-dcp`).
+
 ## Consequences
 
 - Protocol logic is tested and fuzzed without servers or databases.
