@@ -189,7 +189,7 @@ impl std::fmt::Debug for AuthSettings {
 impl AuthSettings {
     /// Reads the settings from the environment. `None` when
     /// `PORTITOR_STS_URL` is not set, which only the `tck` build accepts
-    /// (see [`crate::tck`]).
+    /// (see `tck.rs`).
     ///
     /// # Errors
     ///
@@ -280,7 +280,7 @@ fn list(text: Option<&str>) -> Vec<String> {
 
 /// The DCP adapters for `settings`: the verifier and the prover, both
 /// using our STS. Before it returns, it checks that our identity is the
-/// one configured ([`dcp::check_own_identity`]).
+/// one configured ([`dcp::DcpVerifier::check_own_identity`]).
 ///
 /// # Errors
 ///

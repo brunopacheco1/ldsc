@@ -5,7 +5,7 @@
 //! The presentation API (DCP v1.0.1, presentation protocol, section 5.4):
 //! `POST <credential service>/presentations/query`.
 //!
-//! 1. The verifier's self-issued ID token is checked ([`crate::caller`]).
+//! 1. The verifier's self-issued ID token is checked (`caller.rs`).
 //! 2. Its `token` claim must be an access token this component's STS
 //!    signed, for that verifier ([`AccessToken::verify`]).
 //! 3. The query must ask by `scope`; presentation definitions are not

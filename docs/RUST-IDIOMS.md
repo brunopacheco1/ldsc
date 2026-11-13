@@ -204,10 +204,12 @@ small. Clippy's `result_large_err` lint asks for this. Read
 
 A name with `!` is a macro: code that writes code at compile time.
 `format!`, `vec!` and `tracing::info!` come from libraries. Portitor
-defines three, in `portitor-dsp/src/lib.rs`: `type_tag!`,
-`pid_message!` and `process_ack!`. They declare the many DSP message
+defines four: `type_tag!`, `pid_message!` and `process_ack!` in
+`portitor-dsp/src/lib.rs`, and `type_name!` in
+`portitor-dcp/src/message.rs`. They declare the many DSP and DCP message
 types without copying the same fields into each one. Each has a comment
-with an example of what it writes.
+with an example of what it writes. (A few test files define small macros
+of their own, for example `schema!`.)
 
 ## Small things
 

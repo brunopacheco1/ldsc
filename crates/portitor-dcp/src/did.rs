@@ -208,16 +208,6 @@ pub fn did_web_url(did: &str) -> Result<String, Error> {
     }
 }
 
-/// Port: resolves a DID to its DID document (for example over HTTPS for
-/// did:web). Implemented by an adapter; the domain never does I/O.
-pub trait DidResolver {
-    /// Resolves `did`.
-    ///
-    /// # Errors
-    /// Fails when the document cannot be fetched or parsed.
-    fn resolve(&self, did: &str) -> Result<DidDocument, Error>;
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {

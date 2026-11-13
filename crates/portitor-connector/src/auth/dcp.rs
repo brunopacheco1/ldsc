@@ -74,10 +74,12 @@ pub const MAX_STATUS_ENTRIES: usize = 4;
 /// The longest one caller check may take, all fetches included.
 pub const DEADLINE: Duration = Duration::from_secs(20);
 
-/// How often, and how far apart, [`DcpVerifier::check_own_identity`]
-/// tries to read our DID document: the identity component may still be
-/// starting.
+/// How often [`DcpVerifier::check_own_identity`] tries to read our DID
+/// document: the identity component may still be starting.
 const START_TRIES: u32 = 15;
+
+/// How long [`DcpVerifier::check_own_identity`] waits between two tries:
+/// with [`START_TRIES`], about 30 seconds in all.
 const START_WAIT: Duration = Duration::from_secs(2);
 
 /// The DCP verifier.
