@@ -12,6 +12,21 @@ versions may change behaviour and configuration.
 
 ## [Unreleased]
 
+### Added
+- DCP v1.0.1 building blocks in `portitor-dcp` (0.5, ADR 0015), not yet
+  used by a running service: the presentation query and response
+  messages, the credential and offer messages of the issuance protocol,
+  scopes (`org.eclipse.dspace.dcp.vc.type`, `...vc.id`, and configured
+  aliases such as EDC's), and status list checks for revocation
+  (Bitstring Status List and StatusList2021). The DCP JSON Schemas and
+  examples (tag v1.0.1) are bundled for tests. Two new fuzz targets:
+  `dcp_messages`, `dcp_status_list`.
+
+### Security
+- Status lists are GZIP data from other parties: decompression is capped
+  at 16 MiB, and uses `miniz_oxide` without its unsafe SIMD feature
+  (banned in `deny.toml`), with Portitor's own CRC-32 check.
+
 ## [0.4.0] - 2026-11-13
 
 ### Added

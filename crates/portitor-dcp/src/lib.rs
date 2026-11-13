@@ -3,7 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Decentralized Claims Protocol 1.0: self-issued ID tokens, did:web and
-//! JWS verification.
+//! JWS verification (this file), the DCP messages ([`message`]), scopes
+//! ([`scope`]) and status list checks ([`status_list`]).
 //!
 //! Only `ES256` and `PS256` are accepted. Any other `alg`, including
 //! `none`, is rejected before a key is even looked up.
@@ -15,6 +16,11 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use ring::rand::SystemRandom;
 use ring::signature::{self, EcdsaKeyPair, KeyPair as _, RsaPublicKeyComponents};
 use serde::{Deserialize, Serialize};
+
+mod gzip;
+pub mod message;
+pub mod scope;
+pub mod status_list;
 
 /// Errors from token creation or validation.
 #[derive(Debug, thiserror::Error)]

@@ -36,6 +36,13 @@ SPDX-FileCopyrightText = "Eclipse Dataspace Protocol contributors (https://githu
 SPDX-License-Identifier = "Apache-2.0"
 
 [[annotations]]
+# JSON Schemas and examples copied unchanged from the Eclipse Decentralized Claims Protocol, tag v1.0.1
+path = ["crates/portitor-dcp/tests/schemas/*.json", "crates/portitor-dcp/tests/examples/*.json"]
+precedence = "override"
+SPDX-FileCopyrightText = "Eclipse Decentralized Claims Protocol contributors (https://github.com/eclipse-dataspace-dcp/decentralized-claims-protocol)"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
 # JSON Schemas and examples copied unchanged from Eclipse Data Plane Signaling, tag v1.0-RC4
 path = ["crates/portitor-dps/tests/schemas/*.json", "crates/portitor-dps/tests/examples/*.json"]
 precedence = "override"

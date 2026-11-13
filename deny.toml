@@ -52,3 +52,8 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 crate = "base64"
 # unsafe SIMD decoding (default in 0.23); Portitor only decodes short JWT segments
 deny = ["simd-unsafe"]
+
+[[bans.features]]
+crate = "miniz_oxide"
+# unsafe SIMD checksums; status lists are small and checked with a plain CRC-32 (portitor-dcp gzip.rs)
+deny = ["simd"]

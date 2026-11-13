@@ -64,3 +64,17 @@ path = "fuzz_targets/odrl_policy.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "dcp_status_list"
+path = "fuzz_targets/dcp_status_list.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dcp_messages"
+path = "fuzz_targets/dcp_messages.rs"
+test = false
+doc = false
+bench = false
