@@ -83,7 +83,7 @@ impl TransferState {
     }
 }
 
-pub use crate::negotiation::Role;
+pub use crate::Role;
 
 /// What a message does to the state machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -129,47 +129,12 @@ impl Transition {
     }
 }
 
+impl crate::ProcessState for TransferState {
+    const PROCESS: &'static str = "transfer";
+}
+
 /// Why a message cannot move the transfer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TransitionError {
-    /// The transfer is completed or terminated.
-    Terminal(TransferState),
-    /// The party may not send this message in this state.
-    WrongSender {
-        /// The message.
-        transition: Transition,
-        /// Who sent it.
-        sender: Role,
-    },
-    /// The message is not allowed in this state (`None`: no transfer yet).
-    NotAllowed {
-        /// The current state.
-        from: Option<TransferState>,
-        /// The message.
-        transition: Transition,
-    },
-}
-
-impl std::fmt::Display for TransitionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Terminal(s) => write!(f, "the transfer is {s:?}, a terminal state"),
-            Self::WrongSender { transition, sender } => {
-                write!(f, "a {sender:?} may not send {transition:?} here")
-            }
-            Self::NotAllowed {
-                from: None,
-                transition,
-            } => write!(f, "{transition:?} cannot start a transfer"),
-            Self::NotAllowed {
-                from: Some(s),
-                transition,
-            } => write!(f, "{transition:?} is not allowed in state {s:?}"),
-        }
-    }
-}
-
-impl std::error::Error for TransitionError {}
+pub type TransitionError = crate::TransitionError<TransferState, Transition>;
 
 /// The state after `sender` sends `transition` in state `from` (`None`: no
 /// transfer yet), following the DSP 2025-1 transfer process state machine:
@@ -288,25 +253,17 @@ pub struct TransferRequestMessage {
     pub callback_address: String,
 }
 
-/// `TransferStartMessage`: sent by the provider to start a transfer, or
-/// by either party to start a suspended transfer again.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TransferStartMessage {
-    /// JSON-LD context.
-    #[serde(rename = "@context")]
-    pub context: Context,
-    /// Message type.
-    #[serde(rename = "@type")]
-    pub kind: TransferStartMessageType,
-    /// The provider's process id.
-    pub provider_pid: String,
-    /// The consumer's process id.
-    pub consumer_pid: String,
-    /// Where to get the data; required for pull transfers.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub data_address: Option<DataAddress>,
-}
+pid_message!(
+    /// `TransferStartMessage`: sent by the provider to start a transfer, or
+    /// by either party to start a suspended transfer again.
+    TransferStartMessage,
+    TransferStartMessageType,
+    {
+        /// Where to get the data; required for pull transfers.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub data_address: Option<DataAddress>,
+    }
+);
 
 pid_message!(
     /// `TransferCompletionMessage`, sent by either party.
@@ -342,144 +299,3 @@ pid_message!(
     TransferErrorType,
     error
 );
-
-#[cfg(test)]
-#[allow(clippy::unwrap_used)]
-mod tests {
-    use super::*;
-    use Role::{Consumer as C, Provider as P};
-    use TransferState as S;
-    use Transition as T;
-
-    const ALL_STATES: [Option<S>; 6] = [
-        None,
-        Some(S::Requested),
-        Some(S::Started),
-        Some(S::Suspended),
-        Some(S::Completed),
-        Some(S::Terminated),
-    ];
-    const ALL_TRANSITIONS: [T; 5] = [T::Request, T::Start, T::Suspend, T::Complete, T::Terminate];
-
-    /// Every allowed (state, message, sender) and its result, from the DSP
-    /// 2025-1 transfer process state machine figure
-    /// (`transfer-process-state-machine.puml`). Everything else must be
-    /// refused.
-    const ALLOWED: &[(Option<S>, T, Role, S)] = &[
-        (None, T::Request, C, S::Requested),
-        (Some(S::Requested), T::Start, P, S::Started),
-        (Some(S::Requested), T::Terminate, C, S::Terminated),
-        (Some(S::Requested), T::Terminate, P, S::Terminated),
-        (Some(S::Started), T::Complete, C, S::Completed),
-        (Some(S::Started), T::Complete, P, S::Completed),
-        (Some(S::Started), T::Suspend, C, S::Suspended),
-        (Some(S::Started), T::Suspend, P, S::Suspended),
-        (Some(S::Started), T::Terminate, C, S::Terminated),
-        (Some(S::Started), T::Terminate, P, S::Terminated),
-        (Some(S::Suspended), T::Start, C, S::Started),
-        (Some(S::Suspended), T::Start, P, S::Started),
-        (Some(S::Suspended), T::Terminate, C, S::Terminated),
-        (Some(S::Suspended), T::Terminate, P, S::Terminated),
-    ];
-
-    #[test]
-    fn state_machine_matches_the_specification() {
-        let cases = ALL_STATES
-            .into_iter()
-            .flat_map(|f| ALL_TRANSITIONS.into_iter().map(move |t| (f, t)))
-            .flat_map(|(f, t)| [(f, t, P), (f, t, C)]);
-        for (from, t, sender) in cases {
-            let allowed = ALLOWED
-                .iter()
-                .find(|a| (a.0, a.1, a.2) == (from, t, sender));
-            let got = next_state(from, t, sender);
-            if let Some(&(.., want)) = allowed {
-                assert_eq!(got, Ok(want), "{from:?} {t:?} by {sender:?}");
-            } else {
-                assert!(got.is_err(), "{from:?} {t:?} by {sender:?}: {got:?}");
-            }
-        }
-    }
-
-    /// The TCK's negative provider and consumer scenarios (`TP:03`, `TP_C:03`).
-    #[test]
-    fn tck_negative_scenarios_are_refused() {
-        // complete or suspend a transfer that never started
-        assert!(next_state(Some(S::Requested), T::Complete, C).is_err());
-        assert!(next_state(Some(S::Requested), T::Suspend, C).is_err());
-        // complete a suspended transfer
-        assert!(next_state(Some(S::Suspended), T::Complete, C).is_err());
-        // anything after termination
-        for t in [T::Start, T::Suspend, T::Complete] {
-            assert_eq!(
-                next_state(Some(S::Terminated), t, C),
-                Err(TransitionError::Terminal(S::Terminated))
-            );
-        }
-    }
-
-    #[test]
-    fn errors_say_why() {
-        assert_eq!(
-            next_state(Some(S::Requested), T::Start, C),
-            Err(TransitionError::WrongSender {
-                transition: T::Start,
-                sender: C
-            })
-        );
-        let e = next_state(None, T::Request, P).unwrap_err();
-        assert_eq!(e.to_string(), "a Provider may not send Request here");
-        let e = next_state(None, T::Terminate, P).unwrap_err();
-        assert_eq!(e.to_string(), "Terminate cannot start a transfer");
-        let e = next_state(Some(S::Suspended), T::Complete, C).unwrap_err();
-        assert_eq!(e.to_string(), "Complete is not allowed in state Suspended");
-        let e = next_state(Some(S::Completed), T::Terminate, P).unwrap_err();
-        assert_eq!(e.to_string(), "the transfer is Completed, a terminal state");
-    }
-
-    #[test]
-    fn names_round_trip() {
-        for t in ALL_TRANSITIONS {
-            assert_eq!(Transition::from_name(t.name()), Some(t));
-        }
-        assert_eq!(Transition::from_name("agree"), None);
-    }
-
-    #[test]
-    fn data_address_properties() {
-        let a = DataAddress {
-            kind: DataAddressType,
-            endpoint_type: "https://w3id.org/idsa/v4.1/HTTP".to_owned(),
-            endpoint: Some("https://provider.example/data".to_owned()),
-            endpoint_properties: vec![
-                EndpointProperty::new("authorization", "t0ken"),
-                EndpointProperty::new("authType", "bearer"),
-            ],
-        };
-        assert_eq!(a.property("authorization"), Some("t0ken"));
-        assert_eq!(a.property("authType"), Some("bearer"));
-        assert_eq!(a.property("missing"), None);
-        let v = serde_json::to_value(&a).unwrap();
-        assert_eq!(v["@type"], "DataAddress");
-        assert_eq!(v["endpointProperties"][0]["@type"], "EndpointProperty");
-    }
-
-    #[test]
-    fn ack_and_error_serialize_as_specified() {
-        let ack = serde_json::to_value(TransferProcess::new("p", "c", S::Started)).unwrap();
-        assert_eq!(ack["@type"], "TransferProcess");
-        assert_eq!(ack["state"], "STARTED");
-        assert_eq!(ack["consumerPid"], "c");
-        let err = serde_json::to_value(TransferError::new("p", "c", "400", "bad")).unwrap();
-        assert_eq!(err["@type"], "TransferError");
-        assert_eq!(err["reason"][0], "bad");
-    }
-
-    #[test]
-    fn a_request_needs_a_callback_address() {
-        let raw = r#"{"@context":["https://w3id.org/dspace/2025/1/context.jsonld"],
-            "@type":"TransferRequestMessage","consumerPid":"c","agreementId":"a",
-            "format":"HttpData-PULL"}"#;
-        assert!(serde_json::from_str::<TransferRequestMessage>(raw).is_err());
-    }
-}

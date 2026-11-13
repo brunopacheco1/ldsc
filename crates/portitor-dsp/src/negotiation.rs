@@ -91,15 +91,7 @@ impl NegotiationState {
     }
 }
 
-/// The two parties of a negotiation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Role {
-    /// Offers datasets.
-    Provider,
-    /// Requests datasets.
-    Consumer,
-}
+pub use crate::Role;
 
 /// What a message does to the state machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -162,47 +154,12 @@ impl Transition {
     }
 }
 
+impl crate::ProcessState for NegotiationState {
+    const PROCESS: &'static str = "negotiation";
+}
+
 /// Why a message cannot move the negotiation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TransitionError {
-    /// The negotiation is finalized or terminated.
-    Terminal(NegotiationState),
-    /// The party may not send this message.
-    WrongSender {
-        /// The message.
-        transition: Transition,
-        /// Who sent it.
-        sender: Role,
-    },
-    /// The message is not allowed in this state (`None`: no negotiation yet).
-    NotAllowed {
-        /// The current state.
-        from: Option<NegotiationState>,
-        /// The message.
-        transition: Transition,
-    },
-}
-
-impl std::fmt::Display for TransitionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Terminal(s) => write!(f, "the negotiation is {s:?}, a terminal state"),
-            Self::WrongSender { transition, sender } => {
-                write!(f, "a {sender:?} may not send {transition:?}")
-            }
-            Self::NotAllowed {
-                from: None,
-                transition,
-            } => write!(f, "{transition:?} cannot start a negotiation"),
-            Self::NotAllowed {
-                from: Some(s),
-                transition,
-            } => write!(f, "{transition:?} is not allowed in state {s:?}"),
-        }
-    }
-}
-
-impl std::error::Error for TransitionError {}
+pub type TransitionError = crate::TransitionError<NegotiationState, Transition>;
 
 /// The state after `sender` sends `transition` in state `from` (`None`: no
 /// negotiation yet), following the DSP 2025-1 state machine.
