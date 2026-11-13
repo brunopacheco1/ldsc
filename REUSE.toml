@@ -31,3 +31,10 @@ path = ["crates/portitor-dsp/tests/schemas/*.json", "crates/portitor-dsp/tests/e
 precedence = "override"
 SPDX-FileCopyrightText = "Eclipse Dataspace Protocol contributors (https://github.com/eclipse-dataspace-protocol-base/DataspaceProtocol)"
 SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+# JSON Schemas and examples copied unchanged from Eclipse Data Plane Signaling, tag v1.0-RC4
+path = ["crates/portitor-dps/tests/schemas/*.json", "crates/portitor-dps/tests/examples/*.json"]
+precedence = "override"
+SPDX-FileCopyrightText = "Eclipse Data Plane Signaling contributors (https://github.com/eclipse-dataplane-signaling/dataplane-signaling)"
+SPDX-License-Identifier = "Apache-2.0"

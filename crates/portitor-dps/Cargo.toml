@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Portitor contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "portitor-dps"
+description = "Data Plane Signaling v1.0-RC4: data flow messages, state machine and ports"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+# the DataAddress type: Data Plane Signaling reuses the DSP one
+portitor-dsp = { path = "../portitor-dsp" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+jsonschema.workspace = true
+
+[lints]
+workspace = true

@@ -18,6 +18,11 @@ versions may change behaviour and configuration.
   machine as a pure function. Checked against every transfer example and
   JSON Schema of the specification, and fuzzed (`dsp_transfer`). Not yet
   served by the connector.
+- Data Plane Signaling v1.0-RC4 in the new domain crate `portitor-dps`: the
+  data flow messages, the data flow state machine, and the two ports
+  (`DataPlane`, called by the control plane; `ControlPlane`, called back by
+  the data plane). Checked against the specification's JSON Schemas and
+  examples. No data plane implements the port yet.
 - VS Code debugging: shared `.vscode/launch.json` (CodeLLDB) for the connector
   and every test target, tasks, and recommended extensions. See
   [TESTING.md](docs/TESTING.md#debugging-in-vs-code).

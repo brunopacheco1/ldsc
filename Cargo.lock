@@ -806,6 +806,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "portitor-dps"
+version = "0.3.0"
+dependencies = [
+ "jsonschema",
+ "portitor-dsp",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "portitor-dsp"
 version = "0.3.0"
 dependencies = [

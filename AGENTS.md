@@ -33,6 +33,7 @@ Today's crates:
 
 - `crates/portitor-dsp`: DSP message types (plain JSON, schema-checked).
 - `crates/portitor-dcp`: DCP self-issued tokens, did:web, JWS (ES256, PS256 only).
+- `crates/portitor-dps`: Data Plane Signaling v1.0-RC4: data flow messages, state machine, and the two ports between control plane and data plane.
 - `crates/portitor-connector`: the connector binary (HTTP adapter and routes), one image (ADR 0003).
 - `docs/`: architecture, ADRs, roadmap, security assurance, releasing.
 - `site/`: the project website (added in 0.1).

@@ -1,0 +1,17 @@
+{
+  "messageId": "b1d5f9e2-3c4b-4f7a-9c3e-2f1e5d6c7b8a",
+  "dataAddress": {
+    "endpointType": "https://w3id.org/idsa/v4.1/HTTP",
+    "endpoint": "http://dataplane.provider.com/api/public",
+    "endpointProperties": [
+      {
+        "name": "authorization",
+        "value": "<AUTH_TOKEN>"
+      },
+      {
+        "name": "authType",
+        "value": "bearer"
+      }
+    ]
+  }
+}

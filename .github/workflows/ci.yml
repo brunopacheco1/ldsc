@@ -40,7 +40,7 @@ jobs:
           cargo test -p portitor-connector --features tck --locked
       - name: Domain crates have no I/O dependencies (ADR 0004)
         run: |
-          for c in portitor-dsp portitor-dcp; do
+          for c in portitor-dsp portitor-dcp portitor-dps; do
             if cargo tree -p "$c" -e normal --prefix none | grep -E '^(axum|hyper|tokio|sqlx|reqwest) '; then
               echo "::error::$c depends on an I/O crate"; exit 1
             fi
