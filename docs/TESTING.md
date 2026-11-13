@@ -299,7 +299,7 @@ cargo +nightly fuzz run dsp_negotiation -- -max_total_time=60
 
 Targets (`fuzz/fuzz_targets`): `dsp_messages`, `dsp_negotiation`, `dsp_transfer`,
 `odrl_policy`, `dcp_token_parse`, `dcp_token_validate`, `dcp_messages`,
-`dcp_status_list`, `dcp_credentials`, `dcp_access_token`. A new parser of untrusted input
+`dcp_status_list`, `dcp_credentials`, `dcp_access_token`, `dcp_did_document`. A new parser of untrusted input
 gets a target. In CI, ClusterFuzzLite fuzzes every pull request briefly
 (`cflite_pr.yml`) and runs longer each week (`cflite_batch.yml`). A crash
 is a bug: add the input that caused it as a regression test.

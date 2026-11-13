@@ -92,3 +92,10 @@ path = "fuzz_targets/dcp_access_token.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "dcp_did_document"
+path = "fuzz_targets/dcp_did_document.rs"
+test = false
+doc = false
+bench = false
