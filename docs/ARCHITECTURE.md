@@ -117,8 +117,8 @@ image keeps its state in its own SQLite file under `/data`.
 ```
 
 - `portitor-connector`: binary; DSP control plane, built-in data plane,
-  management API, SQLite store. Verifies partners' DCP presentations
-  (ADR 0016, 0.5 in development).
+  management API, SQLite store. Authenticates every DSP request with DCP
+  and signs its own (ADR 0016).
 - `portitor-identity`: binary; the participant's DID document, STS,
   credential service and management API (ADR 0015, 0.5 in development).
 - `portitor-runtime`: library of adapters both binaries share, so they are
@@ -132,6 +132,36 @@ with its DSP request; (3) the partner's connector checks the token against
 the participant's DID document and queries the participant's credential
 service for the credentials it needs. The connector never holds the
 participant's private key.
+
+In the connector (ADR 0016) this is two ports in `auth.rs`, with their DCP
+adapters in `auth/dcp.rs` and `auth/sts.rs`:
+
+- `CallerVerifier`, run by a middleware on every DSP route (provider
+  endpoints and consumer callbacks; not `/.well-known/dspace-version`,
+  `/health` or the data plane). The DCP adapter reads the
+  `Authorization: Bearer` ID token, resolves the caller's `did:web` DID,
+  validates the token (`portitor_dcp::validate_self_issued`: key with
+  `capabilityInvocation`, `aud` = our DID, `iss` = `sub`, `exp`/`iat`/`nbf`,
+  `jti` not replayed), then sends a `PresentationQueryMessage` for
+  `PORTITOR_DCP_SCOPES` to the caller's credential service, with a token
+  from our STS that carries the caller's access token. It verifies every
+  presentation and credential (both profiles), fetches and verifies each
+  status list credential (signed by the credential's issuer, fail closed),
+  and requires a `MembershipCredential` from a trusted issuer about the
+  caller. The verified DID goes to the handler as `Caller`; a refusal is
+  HTTP 401 with a DSP error and no detail.
+- `Prover`, used by the outbox before each outgoing DSP request: a fresh
+  token from our STS with `aud` = the counter-party's DID (stored with the
+  negotiation or transfer when it started, never taken from an incoming
+  message) and `bearer_access_scope` = `PORTITOR_DCP_SCOPES`. Tokens are not
+  cached: each `jti` is accepted once.
+
+The domain binds each negotiation and transfer to its counter-party: as
+provider, only the DID that started it may send to or read it; as
+consumer, only the provider it was started with may use its callbacks. At
+start the connector resolves its own DID document and checks that its STS
+signs for it. Tests use fake ports; the `tck` build maps the DSP TCK's
+fixed header to the TCK participant.
 
 The website is a static site published by GitHub Pages; it is not deployed
 by participants.

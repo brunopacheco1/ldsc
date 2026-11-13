@@ -65,6 +65,14 @@ Check each item and keep the answers in your own runbook.
   (see [Security](#5-security)).
 - [ ] **Trust.** Partners' TLS certificates must chain to a CA in the
   image's bundle, or to a private CA you add (see [Private CAs](#private-cas)).
+- [ ] **Identity (DCP).** Every DSP request is authenticated (ADR 0016),
+  in both directions, so the connector needs its own identity component
+  ([section 4](#4-run-the-identity-next-to-the-connector)) with a `MembershipCredential` from
+  your dataspace's issuer in it. The connector checks at start that its
+  `PORTITOR_PARTICIPANT_ID` is the identity's DID and that the STS signs
+  for it, and refuses to start otherwise. Outbound it also needs: its STS,
+  partners' DID documents and credential services, and the issuers'
+  status list URLs.
 
 ## 2. Configuration
 
@@ -82,6 +90,11 @@ All configuration is by environment variable. The full table is in the
 | `PORTITOR_MANAGEMENT_BIND` | `0.0.0.0:8081` in a container (publish it only on an internal interface); the default `127.0.0.1:8081` is unreachable from outside a container |
 | `PORTITOR_ALLOW_HTTP_CALLBACKS` | **unset** (never `true` in production) |
 | `PORTITOR_DATA_TOKEN_SECONDS` | leave the default, `3600`, unless consumers need longer to fetch |
+| `PORTITOR_STS_URL` | **required**: your identity's STS token endpoint, `<identity base URL>/sts/token` |
+| `PORTITOR_STS_CLIENT_SECRET_FILE` | **required**: path of the mounted STS secret, the same file as the identity's |
+| `PORTITOR_STS_CLIENT_ID` | leave the default, `PORTITOR_PARTICIPANT_ID` |
+| `PORTITOR_TRUSTED_ISSUERS` | **required**: comma-separated DIDs trusted to issue `MembershipCredential` |
+| `PORTITOR_DCP_SCOPES` | leave the default, `org.eclipse.dspace.dcp.vc.type:MembershipCredential` (comma-separated) |
 | `RUST_LOG` | `info` (default); `debug` only while diagnosing |
 
 ### Private CAs
@@ -313,10 +326,22 @@ DID, so usually not).
 
 ## 5. Security
 
-- **No caller authentication until release 0.5 (DCP).** Anyone who can
-  reach the DSP endpoints can read the catalog and negotiate. Until then,
-  expose the connector only to partners you trust, for example through an
-  allow list on your proxy or a private network.
+- **Caller authentication (DCP, ADR 0016).** Every DSP endpoint, the
+  consumer callbacks included, needs a self-issued ID token in
+  `Authorization: Bearer`. The connector checks it, asks the caller's
+  credential service for its presentations, and accepts the caller only
+  with a valid `MembershipCredential` from a DID in
+  `PORTITOR_TRUSTED_ISSUERS` whose subject is the caller, not revoked or
+  suspended (the status list must be signed by the same issuer; when it
+  cannot be fetched or checked the caller is refused). Otherwise it
+  answers HTTP 401 with a DSP error that says only "unauthorized"; the
+  reason is in the log. Each negotiation and transfer is bound to the DID
+  that started it: another caller is told it does not exist. Only
+  `/.well-known/dspace-version`, `/health` and the data plane are open
+  (the data plane has its own tokens).
+- **Trusted issuers.** Whoever controls a DID in
+  `PORTITOR_TRUSTED_ISSUERS` can admit any participant. List only your
+  dataspace's issuers.
 - **Outbound calls.** The connector POSTs to the `callbackAddress` that the
   partner chooses. Only `https://` is allowed, but internal addresses are
   not blocked yet. Put the connector in a network zone where it cannot
@@ -354,6 +379,9 @@ DID, so usually not).
 | `termination not acknowledged` (WARN) | The partner did not take a termination; DSP allows this, the negotiation is terminated anyway | Nothing, unless it repeats for one partner |
 | `no CA certificates: https callbacks will fail` (WARN, at start) | The CA bundle was not found (for example `SSL_CERT_DIR` points to an empty folder) | Fix the mount or the variable |
 | `negotiation store failed` (ERROR) | The SQLite file could not be read or written; partners get HTTP 500 | Check disk space and the `/data` volume |
+| `DSP request refused: caller not authenticated` (WARN) | A DSP request got HTTP 401; `reason` says why (token, presentation, credential or status list) | If a partner should be admitted: check its credential, its issuer against `PORTITOR_TRUSTED_ISSUERS`, and clock skew (60 s allowed) |
+| `no token: ...` in a send failure (WARN) | The STS did not give a token for an outgoing DSP request | Check the identity component, `PORTITOR_STS_URL` and the shared secret |
+| `own identity checked: DID document and STS agree` (INFO, at start) | The connector's DID document resolves and the STS signs for it | Nothing |
 | `portitor-connector stopped` (ERROR) | The process could not start or stopped with an error; the message says why | Fix the cause; the container restarts |
 
 ### Backup and restore
@@ -393,7 +421,11 @@ waiting. A partner may receive such a message twice; that is handled.
 
 In this version (see also [SECURITY-ASSURANCE.md](SECURITY-ASSURANCE.md)):
 
-- No caller authentication until 0.5.
+- Partners are admitted by one credential type (`MembershipCredential`,
+  `PORTITOR_DCP_SCOPES`); no per-dataset credential policies yet.
+  Credential schemas (`credentialSchema`) are not checked.
+- STS tokens are not cached: each DSP request costs one STS call, and each
+  incoming one a presentation query.
 - One replica per database file; no PostgreSQL adapter yet.
 - Internal callback addresses are not blocked.
 - Policies: only the `dateTime` constraint is understood; prohibitions

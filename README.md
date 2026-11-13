@@ -80,6 +80,11 @@ Configuration (environment variables):
 | `PORTITOR_MANAGEMENT_BIND` | `127.0.0.1:8081` | Address of the management API |
 | `PORTITOR_ALLOW_HTTP_CALLBACKS` | `false` | `true` allows `http://` addresses for consumers' callbacks and for providers; development and tests only |
 | `PORTITOR_DATA_TOKEN_SECONDS` | `3600` | How long a data access token is valid after the transfer starts |
+| `PORTITOR_STS_URL` | none (**required**) | Token endpoint of the participant's STS (`portitor-identity`: `<base URL>/sts/token`); every DSP request is authenticated with DCP (ADR 0016) |
+| `PORTITOR_STS_CLIENT_ID` | `PORTITOR_PARTICIPANT_ID` | Client id at the STS |
+| `PORTITOR_STS_CLIENT_SECRET_FILE` | none (**required**) | File with the STS client secret |
+| `PORTITOR_TRUSTED_ISSUERS` | none (**required**) | Comma-separated DIDs trusted to issue `MembershipCredential` |
+| `PORTITOR_DCP_SCOPES` | `org.eclipse.dspace.dcp.vc.type:MembershipCredential` | Comma-separated scopes asked from callers' credential services, and granted to the counter-party in our tokens |
 
 As provider, the connector agrees to a request for an offer in its
 catalog, then finalizes once the consumer verifies. It sends its messages
@@ -191,10 +196,8 @@ keep `/etc/ssl/certs` in the list. The peer's certificate must still name
 the host in the callback address; certificate checks cannot be turned off.
 
 Known gaps in this version:
-- **No caller authentication until 0.5 (DCP).** Anyone who can reach the
-  DSP endpoints can negotiate, and agreements name the consumer as
-  `urn:portitor:unauthenticated`. Do not expose the connector to untrusted
-  networks.
+- Callers are admitted by one credential type, `MembershipCredential` from
+  a trusted issuer (ADR 0016); no per-dataset credential policies yet.
 - The callback address is chosen by the consumer. Only `https://` is
   allowed by default, but internal addresses are not blocked yet; put the
   connector where it cannot reach services it should not call.
