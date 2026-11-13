@@ -23,7 +23,7 @@ project checks every change. All commands run from the repository root.
 | Fuzzing | see [below](#fuzzing) | every PR (short), weekly (long) |
 | Two connectors agree a contract and transfer a file | `scripts/demo.sh` | every PR (`CI`) |
 | The same in Docker Compose | `scripts/demo-compose.sh` | every PR (`CI`) |
-| Image builds and starts | `docker build` then a health check | every PR (`CI`) |
+| Images build and start | `docker build --target portitor-connector` / `--target portitor-identity`, then a health check (connector) and the DID document (identity) | every PR (`CI`) |
 | Static analysis | CodeQL, OpenSSF Scorecard, ORT | every PR or on `main` |
 
 You need: Rust (the version in `.github/workflows/ci.yml`; at least the

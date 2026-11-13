@@ -7,8 +7,9 @@ SPDX-License-Identifier: Apache-2.0
 # Deploying and operating Portitor
 
 A runbook for the team that deploys and runs Portitor. It covers
-`portitor-connector`, the only component released so far; `portitor-identity`
-and `portitor-issuer` will be added here when they ship (ADR 0003).
+`portitor-connector` and, from 0.5, `portitor-identity`, which runs next to
+it ([section 4](#4-run-the-identity-next-to-the-connector)).
+`portitor-issuer` will be added here when it ships (ADR 0003).
 
 Portitor is a prototype (0.x). Read [Known limits](#known-limits) before you
 expose it to partners.
@@ -20,12 +21,16 @@ Check each item and keep the answers in your own runbook.
 - [ ] **Version.** Pick a release tag (`X.Y.Z`) from the
   [releases](https://github.com/brunopacheco1/portitor/releases). Never deploy
   `latest` or a branch build.
-- [ ] **Verify the image** (see [RELEASING.md](RELEASING.md#checking-a-release)):
+- [ ] **Verify the images** you deploy, `portitor-connector` and
+  `portitor-identity`, both of the same version (see
+  [RELEASING.md](RELEASING.md#checking-a-release)):
   ```sh
-  cosign verify ghcr.io/brunopacheco1/portitor-connector:X.Y.Z \
-    --certificate-identity-regexp '^https://github.com/brunopacheco1/portitor/\.github/workflows/release\.yml@refs/tags/v' \
-    --certificate-oidc-issuer https://token.actions.githubusercontent.com
-  gh attestation verify oci://ghcr.io/brunopacheco1/portitor-connector:X.Y.Z --repo brunopacheco1/portitor
+  for image in portitor-connector portitor-identity; do
+    cosign verify "ghcr.io/brunopacheco1/$image:X.Y.Z" \
+      --certificate-identity-regexp '^https://github.com/brunopacheco1/portitor/\.github/workflows/release\.yml@refs/tags/v' \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com
+    gh attestation verify "oci://ghcr.io/brunopacheco1/$image:X.Y.Z" --repo brunopacheco1/portitor
+  done
   ```
   Deploy by digest (`ghcr.io/...@sha256:...`), not only by tag.
 - [ ] **Participant id.** The DID your dataspace gave you
@@ -57,7 +62,7 @@ Check each item and keep the answers in your own runbook.
   the consumer callbacks under `/dsp/2025-1/callback`, through your proxy.
   Outbound: the connector calls the callback addresses partners give it
   and, as consumer, the providers' DSP endpoints; allow only what it needs
-  (see [Security](#4-security)).
+  (see [Security](#5-security)).
 - [ ] **Trust.** Partners' TLS certificates must chain to a CA in the
   image's bundle, or to a private CA you add (see [Private CAs](#private-cas)).
 
@@ -139,7 +144,128 @@ of datasets and the database file.
 no key file is set. A missing, unreadable or too short key file stops the
 start with an error.
 
-## 4. Security
+## 4. Run the identity next to the connector
+
+> **0.5 in development.** The settings and ports below are fixed; what
+> each endpoint does, the log messages and the checks after start are
+> filled in as the identity component is completed
+> ([ADR 0015](adr/0015-dcp-identity-component.md),
+> [ADR 0016](adr/0016-dsp-caller-authentication.md)).
+<!-- TODO(0.5): complete this section before the release; remove this note. -->
+
+`portitor-identity` holds the participant's DID, its key and its
+credentials, and answers for it in the Decentralized Claims Protocol
+(DCP): it serves the `did:web` document, signs tokens for its own
+connector (Secure Token Service, STS), presents credentials to partners
+and stores credentials from issuers. Each participant runs one identity
+and one connector, of the same version. The participant has **one DID**:
+the identity's. Set the connector's `PORTITOR_PARTICIPANT_ID` to the same
+value.
+
+### Before the first deployment
+
+- [ ] **DID.** A `did:web` DID on a host name you control, for example
+  `did:web:identity.example.com`. Partners resolve it to
+  `https://identity.example.com/.well-known/did.json`, so the identity's
+  port 8090 must be reachable over HTTPS on that host.
+- [ ] **Key.** One P-256 private key in PEM (PKCS#8), kept in your secret
+  store, never in the image or an environment value:
+  ```sh
+  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out identity-key.pem
+  ```
+  Back it up: with a new key, every partner sees a new key in your DID
+  document.
+- [ ] **STS client secret.** A secret shared by the identity and the
+  connector (`openssl rand -hex 32`), as a file mounted into both.
+- [ ] **Trusted issuers.** The DIDs whose credentials the identity accepts
+  through the Storage API (your dataspace authority).
+- [ ] **Management API key** (`openssl rand -hex 32`), as for the
+  connector, if you create credential requests or list credentials.
+- [ ] **Storage.** A persistent volume for the identity's `/data`, separate
+  from the connector's.
+
+All mounted files must be readable by user `65532`.
+
+### Configuration
+
+| Variable | Production value |
+|---|---|
+| `PORTITOR_PARTICIPANT_ID` | **required**: your `did:web` DID; the document is served at the path the DID implies |
+| `PORTITOR_IDENTITY_KEY_FILE` | **required**: path of the mounted key file |
+| `PORTITOR_CREDENTIAL_SERVICE_URL` | **required**: public `https://` base URL of the credential service, written into the DID document |
+| `PORTITOR_STS_CLIENT_SECRET_FILE` | **required**: path of the mounted STS client secret |
+| `PORTITOR_TRUSTED_ISSUERS` | **required**: comma-separated issuer DIDs |
+| `PORTITOR_STS_CLIENT_ID` | leave the default, the participant DID |
+| `PORTITOR_BIND` | leave the default, `0.0.0.0:8090` |
+| `PORTITOR_DB_FILE` | leave the image default, `/data/portitor-identity.db` |
+| `PORTITOR_MANAGEMENT_API_KEY_FILE` | path of the mounted key file, or unset (management API off) |
+| `PORTITOR_MANAGEMENT_BIND` | `0.0.0.0:8091` in a container (publish it only on an internal interface); the default `127.0.0.1:8091` is unreachable from outside a container |
+| `PORTITOR_ALLOW_HTTP_CALLBACKS` | **unset** (never `true` in production) |
+| `RUST_LOG` | `info` (default) |
+
+The connector then needs these settings to get tokens from the identity
+and to check partners' credentials:
+
+| Variable (connector) | Production value |
+|---|---|
+| `PORTITOR_PARTICIPANT_ID` | the identity's DID |
+| `PORTITOR_STS_URL` | **required**: the identity's STS token endpoint |
+| `PORTITOR_STS_CLIENT_SECRET_FILE` | **required**: the same secret file as the identity's |
+| `PORTITOR_STS_CLIENT_ID` | leave the default, `PORTITOR_PARTICIPANT_ID` |
+| `PORTITOR_TRUSTED_ISSUERS` | **required**: DIDs trusted to issue `MembershipCredential` |
+| `PORTITOR_DCP_SCOPES` | leave the default, `org.eclipse.dspace.dcp.vc.type:MembershipCredential` |
+<!-- TODO(0.5): STS endpoint path and whether an internal http:// STS URL is accepted. -->
+
+### Ports
+
+| Port | Serves | Reached by | Expose |
+|---|---|---|---|
+| 8090 | DID document, credential service (presentation and Storage API), STS | partners and issuers (DID document, credential service); your connector (STS) | through your HTTPS reverse proxy |
+| 8091 | management API | your operators only | **never publicly**: host loopback or an internal network, never the public proxy |
+
+### Run
+
+Docker, next to the connector of [section 3](#3-run) (keys and secrets
+as read-only mounts):
+
+```sh
+docker run -d --name portitor-identity --restart unless-stopped \
+  -p 8090:8090 \
+  -p 127.0.0.1:8091:8091 \
+  -v portitor-identity-data:/data \
+  -v /srv/portitor/identity-key.pem:/run/secrets/identity-key.pem:ro \
+  -v /srv/portitor/sts-client-secret:/run/secrets/sts-client-secret:ro \
+  -v /srv/portitor/identity-management-key:/run/secrets/identity-management-key:ro \
+  -e PORTITOR_PARTICIPANT_ID=did:web:identity.example.com \
+  -e PORTITOR_IDENTITY_KEY_FILE=/run/secrets/identity-key.pem \
+  -e PORTITOR_CREDENTIAL_SERVICE_URL=https://identity.example.com \
+  -e PORTITOR_STS_CLIENT_SECRET_FILE=/run/secrets/sts-client-secret \
+  -e PORTITOR_TRUSTED_ISSUERS=did:web:authority.example.com \
+  -e PORTITOR_MANAGEMENT_API_KEY_FILE=/run/secrets/identity-management-key \
+  -e PORTITOR_MANAGEMENT_BIND=0.0.0.0:8091 \
+  ghcr.io/brunopacheco1/portitor-identity@sha256:<digest>
+```
+
+<!-- TODO(0.5): exact PORTITOR_CREDENTIAL_SERVICE_URL path, if any. -->
+
+Mount the same STS secret file into the connector and add the connector
+settings above to its `docker run`.
+
+The same rules as for the connector apply: one container per database
+file, user `65532`, only `/data` writable, `docker stop` stops it cleanly.
+Kubernetes: one replica with a `PersistentVolumeClaim` on `/data`; the key
+and both secrets from `Secret`s mounted as files; only port 8090 in the
+`Ingress`.
+
+Check after start:
+
+```sh
+curl -sf https://identity.example.com/.well-known/did.json
+```
+
+<!-- TODO(0.5): log messages, health endpoint, backup of portitor-identity.db, key rotation steps. -->
+
+## 5. Security
 
 - **No caller authentication until release 0.5 (DCP).** Anyone who can
   reach the DSP endpoints can read the catalog and negotiate. Until then,
@@ -164,7 +290,7 @@ start with an error.
 - Do not set `PORTITOR_ALLOW_HTTP_CALLBACKS=true` outside development and tests.
 - Report vulnerabilities as described in [SECURITY.md](../SECURITY.md).
 
-## 5. Operate
+## 6. Operate
 
 ### Health and logs
 

@@ -84,6 +84,55 @@ is an external dependency, not a Portitor image.
 | 3 | `portitor-connector` | Control plane: catalog, contract negotiation, transfer; verifies DCP presentations. The data plane is its own module, linked into the connector for 0.x (see below) | Mandatory | DSP, DCP (verifier) |
 | 4 | `portitor-issuer` | Issues and revokes credentials (for example membership); builds and signs the schema and vocabulary bundle ([ADR 0005](adr/0005-schema-and-vocabulary-registry.md), proposed) | Optional: one per dataspace, run by the dataspace authority | DCP (issuance) |
 
+### Images and crates in 0.5
+
+Release 0.5 ships two images, built from one `Dockerfile` (one build
+target per image) and released, signed and attested together
+([RELEASING.md](RELEASING.md)). Until the PostgreSQL adapter exists, each
+image keeps its state in its own SQLite file under `/data`.
+
+```
+ one participant runs both:
+
+   +-----------------------------+        +----------------------------------+
+   | portitor-connector          |  (1)   | portitor-identity                |
+   | 8080 DSP, data plane        |------->| 8090 DID document, STS,          |
+   | 8081 management API         |  STS   |      credential service          |
+   | /data/portitor.db           |        | 8091 management API              |
+   +-----------------------------+        | /data/portitor-identity.db       |
+          | (2) DSP request + token        +----------------------------------+
+          v                                        ^ (3) DID document,
+   partner's connector ----------------------------+     presentation query
+
+ crates (-> means "uses"):
+
+   portitor-connector --> portitor-dsp, portitor-dps, portitor-runtime
+                          (and portitor-dcp, with ADR 0016)
+   portitor-identity  --> portitor-dcp, portitor-runtime
+   portitor-runtime   --> portitor-dcp          (adapters: HTTP client,
+                                                 did:web resolver, API key,
+                                                 logging, shutdown)
+   portitor-dsp, portitor-dps, portitor-dcp --> portitor-time
+                                                (domain crates: no I/O)
+```
+
+- `portitor-connector`: binary; DSP control plane, built-in data plane,
+  management API, SQLite store. Verifies partners' DCP presentations
+  (ADR 0016, 0.5 in development).
+- `portitor-identity`: binary; the participant's DID document, STS,
+  credential service and management API (ADR 0015, 0.5 in development).
+- `portitor-runtime`: library of adapters both binaries share, so they are
+  not copied.
+- `portitor-dsp`, `portitor-dps`, `portitor-dcp`, `portitor-time`: domain
+  crates (ADR 0004); CI checks they have no I/O dependency.
+
+The flow (DCP v1.0.1): (1) the connector asks its own identity's STS for
+a self-issued ID token addressed to the partner; (2) it sends that token
+with its DSP request; (3) the partner's connector checks the token against
+the participant's DID document and queries the participant's credential
+service for the credentials it needs. The connector never holds the
+participant's private key.
+
 The website is a static site published by GitHub Pages; it is not deployed
 by participants.
 
