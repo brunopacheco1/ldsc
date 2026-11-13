@@ -95,7 +95,7 @@ All configuration is by environment variable. The full table is in the
 | `PORTITOR_STS_CLIENT_SECRET_FILE` | **required**: path of the mounted STS secret, the same file as the identity's |
 | `PORTITOR_STS_CLIENT_ID` | leave the default, `PORTITOR_PARTICIPANT_ID` |
 | `PORTITOR_TRUSTED_ISSUERS` | **required**: comma-separated DIDs trusted to issue `MembershipCredential` |
-| `PORTITOR_DCP_SCOPES` | leave the default, `org.eclipse.dspace.dcp.vc.type:MembershipCredential` (comma-separated) |
+| `PORTITOR_DCP_SCOPES` | leave the default, `org.eclipse.dspace.dcp.vc.type:MembershipCredential` (comma-separated). Each must be a DCP scope (`org.eclipse.dspace.dcp.vc.type:<Type>[:access]` or `org.eclipse.dspace.dcp.vc.id:<id>`); the type `VerifiableCredential` is refused, as it would let a partner read every credential. The connector does not start otherwise |
 | `RUST_LOG` | `info` (default); `debug` only while diagnosing |
 
 ### Private CAs
@@ -296,9 +296,10 @@ curl -X POST localhost:8091/v1/credential-requests \
 The issuer then sends its `CredentialMessage` with that `holderPid` to
 `<credential service>/credentials`. The component checks the issuer's
 token, that the issuer is trusted and matches the request, and each
-credential's signature, dates, type and subject (your DID). A request
-stays open, so the issuer can deliver again (for example a renewed
-credential). Credentials are stored as received (JWT); `GET
+credential's signature, dates, type and subject (your DID). The issuer's
+answer (`ISSUED` or `REJECTED`) closes the request: a second delivery for
+the same `holderPid` is refused, so a renewed credential needs a new
+request. Credentials are stored as received (JWT); `GET
 /v1/credentials` lists them and `DELETE /v1/credentials/{id}` removes one,
 after which it is no longer presented.
 

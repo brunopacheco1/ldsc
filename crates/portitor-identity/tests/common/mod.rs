@@ -123,20 +123,39 @@ impl Party {
     }
 }
 
-/// DID documents and JSON documents kept in memory.
+/// DID documents and JSON documents kept in memory. Every lookup is
+/// recorded, so tests can check what was (not) fetched.
 #[derive(Default)]
 pub struct FakeDirectory {
     pub documents: Mutex<HashMap<String, Arc<DidDocument>>>,
     pub json: Mutex<HashMap<String, Value>>,
+    pub lookups: Mutex<Vec<String>>,
+}
+
+impl FakeDirectory {
+    /// Serves `party`'s DID document.
+    pub fn add(&self, party: &Party) {
+        self.documents
+            .lock()
+            .unwrap()
+            .insert(party.did.to_owned(), Arc::new(party.document.clone()));
+    }
+
+    /// Whether `what` (a DID or a URL) was looked up.
+    pub fn looked_up(&self, what: &str) -> bool {
+        self.lookups.lock().unwrap().iter().any(|l| l == what)
+    }
 }
 
 impl Directory for FakeDirectory {
     fn did_document<'a>(&'a self, did: &'a str) -> Lookup<'a, Arc<DidDocument>> {
+        self.lookups.lock().unwrap().push(did.to_owned());
         let found = self.documents.lock().unwrap().get(did).cloned();
         Box::pin(async move { found.ok_or_else(|| format!("no document for {did}")) })
     }
 
     fn json<'a>(&'a self, url: &'a str) -> Lookup<'a, Value> {
+        self.lookups.lock().unwrap().push(url.to_owned());
         let found = self.json.lock().unwrap().get(url).cloned();
         Box::pin(async move { found.ok_or_else(|| format!("HTTP 404 for {url}")) })
     }
@@ -169,23 +188,23 @@ pub fn config() -> Config {
 
 impl World {
     pub fn new() -> Self {
+        Self::with(&config())
+    }
+
+    /// A world whose identity component has `config`.
+    pub fn with(config: &Config) -> Self {
         let directory = Arc::new(FakeDirectory::default());
         let issuer = Party::new(ISSUER);
         let verifier = Party::new(VERIFIER);
-        for party in [&issuer, &verifier] {
-            directory
-                .documents
-                .lock()
-                .unwrap()
-                .insert(party.did.to_owned(), Arc::new(party.document.clone()));
-        }
+        directory.add(&issuer);
+        directory.add(&verifier);
         let ports = Ports {
             store: Arc::new(SqliteStore::in_memory().unwrap()),
             directory: Arc::clone(&directory) as _,
         };
         let identity = Arc::new(
             Identity::new(
-                &config(),
+                config,
                 SigningKey::generate().unwrap(),
                 ApiKey::new(STS_SECRET).unwrap(),
                 ports,
@@ -230,28 +249,48 @@ impl World {
         holder_pid: &str,
         credentials: &[(&str, &str, &str)],
     ) -> (StatusCode, Value) {
-        let containers: Vec<Value> = credentials
-            .iter()
-            .map(|(format, kind, jwt)| {
-                json!({"credentialType": kind, "format": format, "payload": jwt})
-            })
-            .collect();
-        let message = json!({
-            "@context": ["https://w3id.org/dspace-dcp/v1.0/dcp.jsonld"],
-            "type": "CredentialMessage",
-            "issuerPid": new_uuid(),
-            "holderPid": holder_pid,
-            "status": "ISSUED",
-            "credentials": containers
-        });
-        let token = self.issuer.id_token(HOLDER, None);
+        let message = credential_message(Some(holder_pid), "ISSUED", credentials);
+        self.send_delivery(&self.issuer.id_token(HOLDER, None), &message)
+            .await
+    }
+
+    /// Sends `message` to the Storage API with the ID token `token`.
+    pub async fn send_delivery(&self, token: &str, message: &Value) -> (StatusCode, Value) {
         call(
             &self.app,
-            post_json("/cs/credentials", Some(&token), &message),
+            post_json("/cs/credentials", Some(token), message),
         )
         .await
     }
+}
 
+/// A `CredentialMessage` for `holder_pid` with `status` and `credentials`
+/// (format, type, JWT).
+pub fn credential_message(
+    holder_pid: Option<&str>,
+    status: &str,
+    credentials: &[(&str, &str, &str)],
+) -> Value {
+    let containers: Vec<Value> = credentials
+        .iter()
+        .map(
+            |(format, kind, jwt)| json!({"credentialType": kind, "format": format, "payload": jwt}),
+        )
+        .collect();
+    let mut message = json!({
+        "@context": ["https://w3id.org/dspace-dcp/v1.0/dcp.jsonld"],
+        "type": "CredentialMessage",
+        "issuerPid": new_uuid(),
+        "status": status,
+        "credentials": containers
+    });
+    if let Some(pid) = holder_pid {
+        message["holderPid"] = Value::from(pid);
+    }
+    message
+}
+
+impl World {
     /// An ID token from our STS for `audience`, with `scopes` if given.
     pub async fn sts_token(&self, audience: &str, scopes: Option<&str>) -> (StatusCode, Value) {
         let mut form = format!(

@@ -14,6 +14,10 @@
 //!
 //! Both accept calls only from a trusted issuer (`PORTITOR_TRUSTED_ISSUERS`)
 //! with a valid self-issued ID token for this participant.
+//!
+//! A delivery answers one open credential request (status `REQUESTED`) of
+//! the delivering issuer; the answer, `ISSUED` or `REJECTED`, closes it
+//! (ADR 0015). A renewed credential needs a new request.
 
 use std::sync::Arc;
 
@@ -75,6 +79,10 @@ async fn store_delivery(
         Ok(_) => return Err(bad_request("no credential request with this holderPid")),
         Err(e) => return Err(internal(&e)),
     };
+    // checked again when the answer is stored, in case two deliveries race
+    if request.status != RequestStatus::Requested {
+        return Err(bad_request("the credential request is answered already"));
+    }
     let status = match message.status {
         IssuanceStatus::Issued => RequestStatus::Issued,
         IssuanceStatus::Rejected => RequestStatus::Rejected,

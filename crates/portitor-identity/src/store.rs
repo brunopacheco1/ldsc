@@ -41,7 +41,9 @@ pub struct StoredCredential {
     pub jwt: String,
 }
 
-/// Where a credential request stands.
+/// Where a credential request stands. Only a request that is still
+/// `Requested` takes a delivery; the issuer's answer, `Issued` or
+/// `Rejected`, closes it (ADR 0015). A renewal is a new request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequestStatus {
     /// Waiting for the issuer.
@@ -109,13 +111,15 @@ pub trait IdentityStore: Send + Sync {
     /// The store fails.
     fn request(&self, holder_pid: &str) -> Result<Option<CredentialRequest>, StoreError>;
 
-    /// Records an issuer's answer to a request, with the credentials it
-    /// delivered, all at once. A credential with the `id` of one already
-    /// held from the same issuer replaces it.
+    /// Records an issuer's answer to a request that is still
+    /// [`RequestStatus::Requested`], with the credentials it delivered, all
+    /// at once; the answer closes the request. A credential with the `id`
+    /// of one already held from the same issuer replaces it.
     ///
     /// # Errors
-    /// The store fails, or a credential has the `id` of one from another
-    /// issuer (then nothing is stored).
+    /// The store fails, the request is not open (unknown, or answered
+    /// already), or a credential has the `id` of one from another issuer.
+    /// Then nothing is stored.
     fn deliver(
         &self,
         holder_pid: &str,
@@ -252,11 +256,21 @@ impl IdentityStore for SqliteStore {
     ) -> Result<(), StoreError> {
         let mut conn = self.conn();
         let tx = conn.transaction().map_err(err)?;
-        tx.execute(
-            "UPDATE credential_request SET status = ?2 WHERE holder_pid = ?1",
-            params![holder_pid, status.text()],
-        )
-        .map_err(err)?;
+        // only an open request takes an answer, and only one: a second
+        // delivery finds it closed (the transaction is dropped, so nothing
+        // is written)
+        let closed = tx
+            .execute(
+                "UPDATE credential_request SET status = ?2
+                 WHERE holder_pid = ?1 AND status = ?3",
+                params![holder_pid, status.text(), RequestStatus::Requested.text()],
+            )
+            .map_err(err)?;
+        if closed == 0 {
+            return Err(StoreError(format!(
+                "credential request {holder_pid} is not open"
+            )));
+        }
         for credential in credentials {
             let types =
                 serde_json::to_string(&credential.types).map_err(|e| StoreError(e.to_string()))?;
@@ -423,10 +437,30 @@ mod tests {
         );
         assert_eq!(store.credentials().unwrap(), [credential("c-1", issuer)]);
 
-        // same id from another issuer: refused, nothing stored
+        // the answer closed the request: neither a second delivery nor a
+        // rejection changes it, and nothing more is stored
+        for status in [RequestStatus::Issued, RequestStatus::Rejected] {
+            let err = store
+                .deliver("h-1", status, &[credential("c-2", issuer)])
+                .unwrap_err();
+            assert!(err.0.contains("is not open"), "{err}");
+        }
+        assert_eq!(
+            store.request("h-1").unwrap().unwrap().status,
+            RequestStatus::Issued
+        );
+        assert_eq!(store.credentials().unwrap().len(), 1);
+        let err = store
+            .deliver("unknown", RequestStatus::Issued, &[])
+            .unwrap_err();
+        assert!(err.0.contains("is not open"), "{err}");
+
+        // same id from another issuer: refused, nothing stored, the request
+        // stays open
+        assert!(store.add_request(&request("h-3")).unwrap());
         let err = store
             .deliver(
-                "h-1",
+                "h-3",
                 RequestStatus::Issued,
                 &[
                     credential("c-2", issuer),
@@ -436,6 +470,17 @@ mod tests {
             .unwrap_err();
         assert!(err.0.contains("another issuer"));
         assert_eq!(store.credentials().unwrap().len(), 1);
+        assert_eq!(
+            store.request("h-3").unwrap().unwrap().status,
+            RequestStatus::Requested
+        );
+
+        // a rejection closes a request too
+        store.deliver("h-3", RequestStatus::Rejected, &[]).unwrap();
+        assert_eq!(
+            store.request("h-3").unwrap().unwrap().status,
+            RequestStatus::Rejected
+        );
 
         assert!(store.delete_credential("c-1").unwrap());
         assert!(!store.delete_credential("c-1").unwrap());
