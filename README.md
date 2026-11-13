@@ -212,29 +212,30 @@ DSP context defines the `dct`, `dcat` and `odrl` prefixes); Portitor does not
 validate them yet. See
 [examples/datasets.json](examples/datasets.json).
 
-To see two connectors agree a contract and transfer a file, run the demo
-in Docker Compose (needs Docker, `curl`, `jq` and `openssl`):
+To see two participants agree a contract and transfer a file, run the demo
+in Docker Compose (needs Docker, `curl`, `jq`, `openssl` and Rust, to build
+the demo authority):
 
 ```sh
 scripts/demo-compose.sh
 ```
 
-It starts a provider, a consumer and a small web server that holds the
-provider's data ([examples/compose](examples/compose)). Then it reads the
-provider's catalog, agrees a contract, checks that changed terms are
-refused, transfers [examples/data/air-quality.csv](examples/data/air-quality.csv),
-fetches it with the token and completes the transfer. It stops everything
-at the end. `scripts/demo.sh` does the same without Docker (needs Rust and
-Python 3 as well).
+It starts a provider and a consumer, each a connector with its identity
+component, a small web server that holds the provider's data and the site
+of a test-only demo authority ([examples/compose](examples/compose)). The
+authority delivers each identity a `MembershipCredential`. Then it checks
+that the provider refuses a catalog request without a DCP token, reads the
+catalog with a token from the consumer's STS, agrees a contract, checks
+that changed terms are refused, transfers
+[examples/data/air-quality.csv](examples/data/air-quality.csv), fetches it
+with the token and completes the transfer. It stops everything at the end;
+`KEEP=1` leaves it running. `scripts/demo.sh` does the same without Docker
+(needs Python 3 as well).
 
-Run one connector with the example datasets:
-
-```sh
-docker run --rm -p 8080:8080 \
-  -v "$PWD/examples/datasets.json:/datasets.json:ro" \
-  -e PORTITOR_DATASETS_FILE=/datasets.json \
-  -v portitor-data:/data \
-  ghcr.io/brunopacheco1/portitor-connector:0.4.0
-```
+A connector does not run alone: it needs its participant's identity
+component for DCP (`PORTITOR_STS_URL`, `PORTITOR_STS_CLIENT_SECRET_FILE`,
+`PORTITOR_TRUSTED_ISSUERS`), and refuses to start without it.
+[examples/compose/compose.yaml](examples/compose/compose.yaml) shows both
+wired together; [docs/DEPLOYING.md](docs/DEPLOYING.md) is the runbook.
 
 Licensed under [Apache-2.0](LICENSE) ([ADR 0010](docs/adr/0010-licence.md)).

@@ -7,7 +7,9 @@
 # scripts/demo.sh runs them on this machine; scripts/demo-compose.sh runs
 # them in Docker Compose. Exits non-zero at the first failed check.
 #
-# 1. Read the provider's catalog and copy the air-quality offer unchanged.
+# 1. Without a DCP token the provider refuses the catalog request (401).
+#    With a token from the consumer's STS, it checks the consumer's
+#    MembershipCredential and answers; copy the air-quality offer unchanged.
 # 2. Negotiate it through the consumer's management API: FINALIZED.
 # 3. The same offer id without its constraint: TERMINATED (ADR 0009).
 # 4. Request a transfer under the agreement: STARTED, with a data address.
@@ -20,13 +22,20 @@
 #               (default: PROVIDER)
 #   MANAGEMENT  the consumer's management API base URL
 #   KEY_FILE    the file holding the management API key
+#   STS         the consumer's STS token URL (its portitor-identity)
+#   STS_SECRET_FILE  the file holding the consumer's STS client secret
+#   CONSUMER_ID, PROVIDER_ID  the two participants' DIDs
 #   EXPECTED    the file the provider serves for air-quality
 
 set -euo pipefail
 
 : "${PROVIDER:?}" "${MANAGEMENT:?}" "${KEY_FILE:?}" "${EXPECTED:?}"
+: "${STS:?}" "${STS_SECRET_FILE:?}" "${CONSUMER_ID:?}" "${PROVIDER_ID:?}"
 HERE=${HERE:-$PROVIDER}
 DSP=dsp/2025-1
+# what the provider may read from the consumer's credential service (the
+# connector's default PORTITOR_DCP_SCOPES)
+SCOPE=org.eclipse.dspace.dcp.vc.type:MembershipCredential
 
 step() { printf '\n== %s\n' "$*"; }
 fail() {
@@ -65,12 +74,34 @@ until_state() { # path, states (regex): prints the record once in one of them
 wait_for "$HERE/health"
 wait_for "$MANAGEMENT/health"
 
-step "Read the provider's catalog"
-CATALOG=$(curl -sf -X POST "$HERE/$DSP/catalog/request" \
-  -H 'content-type: application/json' -d '{
-    "@context": ["https://w3id.org/dspace/2025/1/context.jsonld"],
-    "@type": "CatalogRequestMessage"}') || fail "catalog request"
-PROVIDER_ID=$(jq -r '.participantId' <<<"$CATALOG")
+consumer_token() { # a self-issued ID token from the consumer's STS, for the provider
+  curl -sf -X POST "$STS" \
+    --data-urlencode grant_type=client_credentials \
+    --data-urlencode "client_id=$CONSUMER_ID" \
+    --data-urlencode "client_secret=$(cat "$STS_SECRET_FILE")" \
+    --data-urlencode "audience=$PROVIDER_ID" \
+    --data-urlencode "bearer_access_scope=$SCOPE" | jq -r '.access_token'
+}
+
+catalog_request() { # [curl flags]: the provider's catalog
+  curl -s -X POST "$HERE/$DSP/catalog/request" "$@" \
+    -H 'content-type: application/json' -d '{
+      "@context": ["https://w3id.org/dspace/2025/1/context.jsonld"],
+      "@type": "CatalogRequestMessage"}'
+}
+
+step "Read the provider's catalog without a DCP token: the provider refuses"
+STATUS=$(catalog_request -o /dev/null -w '%{http_code}')
+[[ $STATUS == 401 ]] || fail "without a token the provider answered $STATUS, not 401"
+echo "the provider answered $STATUS"
+
+step "Read the provider's catalog with a token from the consumer's STS"
+# the consumer's connector gets such a token before every DSP request it
+# sends; the provider checks it, then asks the consumer's credential
+# service for its MembershipCredential
+ID_TOKEN=$(consumer_token) || fail "the consumer's STS gave no token"
+CATALOG=$(catalog_request -f -H "authorization: Bearer $ID_TOKEN") || fail "catalog request"
+[[ $(jq -r '.participantId' <<<"$CATALOG") == "$PROVIDER_ID" ]] || fail "another provider: $CATALOG"
 OFFER=$(jq -c '.dataset[] | select(.["@id"] == "air-quality") | .hasPolicy[0]' <<<"$CATALOG")
 [[ -n $OFFER ]] || fail "no air-quality offer in the catalog"
 echo "provider $PROVIDER_ID offers: $OFFER"
@@ -120,4 +151,4 @@ DONE=$(until_state "/v1/transfers/$TPID" 'COMPLETED|TERMINATED')
 STATUS=$(curl -s -o /dev/null -w '%{http_code}' "$ENDPOINT" -H "authorization: Bearer $TOKEN")
 [[ $STATUS == 401 ]] || fail "after completion the data plane answered $STATUS, not 401"
 
-step "Done: a contract agreed, changed terms refused, data transferred and the transfer completed"
+step "Done: the consumer authenticated with DCP, a contract agreed, changed terms refused, data transferred and the transfer completed"

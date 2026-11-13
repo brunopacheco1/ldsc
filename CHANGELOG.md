@@ -103,6 +103,16 @@ versions may change behaviour and configuration.
   DCP TCK writes both); the `id` counts.
 - The `DSP TCK` workflow is now called `TCK` and has a second job for the
   DCP TCK.
+- The demos (`scripts/demo.sh`, `scripts/demo-compose.sh` with
+  `examples/compose`) run with DCP: each participant is a connector and
+  its own `portitor-identity`, holding a `MembershipCredential` the demo
+  authority (`test-issuer`) delivers. The demo checks that a catalog
+  request without a token gets 401. `demo.sh` takes the identity binary
+  as a second argument, `demo-compose.sh` the identity image; both use
+  `TEST_ISSUER`. The Compose demo keeps its keys and secrets in
+  `examples/compose/run/` (written by the script) and the compose file's
+  default images are 0.5.0. CI's connector image check now expects it to
+  refuse to start without the DCP settings.
 - **Breaking:** the connector does not start without `PORTITOR_STS_URL`
   and the other DCP settings, and refuses unauthenticated DSP requests.
   Each negotiation and transfer is bound to the participant that started
