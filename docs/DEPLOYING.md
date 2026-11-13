@@ -339,9 +339,19 @@ DID, so usually not).
   cannot be fetched or checked the caller is refused). Otherwise it
   answers HTTP 401 with a DSP error that says only "unauthorized"; the
   reason is in the log. Each negotiation and transfer is bound to the DID
-  that started it: another caller is told it does not exist. Only
-  `/.well-known/dspace-version`, `/health` and the data plane are open
-  (the data plane has its own tokens).
+  that started it: another caller is told it does not exist. As
+  consumer, an agreement must name your participant id as `assignee`.
+  Only `/.well-known/dspace-version`, `/health` and the data plane are
+  open (the data plane has its own tokens).
+- **Limits against abuse.** Tokens valid for more than an hour are
+  refused (both components), and at most 100,000 used token ids are
+  remembered; when that is full, new tokens are refused until old ones
+  expire (log reason `too many token ids in use`). The connector checks
+  only credentials from trusted issuers, reads at most 8 presentations of
+  16 credentials with 4 status entries each, and gives up on a caller
+  after 20 s. On the public ports each request gets 60 s and at most 256
+  are worked on at once; the others wait, and a request over time gets
+  HTTP 503 (log `request took too long or waited too long`, WARN).
 - **Trusted issuers.** Whoever controls a DID in
   `PORTITOR_TRUSTED_ISSUERS` can admit any participant. List only your
   dataspace's issuers.
