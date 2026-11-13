@@ -208,6 +208,53 @@ goal (footprint, startup, tail latency), builds faster, and passed the same
 conformance checks. Java on Quarkus native is a workable fallback, not a
 better fit for the stated goals.
 
+### Measured again for 0.5 (2026-11-13)
+
+Architecture principle 4 asks for these numbers every release, and
+ADR 0016 for the cost of DCP. Run with `scripts/measure.sh` on
+2026-11-13, in the 4-core cloud container of the 0.5 review (Intel Xeon
+2.10 GHz, 15 GB, Linux 6.18), Rust 1.97.0, from the 0.5 release branch.
+Static glibc release builds (`x86_64-unknown-linux-gnu`, `crt-static`;
+the release images use musl). Everything ran on the one machine:
+connector, both identities, the demo authority's web site (a Python
+test server) and the load tool (`dsp-load`), over plain HTTP. The
+catalog is `tck/datasets.json`.
+
+| Measure | 0.5 | Target |
+|---|---|---|
+| Binary size, connector / identity | 9.1 MB / 7.7 MB | — |
+| Image size, compressed, connector / identity | 4.4 MB / 3.9 MB | < 30 MB |
+| Connector start to first healthy response (includes resolving its DID and a token from its STS) | 19 ms | < 1 s |
+| Idle memory (RSS), connector / identity | 8.1 MB / 7.1 MB | < 30 MB |
+| Peak memory, 50 clients for 20 s, connector with DCP / without | 23.3 MB / 11.4 MB | — |
+| Peak memory, identity: provider's / consumer's (its STS issued every token) | 8.8 MB / 15.5 MB | — |
+
+Cost of DCP per DSP request (catalog request; without DCP is the
+test-only `tck` build with one fixed header, otherwise the same code):
+
+| | Without DCP | With DCP |
+|---|---|---|
+| One client: DSP request p50 / p99 | 0.10 / 0.23 ms | 1.82 / 2.91 ms |
+| One client: token from the consumer's STS p50 / p99 | — | 0.28 / 0.53 ms |
+| 50 clients: requests per second | 21,836 | 1,667 |
+| 50 clients: DSP request p50 / p99 / p99.9 | 2.07 / 6.48 / 12.08 ms | 24.3 / 66.0 / 94.0 ms |
+| 50 clients: token p50 / p99 | — | 1.83 / 18.7 ms |
+| Errors | 0 | 0 |
+
+So DCP adds about 2 ms to a DSP request when the parties are idle: 0.3
+ms for the consumer's token and 1.7 ms at the provider, which checks the
+token, queries the consumer's credential service, verifies the
+presentation and fetches the issuer's status list (not cached, ADR
+0016). Under load the provider answers about 13 times fewer requests.
+Limits of this result:
+- Every party shared the same 4 CPUs, and the status list came from a
+  Python test server, so the loaded numbers are a floor, not a
+  capacity figure. Over the internet with TLS, the round trips to the
+  consumer's identity and the issuer cost more than the CPU work here.
+- The load tool differs from the bake-off's (`oha` cannot send a fresh
+  token with each request) and the catalog is larger, so the
+  "without DCP" row is not directly comparable to the table above.
+
 ## 8. Consequences
 
 - One language and one Cargo workspace; each component is a module (crate)

@@ -129,6 +129,12 @@ versions may change behaviour and configuration.
 - The DSP TCK job sends a fixed `Authorization` header, which the `tck`
   build (`PORTITOR_TCK_AUTHORIZATION`) maps to the TCK participant.
 
+- `scripts/measure.sh` runs with DCP: it starts a provider and a
+  consumer identity as the demo does, and measures with the new
+  `dsp-load` example (a fresh token per request) instead of `oha`. The
+  0.5 numbers and the cost of DCP per DSP request (about 2 ms, idle) are
+  in ADR 0002, section 7.
+
 ### Fixed
 - EDC can read Portitor's catalog: a catalog request whose `filter`
   selects nothing (EDC always sends a `QuerySpec` with only paging) gets

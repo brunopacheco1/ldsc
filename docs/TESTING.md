@@ -441,5 +441,24 @@ Fuzz targets need a nightly toolchain and are not in `launch.json`.
 
 ## Footprint
 
-`scripts/measure.sh <binary>` measures start time, memory and latency of a
-built binary against the targets in ADR 0002 (needs `oha`).
+`scripts/measure.sh` measures size, start time, memory and latency
+against the targets in ADR 0002, and what DCP costs per DSP request
+(ADR 0016). It starts a provider (connector and identity) and a
+consumer identity with the demo authority, as `scripts/demo.sh` does.
+The load tool is the `dsp-load` example of the connector: it sends
+catalog requests from 50 clients, each with a fresh token from the
+consumer's STS (a general load tool cannot, since a DCP token may be used
+once). With `TCK_CONNECTOR`, a connector built with the `tck` feature
+runs the same load with a fixed header, without DCP. Every wait is
+bounded; it needs `curl`, `openssl` and Python 3.
+
+```sh
+scripts/measure.sh                   # builds the release binaries and the tools
+cargo build --release -p portitor-connector --features tck
+cp target/release/portitor-connector /tmp/portitor-connector-tck
+cargo build --release -p portitor-connector -p portitor-identity
+TCK_CONNECTOR=/tmp/portitor-connector-tck \
+  scripts/measure.sh target/release/portitor-connector
+```
+
+The results of each release are in ADR 0002, section 7.

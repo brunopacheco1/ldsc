@@ -135,7 +135,8 @@ The decision stands; one detail changed while it was built:
   DID. The DCP TCK covers the authentication itself, and the EDC test
   covers both together.
 - DSP calls get slower by the round trips above. Numbers are measured
-  in 0.5 and published with the release.
+  in 0.5 and published with the release (ADR 0002, section 7, "Measured
+  again for 0.5").
 - Credential rules in policies (for example "member of dataspace X") come
   in 0.6 on top of this, using the verified credentials kept for the
   request.
