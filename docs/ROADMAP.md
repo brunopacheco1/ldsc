@@ -163,7 +163,7 @@ all checks green, Scorecard published.
   over HTTP pull; CI runs it on every pull request. The upstream reports
   are drafted; the maintainer files them, and their links are added here.
 
-## 0.5 DCP: identity and DSP authentication
+## 0.5 DCP: identity and DSP authentication (released 2026-11-13 as v0.5.0)
 
 Plan approved by the maintainer on 2026-11-13. DCP v1.0.1 and the DCP
 TCK v1.2.1 are the targets (latest releases, checked 2026-11-13).
@@ -203,6 +203,15 @@ TCK v1.2.1 are the targets (latest releases, checked 2026-11-13).
 - Exit: DCP TCK credential service tests (presentation and holder-side
   issuance) and verifier tests green; DSP flows from 0.2 to 0.4 run with
   DCP authentication; the EDC interop test is green in CI.
+- Result (2026-11-13): met. The DCP TCK v1.2.1 passes all 54 credential
+  service tests and all 22 verifier tests, locally and in CI. The DSP TCK
+  runs green with DCP authentication on every request. The EDC interop
+  test (EDC 1.0.0-RC7 with its IdentityHub) runs catalog, negotiation and
+  pull transfer with DCP in both directions, checks that each side
+  refuses the other once its credential is revoked, and is green in CI. The
+  Simpl-Open spike stays at ADR 0017 (proposed) until the maintainer sets
+  up a Simpl-Open sandbox (maintainer, 2026-11-13). Upstream reports
+  (DCP TCK, EDC IdentityHub, DCP schemas) are still to be filed.
 
 ## 0.6 DCP: issuance and credential-based policies
 
