@@ -93,7 +93,7 @@ pub struct CredentialRequest {
     /// The holder's id of the request.
     pub holder_pid: String,
     /// The issuer that may answer it.
-    pub issuer_did: String,
+    pub issuer: String,
     /// Where it stands.
     pub status: RequestStatus,
 }
@@ -233,11 +233,7 @@ impl IdentityStore for SqliteStore {
         let added = self.conn().execute(
             "INSERT INTO credential_request (holder_pid, issuer_did, status) VALUES (?1, ?2, ?3)
                  ON CONFLICT (holder_pid) DO NOTHING",
-            params![
-                request.holder_pid,
-                request.issuer_did,
-                request.status.text()
-            ],
+            params![request.holder_pid, request.issuer, request.status.text()],
         )?;
         Ok(added == 1)
     }
@@ -249,18 +245,18 @@ impl IdentityStore for SqliteStore {
                 "SELECT issuer_did, status FROM credential_request WHERE holder_pid = ?1",
                 [holder_pid],
                 |row| {
-                    let issuer_did: String = row.get("issuer_did")?;
+                    let issuer: String = row.get("issuer_did")?;
                     let status: String = row.get("status")?;
-                    Ok((issuer_did, status))
+                    Ok((issuer, status))
                 },
             )
             .optional()?;
-        let Some((issuer_did, status)) = found else {
+        let Some((issuer, status)) = found else {
             return Ok(None);
         };
         Ok(Some(CredentialRequest {
             holder_pid: holder_pid.to_owned(),
-            issuer_did,
+            issuer,
             status: RequestStatus::from_text(&status)?,
         }))
     }
@@ -409,7 +405,7 @@ mod tests {
     fn request(pid: &str) -> CredentialRequest {
         CredentialRequest {
             holder_pid: pid.to_owned(),
-            issuer_did: "did:web:issuer.example".to_owned(),
+            issuer: "did:web:issuer.example".to_owned(),
             status: RequestStatus::Requested,
         }
     }

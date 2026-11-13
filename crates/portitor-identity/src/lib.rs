@@ -46,7 +46,8 @@ pub const TOKEN_SECONDS: u64 = 300;
 
 /// The identity component's state, shared by all requests.
 pub struct Identity {
-    did: String,
+    /// Our own DID (`PORTITOR_PARTICIPANT_ID`).
+    participant_id: String,
     kid: String,
     key: SigningKey,
     document: serde_json::Value,
@@ -55,16 +56,16 @@ pub struct Identity {
     trusted_issuers: Vec<String>,
     type_aliases: Vec<String>,
     sts_client_id: String,
-    sts_secret: ApiKey,
+    sts_client_secret: ApiKey,
     store: Arc<dyn IdentityStore>,
     directory: Arc<dyn Directory>,
-    used_tokens: Mutex<JtiCache>,
+    used_token_ids: Mutex<JtiCache>,
 }
 
 impl std::fmt::Debug for Identity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Identity")
-            .field("did", &self.did)
+            .field("participant_id", &self.participant_id)
             .field("kid", &self.kid)
             .finish_non_exhaustive()
     }
@@ -87,7 +88,7 @@ impl Identity {
     pub fn new(
         config: &Config,
         key: SigningKey,
-        sts_secret: ApiKey,
+        sts_client_secret: ApiKey,
         ports: Ports,
     ) -> Result<Self, String> {
         let kid = format!(
@@ -105,7 +106,7 @@ impl Identity {
         let service_path = config::base_path(&config.credential_service_url)
             .ok_or("PORTITOR_CREDENTIAL_SERVICE_URL is not an http(s) URL")?;
         Ok(Self {
-            did: config.participant_id.clone(),
+            participant_id: config.participant_id.clone(),
             kid,
             key,
             document,
@@ -114,17 +115,17 @@ impl Identity {
             trusted_issuers: config.trusted_issuers.clone(),
             type_aliases: config.scope_type_aliases.clone(),
             sts_client_id: config.sts_client_id.clone(),
-            sts_secret,
+            sts_client_secret,
             store: ports.store,
             directory: ports.directory,
-            used_tokens: Mutex::new(JtiCache::default()),
+            used_token_ids: Mutex::new(JtiCache::default()),
         })
     }
 
     /// The participant's DID.
     #[must_use]
-    pub fn did(&self) -> &str {
-        &self.did
+    pub fn participant_id(&self) -> &str {
+        &self.participant_id
     }
 
     /// The id of the participant's key in its DID document.
@@ -148,15 +149,15 @@ impl Identity {
         portitor_dcp::holder::Signer {
             key: &self.key,
             kid: &self.kid,
-            did: &self.did,
+            did: &self.participant_id,
         }
     }
 
     /// The used token ids. A panic while the lock was held could at worst
     /// leave one id that is never forgotten (it only panics when memory
     /// runs out), so a poisoned lock is used as it is.
-    fn used_tokens(&self) -> std::sync::MutexGuard<'_, JtiCache> {
-        self.used_tokens
+    fn used_token_ids(&self) -> std::sync::MutexGuard<'_, JtiCache> {
+        self.used_token_ids
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
     }

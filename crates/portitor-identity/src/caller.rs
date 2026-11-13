@@ -51,14 +51,14 @@ pub(crate) async fn authenticate(
         .await
         .map_err(|e| refused(&format!("cannot resolve {}: {e}", claimed.sub)))?;
     let now = now_secs();
-    let mut used_tokens = identity.used_tokens();
+    let mut used_token_ids = identity.used_token_ids();
     validate_self_issued(
         token,
         &document,
-        &identity.did,
+        &identity.participant_id,
         now,
         LEEWAY,
-        &mut used_tokens,
+        &mut used_token_ids,
     )
     .map_err(|e| refused(&e.to_string()))
 }

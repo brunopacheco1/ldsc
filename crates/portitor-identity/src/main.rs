@@ -35,7 +35,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         tracing::warn!("plain-http DIDs and URLs allowed (PORTITOR_ALLOW_HTTP_CALLBACKS)");
     }
     let key = read_key(&config)?;
-    let sts_secret = ApiKey::read(&config.sts_client_secret_file)
+    let sts_client_secret = ApiKey::read(&config.sts_client_secret_file)
         .map_err(|e| format!("PORTITOR_STS_CLIENT_SECRET_FILE: {e}"))?;
     let store = SqliteStore::open(&config.db_file)
         .map_err(|e| format!("cannot open {}: {e}", config.db_file.display()))?;
@@ -43,7 +43,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         store: Arc::new(store),
         directory: Arc::new(WebDirectory::new(config.allow_http)?),
     };
-    let identity = Arc::new(Identity::new(&config, key, sts_secret, ports)?);
+    let identity = Arc::new(Identity::new(&config, key, sts_client_secret, ports)?);
     let listener = tokio::net::TcpListener::bind(&config.bind).await?;
 
     let management = if let Some(settings) = &config.management {
@@ -58,7 +58,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     tracing::info!(
         bind = %config.bind,
-        did = %identity.did(),
+        did = %identity.participant_id(),
         kid = %identity.kid(),
         db = %config.db_file.display(),
         "portitor-identity listening"

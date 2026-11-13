@@ -85,7 +85,7 @@ const START_WAIT: Duration = Duration::from_secs(2);
 
 /// The DCP verifier.
 pub struct DcpVerifier {
-    own_did: String,
+    participant_id: String,
     resolver: DidWebResolver,
     http: HttpSender,
     sts: Arc<dyn SecureTokenService>,
@@ -101,7 +101,7 @@ pub struct DcpVerifier {
 impl std::fmt::Debug for DcpVerifier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DcpVerifier")
-            .field("own_did", &self.own_did)
+            .field("participant_id", &self.participant_id)
             .field("trusted_issuers", &self.trusted_issuers)
             .field("scopes", &self.scopes)
             .finish_non_exhaustive()
@@ -124,7 +124,7 @@ impl DcpVerifier {
     /// The HTTP client cannot be built.
     pub fn new(settings: &AuthSettings, sts: Arc<dyn SecureTokenService>) -> Result<Self, String> {
         Ok(Self {
-            own_did: settings.participant_id.clone(),
+            participant_id: settings.participant_id.clone(),
             resolver: DidWebResolver::new(settings.allow_http, DEFAULT_TTL)?,
             http: HttpSender::new(settings.allow_http)?,
             sts,
@@ -146,7 +146,7 @@ impl DcpVerifier {
     /// The DID document cannot be read, has no Credential Service, or the
     /// STS signs for another identity.
     pub async fn check_own_identity(&self) -> Result<(), String> {
-        let own = self.own_did.as_str();
+        let own = self.participant_id.as_str();
         let doc = self.resolve_own_document().await?;
         if doc.credential_service().is_none() {
             return Err(format!(
@@ -171,18 +171,18 @@ impl DcpVerifier {
     async fn resolve_own_document(&self) -> Result<Arc<DidDocument>, String> {
         let mut last = String::new();
         for attempt in 1..=self.start_tries.max(1) {
-            match self.resolver.resolve(&self.own_did).await {
+            match self.resolver.resolve(&self.participant_id).await {
                 Ok(doc) => return Ok(doc),
                 Err(e) => last = e,
             }
             if attempt < self.start_tries {
-                tracing::info!(did = %self.own_did, error = %last, "own DID document not readable yet");
+                tracing::info!(did = %self.participant_id, error = %last, "own DID document not readable yet");
                 tokio::time::sleep(START_WAIT).await;
             }
         }
         Err(format!(
             "cannot read the DID document of {}: {last}",
-            self.own_did
+            self.participant_id
         ))
     }
 
@@ -237,7 +237,7 @@ impl DcpVerifier {
             .used_token_ids
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        validate_self_issued(token, doc, &self.own_did, now, LEEWAY, &mut used)
+        validate_self_issued(token, doc, &self.participant_id, now, LEEWAY, &mut used)
     }
 
     /// Step 3: asks the caller's Credential Service for presentations.
@@ -282,7 +282,7 @@ impl DcpVerifier {
                 return Err("a presentation's holder is not the caller".to_owned());
             }
             presentation
-                .verify(holder, &self.own_did, now, LEEWAY)
+                .verify(holder, &self.participant_id, now, LEEWAY)
                 .map_err(|e| format!("presentation: {e}"))?;
             if presentation.credentials.len() > MAX_CREDENTIALS {
                 return Err(format!(

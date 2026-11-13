@@ -147,8 +147,8 @@ fn issue(identity: &Identity, request: TokenRequest) -> Result<TokenResponse, Re
     };
     let inner = inner_token(identity, frame, request.bearer_access_scope, request.token)?;
     let claims = Claims {
-        iss: identity.did.clone(),
-        sub: identity.did.clone(),
+        iss: identity.participant_id.clone(),
+        sub: identity.participant_id.clone(),
         aud: audience.clone(),
         jti: frame.jti.to_owned(),
         exp: frame.expires_at,
@@ -175,7 +175,7 @@ fn check_client(identity: &Identity, request: &TokenRequest) -> Result<(), Refus
     let right_secret = request
         .client_secret
         .as_deref()
-        .is_some_and(|secret| identity.sts_secret.matches(secret.as_bytes()));
+        .is_some_and(|secret| identity.sts_client_secret.matches(secret.as_bytes()));
     if known_client && right_secret {
         Ok(())
     } else {
@@ -220,7 +220,7 @@ fn access_token(
         }
     }
     AccessToken::new(
-        &identity.did,
+        &identity.participant_id,
         TokenFrame {
             jti: &new_uuid(),
             ..frame

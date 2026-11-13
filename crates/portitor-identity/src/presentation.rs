@@ -48,11 +48,17 @@ pub(crate) async fn query(
     };
     let now = now_secs();
     let public_key = identity.key.public_jwk();
-    let access =
-        match AccessToken::verify(token, &public_key, &identity.did, &caller.sub, now, LEEWAY) {
-            Ok(access) => access,
-            Err(e) => return refused(&e.to_string()),
-        };
+    let access = match AccessToken::verify(
+        token,
+        &public_key,
+        &identity.participant_id,
+        &caller.sub,
+        now,
+        LEEWAY,
+    ) {
+        Ok(access) => access,
+        Err(e) => return refused(&e.to_string()),
+    };
     let message: PresentationQueryMessage = match serde_json::from_slice(&body) {
         Ok(message) => message,
         Err(e) => return problem(StatusCode::BAD_REQUEST, &e.to_string()),

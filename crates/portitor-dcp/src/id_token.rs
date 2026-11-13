@@ -156,7 +156,7 @@ pub fn validate_self_issued(
     verifier_did: &str,
     now: u64,
     leeway: u64,
-    jti_cache: &mut JtiCache,
+    used_token_ids: &mut JtiCache,
 ) -> Result<Claims, Error> {
     let jws = Jws::parse(token)?;
     let claims = claims_of(&jws)?;
@@ -196,7 +196,7 @@ pub fn validate_self_issued(
         return Err(Error::Invalid("valid for too long"));
     }
     // 6. jti not used before; remembered as long as the token is valid
-    jti_cache.remember(&claims.jti, claims.exp.saturating_add(leeway), now)?;
+    used_token_ids.remember(&claims.jti, claims.exp.saturating_add(leeway), now)?;
     Ok(claims)
 }
 

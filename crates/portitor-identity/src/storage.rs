@@ -75,7 +75,7 @@ async fn store_delivery(
         return Err(bad_request("holderPid is required"));
     };
     let request = match identity.store.request(holder_pid) {
-        Ok(Some(request)) if request.issuer_did == issuer => request,
+        Ok(Some(request)) if request.issuer == issuer => request,
         Ok(_) => return Err(bad_request("no credential request with this holderPid")),
         Err(e) => return Err(internal(&e)),
     };
@@ -146,7 +146,7 @@ fn check_credential(
         .verify(issuer_document, now_secs(), LEEWAY)
         .map_err(|e| e.to_string())?;
     // every subject must be this participant, named by its DID
-    if !credential.is_only_about(&identity.did) {
+    if !credential.is_only_about(&identity.participant_id) {
         return Err("the credential is not about this participant".to_owned());
     }
     Ok(credential)

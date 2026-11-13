@@ -162,7 +162,7 @@ async fn create_request(
         .unwrap_or_else(new_uuid);
     let record = CredentialRequest {
         holder_pid: holder_pid.clone(),
-        issuer_did: request.issuer_did,
+        issuer: request.issuer_did,
         status: RequestStatus::Requested,
     };
     match identity.store.add_request(&record) {
