@@ -12,6 +12,26 @@ versions may change behaviour and configuration.
 
 ## [Unreleased]
 
+### Added
+
+- C4 model diagrams (system context, containers, components of both
+  images, and the provider negotiation as code) in draw.io format, shown
+  in `docs/ARCHITECTURE.md`.
+- `docs/api/identity-openapi.json`: the identity's public interface (DID
+  document, STS, DCP credential service); a test checks every route in it
+  is served.
+- `scripts/check_docs.py`, run in CI: the diagrams name every crate and
+  image and only files and types that exist; every OpenAPI file has the
+  workspace version.
+- A documentation review step for every release (`docs/RELEASING.md`).
+
+### Fixed
+
+- The website publishes the identity's OpenAPI descriptions next to the
+  connector's, and its API page links all of them.
+- `docs/ARCHITECTURE.md` no longer lists PostgreSQL as required: each
+  image keeps its state in SQLite until the PostgreSQL adapter exists.
+
 ## [0.5.0] - 2026-11-13
 
 ### Added

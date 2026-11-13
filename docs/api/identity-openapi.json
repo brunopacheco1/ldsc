@@ -1,0 +1,230 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Portitor identity",
+    "description": "The public HTTP interface of portitor-identity (ADR 0015): the participant's did:web DID document, the Secure Token Service for its own connector, and the DCP v1.0.1 credential service (presentation, storage and offer APIs). Message bodies follow the DCP v1.0.1 JSON Schemas (copies in crates/portitor-dcp/tests/schemas, linked from each operation). The management API is described separately in identity-management-openapi.json. Written by hand; a test checks that every operation here is served.",
+    "license": {
+      "name": "Apache-2.0",
+      "identifier": "Apache-2.0"
+    },
+    "version": "0.5.0"
+  },
+  "externalDocs": {
+    "description": "Decentralized Claims Protocol v1.0.1",
+    "url": "https://github.com/eclipse-dataspace-dcp/decentralized-claims-protocol/tree/v1.0.1"
+  },
+  "servers": [
+    {
+      "url": "https://participant.example",
+      "description": "The identity's public address (PORTITOR_BIND behind HTTPS)"
+    }
+  ],
+  "paths": {
+    "/.well-known/did.json": {
+      "get": {
+        "summary": "The participant's DID document (did:web)",
+        "description": "Served at the path the did:web method gives for PORTITOR_PARTICIPANT_ID: /.well-known/did.json for a DID without a path, /<path>/did.json otherwise. One P-256 verification method (authentication, assertionMethod, capabilityInvocation) and the CredentialService entry.",
+        "operationId": "didDocument",
+        "responses": {
+          "200": {
+            "description": "The DID document",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["id", "verificationMethod", "service"]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sts/token": {
+      "post": {
+        "summary": "A self-issued ID token for the participant's own connector (STS)",
+        "description": "DCP's non-normative STS interface (identity-trust-sts-api.yaml, tag v1.0.1). Only the configured client (PORTITOR_STS_CLIENT_ID and its secret) gets tokens.",
+        "operationId": "stsToken",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "required": ["grant_type", "client_id", "client_secret", "audience"],
+                "properties": {
+                  "grant_type": { "const": "client_credentials" },
+                  "client_id": { "type": "string" },
+                  "client_secret": { "type": "string" },
+                  "audience": { "type": "string", "description": "The DID the token is for (its aud)" },
+                  "bearer_access_scope": {
+                    "type": "string",
+                    "description": "Space-separated scopes: the token gets a token claim that lets audience read those credentials"
+                  },
+                  "token": {
+                    "type": "string",
+                    "description": "Another participant's access token, passed on in the token claim (when this participant verifies)"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The ID token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["access_token", "token_type", "expires_in"],
+                  "properties": {
+                    "access_token": { "type": "string" },
+                    "token_type": { "const": "Bearer" },
+                    "expires_in": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "The request is not a valid token request" },
+          "401": { "description": "Unknown client or wrong secret" }
+        }
+      }
+    },
+    "/presentations/query": {
+      "servers": [
+        {
+          "url": "{credentialService}",
+          "variables": {
+            "credentialService": {
+              "default": "https://participant.example/cs",
+              "description": "PORTITOR_CREDENTIAL_SERVICE_URL"
+            }
+          }
+        }
+      ],
+      "post": {
+        "summary": "Answer a verifier's presentation query (DCP 5.4)",
+        "description": "The caller sends a self-issued ID token as Authorization: Bearer; its token claim must be an access token this identity's STS signed for that caller. Queries by scope only; presentation definitions are not supported.",
+        "operationId": "presentationQuery",
+        "security": [{ "selfIssuedIdToken": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "description": "PresentationQueryMessage",
+                "externalDocs": {
+                  "url": "https://github.com/brunopacheco1/portitor/blob/main/crates/portitor-dcp/tests/schemas/presentation-query-message-schema.json"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "PresentationResponseMessage, one presentation per credential profile",
+            "content": { "application/json": {} }
+          },
+          "400": { "description": "Not a valid query" },
+          "401": { "description": "The caller or its access token was refused" },
+          "501": { "description": "The query uses a presentation definition" }
+        }
+      }
+    },
+    "/credentials": {
+      "servers": [
+        {
+          "url": "{credentialService}",
+          "variables": {
+            "credentialService": {
+              "default": "https://participant.example/cs",
+              "description": "PORTITOR_CREDENTIAL_SERVICE_URL"
+            }
+          }
+        }
+      ],
+      "post": {
+        "summary": "Storage API: an issuer delivers credentials (DCP 6.5)",
+        "description": "Accepted only for a credential request the participant made (management API), from the issuer it was made to.",
+        "operationId": "storeCredentials",
+        "security": [{ "selfIssuedIdToken": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "description": "CredentialMessage",
+                "externalDocs": {
+                  "url": "https://github.com/brunopacheco1/portitor/blob/main/crates/portitor-dcp/tests/schemas/credential-message-schema.json"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Stored" },
+          "400": { "description": "Not a valid delivery, or not one the participant asked for" },
+          "401": { "description": "The caller was refused" }
+        }
+      }
+    },
+    "/offers": {
+      "servers": [
+        {
+          "url": "{credentialService}",
+          "variables": {
+            "credentialService": {
+              "default": "https://participant.example/cs",
+              "description": "PORTITOR_CREDENTIAL_SERVICE_URL"
+            }
+          }
+        }
+      ],
+      "post": {
+        "summary": "Credential Offer API: an issuer says credentials are available (DCP 6.6)",
+        "description": "Offers are recorded and listed in the management API; nothing is requested automatically.",
+        "operationId": "credentialOffer",
+        "security": [{ "selfIssuedIdToken": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "description": "CredentialOfferMessage",
+                "externalDocs": {
+                  "url": "https://github.com/brunopacheco1/portitor/blob/main/crates/portitor-dcp/tests/schemas/credential-offer-message-schema.json"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Recorded" },
+          "400": { "description": "Not a valid offer" },
+          "401": { "description": "The caller was refused" }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Liveness",
+        "operationId": "health",
+        "responses": {
+          "200": { "description": "ok", "content": { "text/plain": {} } }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "selfIssuedIdToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "A self-issued ID token (DCP base protocol, section 4.3), checked against the caller's DID document"
+      }
+    }
+  }
+}

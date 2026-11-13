@@ -68,21 +68,59 @@ judged against it.
     well-maintained dependencies; each new dependency is justified in its
     pull request and passes the licence allow-list.
 
+## Diagrams (C4 model)
+
+The [C4 model](https://c4model.com/) in four levels, each zooming into the
+one before. The files are draw.io diagrams saved as `.drawio.svg`: GitHub
+shows them as pictures, and draw.io (desktop, web or the VS Code
+extension) opens and edits the same file. Edit them in draw.io, never by
+hand, and keep the format when saving. `scripts/check_docs.py` (run in
+CI) checks that they still match the code: every crate and image is
+drawn, every Rust file and type they name exists. Each release reviews
+them ([RELEASING.md](RELEASING.md), "Documentation review").
+
+**C1 System context**: who and what one participant's Portitor talks to.
+
+![C1 System context](diagrams/c1-system-context.drawio.svg)
+
+**C2 Containers**: the two images one participant runs, and what they
+keep.
+
+![C2 Containers](diagrams/c2-containers.drawio.svg)
+
+**C3 Components**: inside each image, the adapters around the pure
+domain crates ([ADR 0004](adr/0004-hexagonal-architecture.md)).
+
+![C3 Components of portitor-connector](diagrams/c3-connector-components.drawio.svg)
+
+![C3 Components of portitor-identity](diagrams/c3-identity-components.drawio.svg)
+
+**C4 Code**: one flow, the provider side of contract negotiation, as a
+hexagon: the domain service, the ports (traits) it uses and the adapters
+behind them. The other flows (consumer negotiation, transfers) follow the
+same pattern, with their ports in `portitor-dsp` and adapters in
+`portitor-connector`; C4 level 4 is optional in the model, so only this
+one is drawn.
+
+![C4 Code: provider contract negotiation](diagrams/c4-negotiation-code.drawio.svg)
+
 ## Components
 
 One mono repo, one version. Each component is a **module** of the mono
 repo (a crate in the Cargo workspace) and can ship as its **own image**.
 
 **The split is decided in [ADR 0003](adr/0003-component-split.md):**
-three images, split by who runs them and which keys they hold. PostgreSQL
-is an external dependency, not a Portitor image.
+three images, split by who runs them and which keys they hold. Today each
+image keeps its state in its own SQLite file; PostgreSQL, an external
+dependency and not a Portitor image, comes later behind the same store
+ports.
 
 | # | Component (image) | Role | Mandatory? | Protocols |
 |---|---|---|---|---|
-| 1 | PostgreSQL (external, not built by Portitor) | State of negotiations, transfers, credentials | Mandatory | — |
+| 1 | Database: one SQLite file per image today; PostgreSQL (external, not built by Portitor) later | State of negotiations, transfers, credentials | Mandatory | — |
 | 2 | `portitor-identity` | Holds the participant's DID, keys and credentials (including Gaia-X credentials from 0.7); answers presentation queries | Mandatory for each participant, unless an external DCP wallet is used, or the participant uses Simpl-Open x509 only | DCP (credential service) |
 | 3 | `portitor-connector` | Control plane: catalog, contract negotiation, transfer; verifies DCP presentations. The data plane is its own module, linked into the connector for 0.x (see below) | Mandatory | DSP, DCP (verifier) |
-| 4 | `portitor-issuer` | Issues and revokes credentials (for example membership); builds and signs the schema and vocabulary bundle ([ADR 0005](adr/0005-schema-and-vocabulary-registry.md), proposed) | Optional: one per dataspace, run by the dataspace authority | DCP (issuance) |
+| 4 | `portitor-issuer` (planned for 0.6; until then a test-only tool) | Issues and revokes credentials (for example membership); builds and signs the schema and vocabulary bundle ([ADR 0005](adr/0005-schema-and-vocabulary-registry.md), proposed) | Optional: one per dataspace, run by the dataspace authority | DCP (issuance) |
 
 ### Images and crates in 0.5
 
@@ -168,7 +206,7 @@ by participants.
 
 ## Deployment order
 
-1. PostgreSQL.
+1. Storage: a volume for each image's SQLite file (PostgreSQL later).
 2. Identity: publish the `did:web` document over HTTPS.
 3. Issuer (only the dataspace authority): issue a membership credential to
    the participant's identity. For Gaia-X, the participant also obtains a

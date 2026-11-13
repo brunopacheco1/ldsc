@@ -96,7 +96,8 @@ jobs:
           mkdir -p _site
           cp -R site/. _site/
           python3 scripts/openapi_site.py docs/api/openapi.json crates/portitor-dsp/tests/schemas _site
-          cp docs/api/management-openapi.json _site/api/management-openapi.json
+          cp docs/api/management-openapi.json docs/api/identity-openapi.json \
+            docs/api/identity-management-openapi.json _site/api/
           sed -i -e "s|@STATUS@|${STATUS}|g" -e "s|@SCORECARD@|${SCORECARD}|g" -e "s|@GATE@|${GATE}|g" \
             -e "s|@REUSE@|${REUSE}|g" -e "s|@BESTPRACTICES@|${BESTPRACTICES}|g" \
             -e "s|@BUILT@|${BUILT}|g" _site/index.html
