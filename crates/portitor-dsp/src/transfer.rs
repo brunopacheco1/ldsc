@@ -308,135 +308,40 @@ pub struct TransferStartMessage {
     pub data_address: Option<DataAddress>,
 }
 
-/// `TransferSuspensionMessage`, sent by either party.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TransferSuspensionMessage {
-    /// JSON-LD context.
-    #[serde(rename = "@context")]
-    pub context: Context,
-    /// Message type.
-    #[serde(rename = "@type")]
-    pub kind: TransferSuspensionMessageType,
-    /// The provider's process id.
-    pub provider_pid: String,
-    /// The consumer's process id.
-    pub consumer_pid: String,
-    /// Implementation-specific code.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub code: Option<String>,
-    /// Reasons, in any form.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub reason: Vec<serde_json::Value>,
-}
+pid_message!(
+    /// `TransferCompletionMessage`, sent by either party.
+    TransferCompletionMessage,
+    TransferCompletionMessageType
+);
 
-/// `TransferCompletionMessage`, sent by either party.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TransferCompletionMessage {
-    /// JSON-LD context.
-    #[serde(rename = "@context")]
-    pub context: Context,
-    /// Message type.
-    #[serde(rename = "@type")]
-    pub kind: TransferCompletionMessageType,
-    /// The provider's process id.
-    pub provider_pid: String,
-    /// The consumer's process id.
-    pub consumer_pid: String,
-}
+pid_message!(
+    /// `TransferSuspensionMessage`, sent by either party.
+    TransferSuspensionMessage,
+    TransferSuspensionMessageType,
+    code
+);
 
-/// `TransferTerminationMessage`, sent by either party.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TransferTerminationMessage {
-    /// JSON-LD context.
-    #[serde(rename = "@context")]
-    pub context: Context,
-    /// Message type.
-    #[serde(rename = "@type")]
-    pub kind: TransferTerminationMessageType,
-    /// The provider's process id.
-    pub provider_pid: String,
-    /// The consumer's process id.
-    pub consumer_pid: String,
-    /// Implementation-specific code.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub code: Option<String>,
-    /// Reasons, in any form.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub reason: Vec<serde_json::Value>,
-}
+pid_message!(
+    /// `TransferTerminationMessage`, sent by either party.
+    TransferTerminationMessage,
+    TransferTerminationMessageType,
+    code
+);
 
-/// `TransferProcess`: the acknowledgement of a message, and the answer to
-/// a state query.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TransferProcess {
-    /// JSON-LD context.
-    #[serde(rename = "@context")]
-    pub context: Context,
-    /// Message type.
-    #[serde(rename = "@type")]
-    pub kind: TransferProcessType,
-    /// The provider's process id.
-    pub provider_pid: String,
-    /// The consumer's process id.
-    pub consumer_pid: String,
-    /// The current state.
-    pub state: TransferState,
-}
+process_ack!(
+    /// `TransferProcess`: the acknowledgement of a message, and the answer
+    /// to a state query.
+    TransferProcess,
+    TransferProcessType,
+    TransferState
+);
 
-impl TransferProcess {
-    /// Builds the acknowledgement.
-    #[must_use]
-    pub fn new(provider_pid: &str, consumer_pid: &str, state: TransferState) -> Self {
-        Self {
-            context: Context::default(),
-            kind: TransferProcessType,
-            provider_pid: provider_pid.to_owned(),
-            consumer_pid: consumer_pid.to_owned(),
-            state,
-        }
-    }
-}
-
-/// `TransferError`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TransferError {
-    /// JSON-LD context.
-    #[serde(rename = "@context")]
-    pub context: Context,
-    /// Message type.
-    #[serde(rename = "@type")]
-    pub kind: TransferErrorType,
-    /// The provider's process id.
-    pub provider_pid: String,
-    /// The consumer's process id.
-    pub consumer_pid: String,
-    /// Implementation-specific code.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub code: Option<String>,
-    /// Reasons, in any form.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub reason: Vec<serde_json::Value>,
-}
-
-impl TransferError {
-    /// Builds an error with one reason.
-    #[must_use]
-    pub fn new(provider_pid: &str, consumer_pid: &str, code: &str, reason: &str) -> Self {
-        Self {
-            context: Context::default(),
-            kind: TransferErrorType,
-            provider_pid: provider_pid.to_owned(),
-            consumer_pid: consumer_pid.to_owned(),
-            code: Some(code.to_owned()),
-            reason: vec![serde_json::Value::String(reason.to_owned())],
-        }
-    }
-}
+pid_message!(
+    /// `TransferError`.
+    TransferError,
+    TransferErrorType,
+    error
+);
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
@@ -479,19 +384,19 @@ mod tests {
 
     #[test]
     fn state_machine_matches_the_specification() {
-        for from in ALL_STATES {
-            for t in ALL_TRANSITIONS {
-                for sender in [P, C] {
-                    let got = next_state(from, t, sender);
-                    let want = ALLOWED
-                        .iter()
-                        .find(|(f, tt, r, _)| *f == from && *tt == t && *r == sender)
-                        .map(|a| a.3);
-                    match want {
-                        Some(s) => assert_eq!(got, Ok(s), "{from:?} {t:?} by {sender:?}"),
-                        None => assert!(got.is_err(), "{from:?} {t:?} by {sender:?}: {got:?}"),
-                    }
-                }
+        let cases = ALL_STATES
+            .into_iter()
+            .flat_map(|f| ALL_TRANSITIONS.into_iter().map(move |t| (f, t)))
+            .flat_map(|(f, t)| [(f, t, P), (f, t, C)]);
+        for (from, t, sender) in cases {
+            let allowed = ALLOWED
+                .iter()
+                .find(|a| (a.0, a.1, a.2) == (from, t, sender));
+            let got = next_state(from, t, sender);
+            if let Some(&(.., want)) = allowed {
+                assert_eq!(got, Ok(want), "{from:?} {t:?} by {sender:?}");
+            } else {
+                assert!(got.is_err(), "{from:?} {t:?} by {sender:?}: {got:?}");
             }
         }
     }

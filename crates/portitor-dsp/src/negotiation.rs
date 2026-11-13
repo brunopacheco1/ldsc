@@ -338,21 +338,11 @@ pub struct ContractAgreementMessage {
     pub agreement: Agreement,
 }
 
-/// `ContractAgreementVerificationMessage`, sent by the consumer.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ContractAgreementVerificationMessage {
-    /// JSON-LD context.
-    #[serde(rename = "@context")]
-    pub context: Context,
-    /// Message type.
-    #[serde(rename = "@type")]
-    pub kind: ContractAgreementVerificationMessageType,
-    /// The provider's process id.
-    pub provider_pid: String,
-    /// The consumer's process id.
-    pub consumer_pid: String,
-}
+pid_message!(
+    /// `ContractAgreementVerificationMessage`, sent by the consumer.
+    ContractAgreementVerificationMessage,
+    ContractAgreementVerificationMessageType
+);
 
 /// The `eventType` of a [`ContractNegotiationEventMessage`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -393,97 +383,27 @@ impl ContractNegotiationEventMessage {
     }
 }
 
-/// `ContractNegotiationTerminationMessage`, sent by either party.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ContractNegotiationTerminationMessage {
-    /// JSON-LD context.
-    #[serde(rename = "@context")]
-    pub context: Context,
-    /// Message type.
-    #[serde(rename = "@type")]
-    pub kind: ContractNegotiationTerminationMessageType,
-    /// The provider's process id.
-    pub provider_pid: String,
-    /// The consumer's process id.
-    pub consumer_pid: String,
-    /// Implementation-specific code.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub code: Option<String>,
-    /// Reasons, in any form.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub reason: Vec<serde_json::Value>,
-}
+pid_message!(
+    /// `ContractNegotiationTerminationMessage`, sent by either party.
+    ContractNegotiationTerminationMessage,
+    ContractNegotiationTerminationMessageType,
+    code
+);
 
-/// `ContractNegotiation`: the acknowledgement of a message, and the answer
-/// to a state query.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ContractNegotiation {
-    /// JSON-LD context.
-    #[serde(rename = "@context")]
-    pub context: Context,
-    /// Message type.
-    #[serde(rename = "@type")]
-    pub kind: ContractNegotiationType,
-    /// The provider's process id.
-    pub provider_pid: String,
-    /// The consumer's process id.
-    pub consumer_pid: String,
-    /// The current state.
-    pub state: NegotiationState,
-}
+process_ack!(
+    /// `ContractNegotiation`: the acknowledgement of a message, and the
+    /// answer to a state query.
+    ContractNegotiation,
+    ContractNegotiationType,
+    NegotiationState
+);
 
-impl ContractNegotiation {
-    /// Builds the acknowledgement.
-    #[must_use]
-    pub fn new(provider_pid: &str, consumer_pid: &str, state: NegotiationState) -> Self {
-        Self {
-            context: Context::default(),
-            kind: ContractNegotiationType,
-            provider_pid: provider_pid.to_owned(),
-            consumer_pid: consumer_pid.to_owned(),
-            state,
-        }
-    }
-}
-
-/// `ContractNegotiationError`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ContractNegotiationError {
-    /// JSON-LD context.
-    #[serde(rename = "@context")]
-    pub context: Context,
-    /// Message type.
-    #[serde(rename = "@type")]
-    pub kind: ContractNegotiationErrorType,
-    /// The provider's process id.
-    pub provider_pid: String,
-    /// The consumer's process id.
-    pub consumer_pid: String,
-    /// Implementation-specific code.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub code: Option<String>,
-    /// Reasons, in any form.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub reason: Vec<serde_json::Value>,
-}
-
-impl ContractNegotiationError {
-    /// Builds an error with one reason.
-    #[must_use]
-    pub fn new(provider_pid: &str, consumer_pid: &str, code: &str, reason: &str) -> Self {
-        Self {
-            context: Context::default(),
-            kind: ContractNegotiationErrorType,
-            provider_pid: provider_pid.to_owned(),
-            consumer_pid: consumer_pid.to_owned(),
-            code: Some(code.to_owned()),
-            reason: vec![serde_json::Value::String(reason.to_owned())],
-        }
-    }
-}
+pid_message!(
+    /// `ContractNegotiationError`.
+    ContractNegotiationError,
+    ContractNegotiationErrorType,
+    error
+);
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]

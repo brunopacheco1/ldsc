@@ -46,6 +46,101 @@ macro_rules! type_tag {
     };
 }
 
+/// A message with the JSON-LD context, its `@type` and both process ids.
+/// With `code`, it also carries an optional code and reasons (DSP's
+/// `AbstractTransferCodeMessage`, and the same shape in negotiation).
+/// With `error`, it also gets `new(provider_pid, consumer_pid, code,
+/// reason)`.
+macro_rules! pid_message {
+    ($(#[$doc:meta])* $name:ident, $tag:ident) => {
+        pid_message!(@struct $(#[$doc])* $name, $tag, {});
+    };
+    ($(#[$doc:meta])* $name:ident, $tag:ident, code) => {
+        pid_message!(@struct $(#[$doc])* $name, $tag, {
+            /// Implementation-specific code.
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub code: Option<String>,
+            /// Reasons, in any form.
+            #[serde(default, skip_serializing_if = "Vec::is_empty")]
+            pub reason: Vec<serde_json::Value>,
+        });
+    };
+    ($(#[$doc:meta])* $name:ident, $tag:ident, error) => {
+        pid_message!($(#[$doc])* $name, $tag, code);
+
+        impl $name {
+            /// Builds an error with one reason.
+            #[must_use]
+            pub fn new(provider_pid: &str, consumer_pid: &str, code: &str, reason: &str) -> Self {
+                Self {
+                    context: $crate::Context::default(),
+                    kind: $tag,
+                    provider_pid: provider_pid.to_owned(),
+                    consumer_pid: consumer_pid.to_owned(),
+                    code: Some(code.to_owned()),
+                    reason: vec![serde_json::Value::String(reason.to_owned())],
+                }
+            }
+        }
+    };
+    (@struct $(#[$doc:meta])* $name:ident, $tag:ident, { $($extra:tt)* }) => {
+        $(#[$doc])*
+        #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        pub struct $name {
+            /// JSON-LD context.
+            #[serde(rename = "@context")]
+            pub context: $crate::Context,
+            /// Message type.
+            #[serde(rename = "@type")]
+            pub kind: $tag,
+            /// The provider's process id.
+            pub provider_pid: String,
+            /// The consumer's process id.
+            pub consumer_pid: String,
+            $($extra)*
+        }
+    };
+}
+
+/// The acknowledgement of a process message and the answer to a state
+/// query: both process ids and the current state, with `new`.
+macro_rules! process_ack {
+    ($(#[$doc:meta])* $name:ident, $tag:ident, $state:ty) => {
+        $(#[$doc])*
+        #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        pub struct $name {
+            /// JSON-LD context.
+            #[serde(rename = "@context")]
+            pub context: $crate::Context,
+            /// Message type.
+            #[serde(rename = "@type")]
+            pub kind: $tag,
+            /// The provider's process id.
+            pub provider_pid: String,
+            /// The consumer's process id.
+            pub consumer_pid: String,
+            /// The current state.
+            pub state: $state,
+        }
+
+        impl $name {
+            /// Builds the acknowledgement.
+            #[must_use]
+            pub fn new(provider_pid: &str, consumer_pid: &str, state: $state) -> Self {
+                Self {
+                    context: $crate::Context::default(),
+                    kind: $tag,
+                    provider_pid: provider_pid.to_owned(),
+                    consumer_pid: consumer_pid.to_owned(),
+                    state,
+                }
+            }
+        }
+    };
+}
+
 pub mod catalog;
 pub mod guard;
 pub mod negotiation;
