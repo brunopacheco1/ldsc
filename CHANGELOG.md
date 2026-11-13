@@ -13,6 +13,9 @@ versions may change behaviour and configuration.
 ## [Unreleased]
 
 ### Added
+- ADR 0017 (proposed): how to join a Simpl-Open data space. No
+  x509/mTLS profile in Portitor; Simpl-Open's connector speaks DSP
+  2025-1 but not DCP, and its agents authenticate at a Tier 2 gateway.
 - DCP v1.0.1 building blocks in `portitor-dcp` (0.5, ADR 0015), not yet
   used by a running service: the presentation query and response
   messages, the credential and offer messages of the issuance protocol,

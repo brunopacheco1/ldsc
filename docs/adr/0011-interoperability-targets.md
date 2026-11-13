@@ -20,8 +20,10 @@ implementation, which may read a specification differently.
 
 ## Decision
 
-- **Reference counterparts: Eclipse EDC and Simpl-Open.** Simpl-Open is a
-  customised EDC with Gaia-X support. Where a specification is silent,
+- **Reference counterparts: Eclipse EDC and Simpl-Open.** Simpl-Open is
+  the EU Simpl middleware; its connector is a customised EDC (correction
+  of 2026-11-13: an earlier text called Simpl-Open itself "a customised
+  EDC with Gaia-X support"; see ADR 0017). Where a specification is silent,
   Portitor follows EDC's behaviour and records it in an ADR
   (ARCHITECTURE, principle 1).
 - **The Gaia-X Trust Framework (Danube) is in scope**, planned for 0.7.
@@ -31,7 +33,7 @@ implementation, which may read a specification differently.
   IdentityHub with real identity. Testing in 0.4 would need EDC's mock
   identity extension and be rewritten in 0.5 (maintainer, 2026-11-12).
 - A spike in 0.5 decides how to join a Simpl-Open data space, which uses
-  x509 and mTLS inside its agent.
+  x509 and mTLS inside its agent ([ADR 0017](0017-simpl-open.md)).
 
 ## Consequences
 
