@@ -47,11 +47,12 @@ fail() {
 }
 
 wait_for() { # url
+  local url=$1
   for _ in $(seq 1 100); do
-    curl -sf "$1" >/dev/null && return 0
+    curl -sf "$url" >/dev/null && return 0
     sleep 0.2
   done
-  fail "$1 did not answer"
+  fail "$url did not answer"
 }
 
 # --- 1. keys, secrets and the authority's site ------------------------------
@@ -59,8 +60,10 @@ wait_for() { # url
 step "Write the keys, the secrets and the demo authority's site into $RUN"
 rm -rf "$RUN"
 authority() { # command [flags]: the demo authority; test-only, its key is a fixture
-  "$TEST_ISSUER" "$1" --key crates/portitor-identity/tests/fixtures/test-only-demo-authority.pem \
-    --did "$AUTHORITY" "${@:2}"
+  local subcommand=$1
+  shift # the rest: its flags
+  "$TEST_ISSUER" "$subcommand" --key crates/portitor-identity/tests/fixtures/test-only-demo-authority.pem \
+    --did "$AUTHORITY" "$@"
 }
 authority init --site "$RUN/authority" --status-list-url "$LIST_URL"
 for participant in provider consumer; do
@@ -95,11 +98,12 @@ wait_for http://127.0.0.1:18093/health
 # --- 3. the credentials -------------------------------------------------------
 
 deliver() { # name did identity-port management-port status-index
-  authority deliver --holder "$2" --profile vc20-bssl/jwt \
-    --status-list-url "$LIST_URL" --status-index "$5" \
-    --management "http://127.0.0.1:$4" --api-key-file "$RUN/$1/identity-management.key" \
-    --credential-service "http://127.0.0.1:$3/cs" --allow-http >/dev/null ||
-    fail "deliver the $1's credential"
+  local name=$1 did=$2 identity_port=$3 management_port=$4 status_index=$5
+  authority deliver --holder "$did" --profile vc20-bssl/jwt \
+    --status-list-url "$LIST_URL" --status-index "$status_index" \
+    --management "http://127.0.0.1:$management_port" --api-key-file "$RUN/$name/identity-management.key" \
+    --credential-service "http://127.0.0.1:$identity_port/cs" --allow-http >/dev/null ||
+    fail "deliver the $name's credential"
 }
 
 step "The authority delivers each identity its MembershipCredential"
