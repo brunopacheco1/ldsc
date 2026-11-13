@@ -2,9 +2,28 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Portitor connector. This crate holds adapters only: an
-//! in-memory dataset store and the HTTPS binding. Protocol rules live in
-//! the domain crates (`portitor-dsp`, `portitor-dcp`), see ADR 0004.
+//! Portitor connector. This crate holds adapters only (ADR 0004): the
+//! protocol rules live in the domain crates (`portitor-dsp`,
+//! `portitor-dcp`, `portitor-dps`). Where to look:
+//!
+//! - `lib.rs` (this file): configuration, the catalog, and [`build`],
+//!   which puts the HTTP routes together.
+//! - [`ports`]: which adapter sits behind each port, chosen at start.
+//! - [`negotiation`], [`consumer`]: contract negotiation as provider and
+//!   as consumer (HTTP handlers and in-memory stores).
+//! - [`transfer`], [`consumer_transfer`]: the transfer process, the same
+//!   way.
+//! - `outbox`: sending saved DSP messages, retries and proof of delivery
+//!   (ADR 0007).
+//! - [`data_plane`], [`data_flows`]: the built-in HTTP pull data plane and
+//!   the Data Plane Signaling link to it (ADR 0013).
+//! - [`store`]: everything kept in the `SQLite` file.
+//! - [`management`]: the management API for your own systems.
+//! - [`http_client`], [`system`]: outbound HTTP, ids and time.
+//!
+//! Errors are often returned as `Box<Failure>` rather than `Failure`: a
+//! `Failure` holds a whole DSP error message, and boxing keeps every
+//! `Result` small (Clippy's `result_large_err` rule).
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -136,8 +155,10 @@ impl Config {
     /// The datasets file cannot be read or parsed, a number is not a
     /// number, or the removed `PORTITOR_DATASETS` variable is set.
     pub fn from_vars(var: impl Fn(&str) -> Option<OsString>) -> Result<Self, ConfigError> {
-        let text = |k: &str, d: &str| {
-            var(k).map_or_else(|| d.to_owned(), |v| v.to_string_lossy().into_owned())
+        // the variable's value as text, or `default` when it is not set
+        let text = |name: &str, default: &str| match var(name) {
+            Some(value) => value.to_string_lossy().into_owned(),
+            None => default.to_owned(),
         };
         if var("PORTITOR_DATASETS").is_some() {
             return Err(ConfigError::Removed(

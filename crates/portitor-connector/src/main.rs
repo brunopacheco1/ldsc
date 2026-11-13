@@ -52,20 +52,21 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // one signal stops both servers
     let (stop, stopped) = tokio::sync::watch::channel(false);
-    let management = if let Some(m) = portitor_connector::management::ManagementConfig::from_env() {
-        let key = portitor_connector::management::ApiKey::read(&m.api_key_file)?;
-        let listener = tokio::net::TcpListener::bind(&m.bind).await?;
-        tracing::info!(bind = %m.bind, "management API listening");
-        let app = portitor_connector::management::router(negotiator, key);
-        Some(tokio::spawn(
-            axum::serve(listener, app)
-                .with_graceful_shutdown(wait(stopped.clone()))
-                .into_future(),
-        ))
-    } else {
-        tracing::info!("management API off (PORTITOR_MANAGEMENT_API_KEY_FILE not set)");
-        None
-    };
+    let management =
+        if let Some(settings) = portitor_connector::management::ManagementConfig::from_env() {
+            let key = portitor_connector::management::ApiKey::read(&settings.api_key_file)?;
+            let listener = tokio::net::TcpListener::bind(&settings.bind).await?;
+            tracing::info!(bind = %settings.bind, "management API listening");
+            let app = portitor_connector::management::router(negotiator, key);
+            Some(tokio::spawn(
+                axum::serve(listener, app)
+                    .with_graceful_shutdown(wait(stopped.clone()))
+                    .into_future(),
+            ))
+        } else {
+            tracing::info!("management API off (PORTITOR_MANAGEMENT_API_KEY_FILE not set)");
+            None
+        };
     tracing::info!(
         %bind,
         datasets = config.datasets.len(),
@@ -79,8 +80,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     axum::serve(listener, app)
         .with_graceful_shutdown(wait(stopped))
         .await?;
-    if let Some(m) = management {
-        m.await??;
+    if let Some(management) = management {
+        // two `?`: the first for the task itself (it may have panicked),
+        // the second for the server's own result
+        management.await??;
     }
     Ok(())
 }

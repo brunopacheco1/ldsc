@@ -98,10 +98,12 @@ no start message is sent back (ADR 0013).
 - TCK v1.0.2 disables TP:02-04 and TP_C:02-04 (suspend, then start again
   by the consumer). The other 15 provider and 15 consumer transfer tests
   must pass in CI.
-- The TCK's consumer registers a transfer only after it reads our answer
-  to its request, and its handler for the start message is used up by the
-  first start that arrives. A start message sent at once can arrive before
-  that, is refused, and every retry then gets 404. The TCK build therefore
+- The TCK's consumer creates its transfer before it sends the request,
+  but moves it to REQUESTED only after it reads our answer, and its
+  handler for the start message removes itself after the first start that
+  arrives, even one it refused. A start message sent at once can arrive
+  before that answer is read, is refused, and every retry then gets 404
+  (wording corrected 2026-11-13 from the TCK v1.0.2 source). The TCK build therefore
   sends start messages 300 ms late (`tck::LateStart`). A real consumer,
   Portitor included, saves its transfer before it sends the request, so the
   release build sends at once. The race is listed for an upstream report.
