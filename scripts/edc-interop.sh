@@ -50,6 +50,9 @@ EDC_INDEX=2
 SCOPE=org.eclipse.dspace.dcp.vc.type:MembershipCredential:read
 DSP=dsp/2025-1
 EDC_PROTOCOL=dataspace-protocol-http:2025-1
+# the header of a request with a JSON body, and the jq path to a record's state
+CONTENT_TYPE_JSON='content-type: application/json'
+STATE_PATH='.state'
 
 # how this script reaches them
 AUTHORITY_SITE=$RUN/authority
@@ -72,19 +75,21 @@ fail() {
 }
 
 wait_for() { # url [what]
+  local url=$1 what=${2:-$1}
   for _ in $(seq 1 150); do
-    curl -sf -o /dev/null "$1" && return 0
+    curl -sf -o /dev/null "$url" && return 0
     sleep 1
   done
-  fail "${2:-$1} did not answer"
+  fail "$what did not answer"
 }
 
 wait_up() { # url what: until it answers HTTP at all (EDC answers 404 on /)
+  local url=$1 what=$2
   for _ in $(seq 1 150); do
-    [[ $(curl -s -o /dev/null -w '%{http_code}' "$1") != 000 ]] && return 0
+    [[ $(curl -s -o /dev/null -w '%{http_code}' "$url") != 000 ]] && return 0
     sleep 1
   done
-  fail "$2 did not answer"
+  fail "$what did not answer"
 }
 
 # --- 1. keys, secrets and the authority's site ----------------------------
@@ -95,7 +100,9 @@ if [[ -z ${TEST_ISSUER:-} ]]; then
 fi
 AUTHORITY_KEY=crates/portitor-identity/tests/fixtures/test-only-demo-authority.pem
 authority() { # command [flags]: the demo authority
-  "$TEST_ISSUER" "$1" --key "$AUTHORITY_KEY" --did "$AUTHORITY" "${@:2}"
+  local subcommand=$1
+  shift # the rest: its flags
+  "$TEST_ISSUER" "$subcommand" --key "$AUTHORITY_KEY" --did "$AUTHORITY" "$@"
 }
 
 step "Write the demo authority's site, the keys and the secrets"
@@ -136,18 +143,33 @@ wait_up http://127.0.0.1:18181/ "EDC control plane"
 wait_up "$EDC_DATAPLANE/" "EDC data plane"
 
 edc_identity() { # method path [body]: the IdentityHub's Identity API, as admin
+  local method=$1 path=$2 body=${3-}
   local token args
   token=$(authority admin-token --scope identity-api:admin)
-  args=(-sS --fail-with-body -X "$1" "$EDC_IDENTITY_API$2" -H "authorization: Bearer $token")
-  if [[ $# -gt 2 ]]; then args+=(-H 'content-type: application/json' -d "$3"); fi
+  args=(-sS --fail-with-body -X "$method" "$EDC_IDENTITY_API$path" -H "authorization: Bearer $token")
+  if [[ $# -gt 2 ]]; then args+=(-H "$CONTENT_TYPE_JSON" -d "$body"); fi
   curl "${args[@]}"
 }
 
 edc_management() { # method path [body]: the control plane's management API
-  local args=(-sS --fail-with-body -X "$1" "$EDC_MANAGEMENT$2" -H "x-api-key: $EDC_MANAGEMENT_KEY")
-  if [[ $# -gt 2 ]]; then args+=(-H 'content-type: application/json' -d "$3"); fi
+  local method=$1 path=$2 body=${3-}
+  local args=(-sS --fail-with-body -X "$method" "$EDC_MANAGEMENT$path" -H "x-api-key: $EDC_MANAGEMENT_KEY")
+  if [[ $# -gt 2 ]]; then args+=(-H "$CONTENT_TYPE_JSON" -d "$body"); fi
   curl "${args[@]}"
 }
+
+wait_identity_api() { # until the Identity API answers 2xx, at most 120 seconds
+  # wait_up only shows that the IdentityHub's web server answers; until the
+  # Identity API is registered, a request to it gets 405
+  local deadline=$((SECONDS + 120))
+  until edc_identity GET /participants >/dev/null 2>&1; do
+    ((SECONDS < deadline)) || fail "the EDC IdentityHub's Identity API did not answer within 120 s"
+    sleep 1
+  done
+}
+
+step "EDC IdentityHub: wait for its Identity API"
+wait_identity_api
 
 step "EDC IdentityHub: the participant $EDC_DID"
 # the IdentityHub makes the key and the STS account, and keeps the STS
@@ -194,7 +216,7 @@ edc_management PUT /v4/dataplanes '{
   "profiles": ["HttpData-PULL"], "labels": [], "authorization": {"type": "none"}}' \
   >/dev/null || fail "register the data plane"
 curl -sS --fail-with-body -X PUT "$EDC_DATAPLANE/v1/controlplanes" \
-  -H 'content-type: application/json' -d '{
+  -H "$CONTENT_TYPE_JSON" -d '{
   "controlplaneId": "controlplane", "endpoint": "http://edc-controlplane:8084/api/signaling",
   "authorization": {"type": "none"}}' >/dev/null || fail "register the control plane"
 # the management API v4 context (EDC_CONNECTOR_MANAGEMENT_CONTEXT_V2)
@@ -229,11 +251,12 @@ curl -sf "$IDENTITY_MANAGEMENT/v1/credentials" \
 # --- 4. EDC checks Portitor's identity --------------------------------------
 
 portitor_token() { # audience: a self-issued ID token from Portitor's STS
+  local audience=$1
   curl -sf -X POST "$IDENTITY/sts/token" \
     --data-urlencode grant_type=client_credentials \
     --data-urlencode "client_id=$PORTITOR_DID" \
     --data-urlencode "client_secret=$(cat "$RUN/portitor/sts-client-secret")" \
-    --data-urlencode "audience=$1" \
+    --data-urlencode "audience=$audience" \
     --data-urlencode "bearer_access_scope=$SCOPE" | jq -r '.access_token'
 }
 
@@ -242,7 +265,7 @@ edc_catalog_for_portitor() { # prints the HTTP status, the catalog in $RUN/catal
   token=$(portitor_token "$EDC_DID") || fail "Portitor's STS gave no token"
   "${COMPOSE[@]}" run --rm -q fetch -s -o /dev/stderr -w '%{http_code}' \
     -X POST "$EDC_DSP_INSIDE/catalog/request" \
-    -H "authorization: Bearer $token" -H 'content-type: application/json' \
+    -H "authorization: Bearer $token" -H "$CONTENT_TYPE_JSON" \
     -d '{"@context": ["https://w3id.org/dspace/2025/1/context.jsonld"],
          "@type": "CatalogRequestMessage"}' 2>"$RUN/catalog.json"
 }
@@ -259,24 +282,26 @@ echo "EDC offers: $EDC_OFFER"
 # --- 5. Portitor consumer, EDC provider --------------------------------------
 
 portitor() { # method path [body]: the Portitor connector's management API
-  local args=(-sS --fail-with-body -X "$1" "$CONNECTOR_MANAGEMENT$2"
+  local method=$1 path=$2 body=${3-}
+  local args=(-sS --fail-with-body -X "$method" "$CONNECTOR_MANAGEMENT$path"
     -H "authorization: Bearer $(cat "$RUN/portitor/connector-management.key")")
-  if [[ $# -gt 2 ]]; then args+=(-H 'content-type: application/json' -d "$3"); fi
+  if [[ $# -gt 2 ]]; then args+=(-H "$CONTENT_TYPE_JSON" -d "$body"); fi
   curl "${args[@]}"
 }
 
 until_state() { # api path states (regex): prints the record once in one of them
+  local api=$1 path=$2 states=$3
   local view state=
   for _ in $(seq 1 120); do
-    view=$("$1" GET "$2") || fail "read $2"
-    state=$(jq -r '.state' <<<"$view")
-    if [[ $state =~ ^($3)$ ]]; then
+    view=$("$api" GET "$path") || fail "read $path"
+    state=$(jq -r "$STATE_PATH" <<<"$view")
+    if [[ $state =~ ^($states)$ ]]; then
       echo "$view"
       return 0
     fi
     sleep 0.5
   done
-  fail "$2 still $state"
+  fail "$path still $state"
 }
 
 step "Portitor negotiates the EDC offer"
@@ -285,7 +310,7 @@ PID=$(portitor POST /v1/negotiations "$(jq -nc --arg addr "$EDC_DSP_INSIDE" \
   '{providerAddress: $addr, providerId: $id, datasetId: "edc-interop", offer: $offer}')" |
   jq -r '.consumerPid') || fail "start the negotiation"
 VIEW=$(until_state portitor "/v1/negotiations/$PID" 'FINALIZED|TERMINATED')
-[[ $(jq -r '.state' <<<"$VIEW") == FINALIZED ]] || fail "expected FINALIZED: $VIEW"
+[[ $(jq -r "$STATE_PATH" <<<"$VIEW") == FINALIZED ]] || fail "expected FINALIZED: $VIEW"
 AGREEMENT=$(jq -r '.agreement["@id"]' <<<"$VIEW")
 
 step "Portitor pulls the data from the EDC data plane"
@@ -293,7 +318,7 @@ TPID=$(portitor POST /v1/transfers "$(jq -nc --arg a "$AGREEMENT" \
   '{agreementId: $a, format: "HttpData-PULL"}')" | jq -r '.consumerPid') ||
   fail "request the transfer"
 TRANSFER=$(until_state portitor "/v1/transfers/$TPID" 'STARTED|TERMINATED')
-[[ $(jq -r '.state' <<<"$TRANSFER") == STARTED ]] || fail "expected STARTED: $TRANSFER"
+[[ $(jq -r "$STATE_PATH" <<<"$TRANSFER") == STARTED ]] || fail "expected STARTED: $TRANSFER"
 ENDPOINT=$(jq -r '.dataAddress.endpoint' <<<"$TRANSFER")
 TOKEN=$(jq -r '.dataAddress.endpointProperties[] | select(.name == "authorization") | .value' \
   <<<"$TRANSFER")
@@ -330,7 +355,7 @@ edc_negotiate() { # prints the ended EDC negotiation for the Portitor offer
 
 step "EDC negotiates the Portitor offer"
 VIEW=$(edc_negotiate)
-[[ $(jq -r '.state' <<<"$VIEW") == FINALIZED ]] || fail "expected FINALIZED: $VIEW"
+[[ $(jq -r "$STATE_PATH" <<<"$VIEW") == FINALIZED ]] || fail "expected FINALIZED: $VIEW"
 EDC_AGREEMENT=$(jq -r '.contractAgreementId' <<<"$VIEW")
 
 step "EDC pulls the data from the Portitor provider"
@@ -340,7 +365,7 @@ TRANSFER=$(edc_management POST /v4/transferprocesses "$(jq -nc --argjson c "$CON
   counterPartyAddress: $addr, protocol: $p, contractId: $a,
   transferType: "HttpData-PULL"}')" | jq -r '.["@id"]') || fail "start the EDC transfer"
 until_state edc_management "/v4/transferprocesses/$TRANSFER" 'STARTED|TERMINATED' >"$RUN/edc-transfer.json"
-[[ $(jq -r '.state' "$RUN/edc-transfer.json") == STARTED ]] ||
+[[ $(jq -r "$STATE_PATH" "$RUN/edc-transfer.json") == STARTED ]] ||
   fail "expected STARTED: $(cat "$RUN/edc-transfer.json")"
 # the EDC data plane kept the data address Portitor sent; it fetches with it
 for _ in $(seq 1 20); do
@@ -355,7 +380,8 @@ echo "received $(wc -c <"$RUN/fetched-from-portitor") bytes, as published"
 
 step "The authority revokes Portitor's credential: EDC refuses Portitor"
 revoke() { # index
-  authority revoke --site "$AUTHORITY_SITE" --status-list-url "$LIST_URL" --status-index "$1"
+  local index=$1
+  authority revoke --site "$AUTHORITY_SITE" --status-list-url "$LIST_URL" --status-index "$index"
   chmod -R a+rX "$AUTHORITY_SITE"
   sleep 2 # EDC reads status lists again after a second (revocation.cache.validity)
 }
@@ -367,7 +393,7 @@ echo "EDC answered $STATUS"
 step "The authority revokes the EDC participant's credential: Portitor refuses EDC"
 revoke "$EDC_INDEX"
 VIEW=$(edc_negotiate)
-[[ $(jq -r '.state' <<<"$VIEW") == TERMINATED ]] || fail "expected TERMINATED: $VIEW"
+[[ $(jq -r "$STATE_PATH" <<<"$VIEW") == TERMINATED ]] || fail "expected TERMINATED: $VIEW"
 jq -r '.errorDetail' <<<"$VIEW" | grep -q 'code=401' || fail "not refused as unauthorized: $VIEW"
 echo "the negotiation ended TERMINATED: Portitor answered 401"
 

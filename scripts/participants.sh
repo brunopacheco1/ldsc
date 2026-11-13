@@ -19,7 +19,8 @@
 
 # a participant's DID is its identity's did:web DID ("%3A" is the colon)
 did_web() { # host:port
-  echo "did:web:${1/:/%3A}"
+  local address=$1
+  echo "did:web:${address/:/%3A}"
 }
 
 AUTHORITY=$(did_web "$AUTHORITY_SITE")
@@ -32,15 +33,17 @@ fail() {
 }
 
 wait_for() { # url: waits up to 20 seconds for it to answer
+  local url=$1
   for _ in $(seq 1 100); do
-    curl -sf "$1" >/dev/null && return 0
+    curl -sf "$url" >/dev/null && return 0
     sleep 0.2
   done
-  fail "$1 did not answer"
+  fail "$url did not answer"
 }
 
 serve() { # name address directory: a static web server, in the background
-  python3 - "${2%:*}" "${2#*:}" "$3" >"$WORK/$1.log" 2>&1 <<'PYTHON' &
+  local name=$1 address=$2 directory=$3
+  python3 - "${address%:*}" "${address#*:}" "$directory" >"$WORK/$name.log" 2>&1 <<'PYTHON' &
 import functools, http.server, sys
 class Handler(http.server.SimpleHTTPRequestHandler):
     protocol_version = "HTTP/1.1"  # keeps connections open, as a real web server
@@ -54,8 +57,10 @@ PYTHON
 }
 
 authority() { # command [flags]: test-only, its key is a test fixture
-  "$TEST_ISSUER" "$1" --key crates/portitor-identity/tests/fixtures/test-only-demo-authority.pem \
-    --did "$AUTHORITY" "${@:2}"
+  local subcommand=$1
+  shift # the rest: its flags
+  "$TEST_ISSUER" "$subcommand" --key crates/portitor-identity/tests/fixtures/test-only-demo-authority.pem \
+    --did "$AUTHORITY" "$@"
 }
 
 publish_authority() { # the authority's DID document and status list, served
@@ -64,42 +69,46 @@ publish_authority() { # the authority's DID document and status list, served
 }
 
 start_identity() { # name did address management-address
-  local dir=$WORK/$1
+  local name=$1 did=$2 address=$3 management_address=$4
+  local dir=$WORK/$name
   mkdir -p "$dir"
   openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$dir/identity-key.pem" 2>/dev/null
   openssl rand -hex 32 >"$dir/identity-management.key"
   openssl rand -hex 32 >"$dir/sts-client-secret" # shared with its connector
-  PORTITOR_PARTICIPANT_ID=$2 \
-  PORTITOR_BIND=$3 \
-  PORTITOR_CREDENTIAL_SERVICE_URL=http://$3/cs \
+  PORTITOR_PARTICIPANT_ID=$did \
+  PORTITOR_BIND=$address \
+  PORTITOR_CREDENTIAL_SERVICE_URL=http://$address/cs \
   PORTITOR_IDENTITY_KEY_FILE="$dir/identity-key.pem" \
   PORTITOR_DB_FILE="$dir/identity.db" \
-  PORTITOR_MANAGEMENT_BIND=$4 \
+  PORTITOR_MANAGEMENT_BIND=$management_address \
   PORTITOR_MANAGEMENT_API_KEY_FILE="$dir/identity-management.key" \
   PORTITOR_STS_CLIENT_SECRET_FILE="$dir/sts-client-secret" \
   PORTITOR_TRUSTED_ISSUERS=$AUTHORITY \
   PORTITOR_ALLOW_HTTP_CALLBACKS=true \
-    "$IDENTITY" >"$WORK/$1-identity.log" 2>&1 &
+    "$IDENTITY" >"$WORK/$name-identity.log" 2>&1 &
   PIDS+=($!)
 }
 
 deliver() { # name did address management-address status-index
-  authority deliver --holder "$2" --profile vc20-bssl/jwt \
-    --status-list-url "$LIST_URL" --status-index "$5" \
-    --management "http://$4" --api-key-file "$WORK/$1/identity-management.key" \
-    --credential-service "http://$3/cs" --allow-http >/dev/null ||
-    fail "deliver the $1's credential"
+  local name=$1 did=$2 address=$3 management_address=$4 status_index=$5
+  authority deliver --holder "$did" --profile vc20-bssl/jwt \
+    --status-list-url "$LIST_URL" --status-index "$status_index" \
+    --management "http://$management_address" --api-key-file "$WORK/$name/identity-management.key" \
+    --credential-service "http://$address/cs" --allow-http >/dev/null ||
+    fail "deliver the $name's credential"
 }
 
 start_connector() { # name did address identity-address [more VAR=value settings]
-  env PORTITOR_PARTICIPANT_ID="$2" \
-    PORTITOR_BIND="$3" \
-    PORTITOR_PUBLIC_URL="http://$3" \
-    PORTITOR_DB_FILE="$WORK/$1/connector.db" \
-    PORTITOR_STS_URL="http://$4/sts/token" \
-    PORTITOR_STS_CLIENT_SECRET_FILE="$WORK/$1/sts-client-secret" \
+  local name=$1 did=$2 address=$3 identity_address=$4
+  shift 4 # the rest: the more VAR=value settings
+  env PORTITOR_PARTICIPANT_ID="$did" \
+    PORTITOR_BIND="$address" \
+    PORTITOR_PUBLIC_URL="http://$address" \
+    PORTITOR_DB_FILE="$WORK/$name/connector.db" \
+    PORTITOR_STS_URL="http://$identity_address/sts/token" \
+    PORTITOR_STS_CLIENT_SECRET_FILE="$WORK/$name/sts-client-secret" \
     PORTITOR_TRUSTED_ISSUERS="$AUTHORITY" \
     PORTITOR_ALLOW_HTTP_CALLBACKS=true \
-    "${@:5}" "$CONNECTOR" >"$WORK/$1-connector.log" 2>&1 &
+    "$@" "$CONNECTOR" >"$WORK/$name-connector.log" 2>&1 &
   PIDS+=($!)
 }

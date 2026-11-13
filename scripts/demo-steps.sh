@@ -44,31 +44,34 @@ fail() {
 }
 
 wait_for() { # url
+  local url=$1
   for _ in $(seq 1 100); do
-    curl -sf "$1" >/dev/null && return 0
+    curl -sf "$url" >/dev/null && return 0
     sleep 0.2
   done
-  fail "$1 did not answer"
+  fail "$url did not answer"
 }
 
 api() { # method path [body]: the management API with the key
-  local args=(-sf -X "$1" "$MANAGEMENT$2" -H "authorization: Bearer $(cat "$KEY_FILE")")
-  if [[ $# -gt 2 ]]; then args+=(-H 'content-type: application/json' -d "$3"); fi
+  local method=$1 path=$2 body=${3-}
+  local args=(-sf -X "$method" "$MANAGEMENT$path" -H "authorization: Bearer $(cat "$KEY_FILE")")
+  if [[ $# -gt 2 ]]; then args+=(-H 'content-type: application/json' -d "$body"); fi
   curl "${args[@]}"
 }
 
 until_state() { # path, states (regex): prints the record once in one of them
+  local path=$1 states=$2
   local view state
   for _ in $(seq 1 100); do
-    view=$(api GET "$1") || fail "read $1"
+    view=$(api GET "$path") || fail "read $path"
     state=$(jq -r '.state' <<<"$view")
-    if [[ $state =~ ^($2)$ ]]; then
+    if [[ $state =~ ^($states)$ ]]; then
       echo "$view"
       return 0
     fi
     sleep 0.2
   done
-  fail "$1 still $state"
+  fail "$path still $state"
 }
 
 wait_for "$HERE/health"
@@ -107,8 +110,9 @@ OFFER=$(jq -c '.dataset[] | select(.["@id"] == "air-quality") | .hasPolicy[0]' <
 echo "provider $PROVIDER_ID offers: $OFFER"
 
 negotiate() { # offer -> prints the ended negotiation
+  local offer=$1
   local body pid
-  body=$(jq -nc --arg addr "$PROVIDER/$DSP" --arg id "$PROVIDER_ID" --argjson offer "$1" \
+  body=$(jq -nc --arg addr "$PROVIDER/$DSP" --arg id "$PROVIDER_ID" --argjson offer "$offer" \
     '{providerAddress: $addr, providerId: $id, datasetId: "air-quality", offer: $offer}')
   pid=$(api POST /v1/negotiations "$body" | jq -r '.consumerPid') || fail "start negotiation"
   until_state "/v1/negotiations/$pid" 'FINALIZED|TERMINATED'

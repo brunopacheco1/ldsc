@@ -75,21 +75,25 @@ export RUST_LOG=warn
 now_ms() { echo $(($(date +%s%N) / 1000000)); }
 
 rss_kb() { # pid field: VmRSS (now) or VmHWM (peak)
-  awk -v field="$2:" '$1 == field {print $2}' "/proc/$1/status"
+  local pid=$1 field=$2
+  awk -v field="$field:" '$1 == field {print $2}' "/proc/$pid/status"
 }
 
 started_in_ms() { # url start-ms: polls without pause, at most 10 seconds
-  local deadline=$(($2 + 10000))
-  until curl -sf "$1" >/dev/null; do
-    (($(now_ms) < deadline)) || fail "$1 did not answer within 10 s"
+  local url=$1 start_ms=$2
+  local deadline=$((start_ms + 10000))
+  until curl -sf "$url" >/dev/null; do
+    (($(now_ms) < deadline)) || fail "$url did not answer within 10 s"
   done
-  echo $(($(now_ms) - $2))
+  echo $(($(now_ms) - start_ms))
 }
 
 load() { # name clients seconds [VAR=value...]: runs dsp-load, prefixes its lines
-  env LOAD_CLIENTS="$2" LOAD_SECONDS="$3" "${@:4}" "$DSP_LOAD" >"$WORK/$1.out" ||
-    fail "the load $1"
-  sed "s/^/$1_/" "$WORK/$1.out"
+  local name=$1 clients=$2 seconds=$3
+  shift 3 # the rest: the VAR=value settings
+  env LOAD_CLIENTS="$clients" LOAD_SECONDS="$seconds" "$@" "$DSP_LOAD" >"$WORK/$name.out" ||
+    fail "the load $name"
+  sed "s/^/${name}_/" "$WORK/$name.out"
 }
 
 # --- the participants ----------------------------------------------------
