@@ -16,6 +16,7 @@ publish = false
 axum.workspace = true
 # base64url of the data plane's access tokens
 base64.workspace = true
+portitor-dcp = { path = "../portitor-dcp" }
 portitor-dsp = { path = "../portitor-dsp" }
 portitor-dps = { path = "../portitor-dps" }
 portitor-runtime = { path = "../portitor-runtime" }

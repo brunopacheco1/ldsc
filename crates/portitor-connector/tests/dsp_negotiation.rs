@@ -21,6 +21,9 @@ use serde_json::{Value, json};
 use tokio::sync::Notify;
 use tower::ServiceExt as _;
 
+mod common;
+use common::{CONSUMER, PROVIDER, authenticating, from};
+
 const BASE: &str = "/dsp/2025-1/negotiations";
 const CALLBACK: &str = "https://consumer.example/cb";
 
@@ -115,7 +118,7 @@ fn config(allow_http: bool) -> Config {
 }
 
 fn ports(sender: &Arc<FakeSender>) -> Ports {
-    let mut p = Ports::new(Arc::clone(sender) as Arc<dyn Sender>);
+    let mut p = authenticating(Ports::new(Arc::clone(sender) as Arc<dyn Sender>), PROVIDER);
     // the default build agrees to catalog offers; the tck build scripts
     // only ACN* datasets, so CAT0101 behaves the same in both
     p.retry = Retry {
@@ -140,14 +143,16 @@ async fn call(app: &Router, req: Request<Body>) -> (StatusCode, Value) {
 }
 
 fn post(uri: &str, body: &Value) -> Request<Body> {
-    Request::post(uri)
+    from(Request::post(uri), CONSUMER)
         .header("content-type", "application/json")
         .body(Body::from(body.to_string()))
         .unwrap()
 }
 
 fn get(uri: &str) -> Request<Body> {
-    Request::get(uri).body(Body::empty()).unwrap()
+    from(Request::get(uri), CONSUMER)
+        .body(Body::empty())
+        .unwrap()
 }
 
 fn request(callback: &str) -> Value {
@@ -350,7 +355,7 @@ async fn unknown_negotiation_is_404() {
 async fn malformed_and_unknown_offers_are_400() {
     let sender = Arc::new(FakeSender::default());
     let app = app(ports(&sender));
-    let req = Request::post(format!("{BASE}/request"))
+    let req = from(Request::post(format!("{BASE}/request")), CONSUMER)
         .header("content-type", "application/json")
         .body(Body::from("{not json"))
         .unwrap();
@@ -494,4 +499,22 @@ async fn guard_checks_outbound_messages() {
         "ContractNegotiationTerminationMessage"
     );
     state(&app, &pid, "TERMINATED").await;
+}
+
+#[tokio::test]
+async fn only_the_consumer_that_started_a_negotiation_sees_it() {
+    let sender = Arc::new(FakeSender::default());
+    let app = app(ports(&sender));
+    let pid = start(&app).await;
+    let uri = format!("{BASE}/{pid}");
+    let anonymous = Request::get(&uri).body(Body::empty()).unwrap();
+    let (s, err) = call(&app, anonymous).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    assert_eq!(err["@type"], "ContractNegotiationError");
+    assert_eq!(err["code"], "401");
+    let stranger = from(Request::get(&uri), "did:web:stranger.example");
+    let (s, _) = call(&app, stranger.body(Body::empty()).unwrap()).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, body) = call(&app, get(&uri)).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
 }

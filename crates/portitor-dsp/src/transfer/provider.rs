@@ -76,6 +76,9 @@ pub struct Outgoing {
     /// Where the consumer reports its state for this transfer (`GET`), to
     /// check whether a message it refused had arrived before.
     pub status_url: String,
+    /// The counter-party's participant id (its DID): who the message is
+    /// for, and the audience of the token it is sent with (ADR 0016).
+    pub counter_party: String,
 }
 
 /// Port: where the provider keeps its transfers.
@@ -668,6 +671,7 @@ fn outgoing<T: serde::Serialize>(
         transition,
         to: next_state(Some(transfer.state), transition, Role::Provider).unwrap_or(transfer.state),
         status_url,
+        counter_party: transfer.counter_party.clone(),
     }
 }
 

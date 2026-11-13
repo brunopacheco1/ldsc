@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Runs the Eclipse DSP TCK (built from source at a pinned tag) against Portitor,
-# and the DCP TCK's credential service tests against portitor-identity.
+# the DCP TCK's credential service tests against portitor-identity, and its
+# verifier tests against the connector.
 # Must pass: metadata (MET), catalog (CAT), contract negotiation (CN, CN_C)
 # and transfer process (TP, TP_C), as provider and as consumer. The
 # connector is built with the test-only `tck` feature, which scripts
@@ -59,6 +60,8 @@ jobs:
           PORTITOR_PUBLIC_URL: http://127.0.0.1:8080
           PORTITOR_DATASETS_FILE: tck/datasets.json
           PORTITOR_ALLOW_HTTP_CALLBACKS: "true"
+          # the TCK's fixed header (tck/dsp-tck.properties); no DCP here
+          PORTITOR_TCK_AUTHORIZATION: Bearer dsp-tck-only
         run: |
           cargo build --locked -p portitor-connector --features tck
           nohup target/debug/portitor-connector > portitor.log 2>&1 &
@@ -141,4 +144,69 @@ jobs:
           path: |
             dcp-tck.log
             identity.log
+          retention-days: 14
+
+  # DCP TCK v1.2.1, verifier: the connector authenticates DSP callers (ADR
+  # 0016), 22 tests. The TCK plays the prover and the issuer and serves
+  # their DIDs at 127.0.0.1:8083; it triggers each test with a catalog
+  # request. The connector's own identity is a portitor-identity at
+  # localhost:8090: its STS signs the connector's presentation queries,
+  # which the TCK checks against its DID document. The normal connector
+  # build is used.
+  dcp-verifier-tck:
+    name: DCP TCK (verifier)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Download TCK
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/dcp-tck.jar" "$DCP_TCK_JAR"
+          echo "$DCP_TCK_SHA256  $RUNNER_TEMP/dcp-tck.jar" | sha256sum -c -
+      - name: Start portitor-identity and the connector
+        env:
+          PORTITOR_PARTICIPANT_ID: did:web:localhost%3A8090
+          PORTITOR_TRUSTED_ISSUERS: did:web:127.0.0.1%3A8083:issuer
+          PORTITOR_ALLOW_HTTP_CALLBACKS: "true"
+        run: |
+          secrets="$RUNNER_TEMP/identity"
+          mkdir -p "$secrets"
+          openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$secrets/key.pem"
+          openssl rand -hex 32 > "$secrets/sts.secret"
+          cargo build --locked -p portitor-identity -p portitor-connector
+          PORTITOR_BIND=127.0.0.1:8090 \
+          PORTITOR_CREDENTIAL_SERVICE_URL=http://localhost:8090 \
+          PORTITOR_IDENTITY_KEY_FILE="$secrets/key.pem" \
+          PORTITOR_STS_CLIENT_SECRET_FILE="$secrets/sts.secret" \
+          PORTITOR_DB_FILE="$secrets/identity.db" \
+            nohup target/debug/portitor-identity > identity.log 2>&1 &
+          for _ in $(seq 50); do curl -sf http://127.0.0.1:8090/health && break; sleep 0.2; done
+          PORTITOR_BIND=127.0.0.1:8080 \
+          PORTITOR_PUBLIC_URL=http://127.0.0.1:8080 \
+          PORTITOR_DATASETS_FILE=tck/datasets.json \
+          PORTITOR_DB_FILE="$RUNNER_TEMP/connector.db" \
+          PORTITOR_STS_URL=http://localhost:8090/sts/token \
+          PORTITOR_STS_CLIENT_SECRET_FILE="$secrets/sts.secret" \
+            nohup target/debug/portitor-connector > portitor.log 2>&1 &
+          for _ in $(seq 100); do curl -sf http://127.0.0.1:8080/health && break; sleep 0.2; done
+      - name: Run TCK
+        run: java -jar "$RUNNER_TEMP/dcp-tck.jar" -config tck/dcp-verifier-tck.properties | tee dcp-verifier-tck.log
+      - name: Check results
+        run: python3 scripts/dcp_tck_check.py dcp-verifier-tck.log 22
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dcp-verifier-tck-log
+          path: |
+            dcp-verifier-tck.log
+            identity.log
+            portitor.log
           retention-days: 14

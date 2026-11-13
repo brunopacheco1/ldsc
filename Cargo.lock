@@ -795,6 +795,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "jsonschema",
+ "portitor-dcp",
  "portitor-dps",
  "portitor-dsp",
  "portitor-runtime",

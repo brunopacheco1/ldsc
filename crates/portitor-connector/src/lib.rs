@@ -19,6 +19,8 @@
 //!   the Data Plane Signaling link to it (ADR 0013).
 //! - [`store`]: everything kept in the `SQLite` file.
 //! - [`management`]: the management API for your own systems.
+//! - [`auth`]: who calls a DSP endpoint, and our tokens on the DSP
+//!   requests we send (DCP, ADR 0016).
 //! - [`http_client`], [`system`]: outbound HTTP, ids and time.
 //!
 //! Errors are often returned as `Box<Failure>` rather than `Failure`: a
@@ -38,16 +40,15 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use portitor_dsp::catalog::{
     CatalogService, DatasetDefinitionError, DatasetStore, Outcome, prepare_datasets,
+    read_catalog_request,
 };
 use portitor_dsp::negotiation::provider::Failure;
 use portitor_dsp::transfer::consumer::{ConsumerTransfer, ConsumerTransferDecision};
 use portitor_dsp::transfer::provider::Failure as TransferFailure;
-use portitor_dsp::{
-    Binding, CatalogError, CatalogRequestMessage, Dataset, ProtocolVersion, VERSION,
-    VersionResponse,
-};
+use portitor_dsp::{Binding, CatalogError, Dataset, ProtocolVersion, VERSION, VersionResponse};
 use serde::Serialize;
 
+pub mod auth;
 pub mod consumer;
 pub mod consumer_transfer;
 pub mod data_flows;
@@ -444,6 +445,7 @@ pub fn build(
         let stored = ports.transfers.agreements.clone();
         ports.transfers.agreements = ports::Shared(Arc::new(tck::TckAgreements(stored)));
     }
+    let verifier = Arc::clone(&ports.verifier);
     let data_plane = start_data_plane(config, &mut ports);
     let transfers = Arc::new(transfer::TransferProvider::new(
         &ports,
@@ -470,7 +472,15 @@ pub fn build(
             binding: Binding::Https,
             service_id: Some(service_id),
             identifier_type: Some("did:web".to_owned()),
-            auth: None,
+            // every DSP endpoint needs a DCP token (ADR 0016)
+            auth: Some(portitor_dsp::Auth {
+                protocol: "DCP".to_owned(),
+                version: "1.0".to_owned(),
+                profile: vec![
+                    portitor_dcp::credential::Profile::Vc11.alias().to_owned(),
+                    portitor_dcp::credential::Profile::Vc20.alias().to_owned(),
+                ],
+            }),
         }],
     };
     let negotiator = Negotiator {
@@ -479,24 +489,59 @@ pub fn build(
         transfers: Arc::clone(&transfers),
         transfer_consumer: Arc::clone(&transfer_consumer),
     };
-    let router = Router::new()
+    let state = Arc::new(AppState { catalog, versions });
+    // open: discovery (DSP 2025-1), health, and the data plane, which
+    // checks its own tokens (ADR 0013)
+    let open = Router::new()
         .route("/.well-known/dspace-version", get(version))
+        .route("/health", get(|| async { "ok" }))
+        .with_state(Arc::clone(&state))
+        .merge(data_routes(data_plane));
+    // every DSP endpoint: the caller must be authenticated (ADR 0016)
+    let dsp = Router::new()
         .route(
             &format!("{DSP_PATH}/catalog/request"),
             post(catalog_request),
         )
         .route(&format!("{DSP_PATH}/catalog/datasets/{{id}}"), get(dataset))
-        .route("/health", get(|| async { "ok" }))
-        .with_state(Arc::new(AppState { catalog, versions }))
+        .with_state(state)
         .merge(negotiation_routes(provider))
         .merge(transfer_routes(transfers))
-        .merge(data_routes(data_plane))
-        .merge(callback_routes(consumer))
-        .merge(transfer_callback_routes(transfer_consumer));
+        .merge(callback_routes(&consumer))
+        .merge(transfer_callback_routes(&transfer_consumer))
+        .route_layer(axum::middleware::from_fn_with_state(
+            verifier,
+            auth::require_caller,
+        ));
+    let router = open
+        .merge(dsp)
+        .merge(tck_routes(consumer, transfer_consumer));
     Ok((router, negotiator))
 }
 
-fn callback_routes(consumer: Arc<consumer::Consumer>) -> Router {
+/// The endpoints that start the DSP TCK's consumer tests (`tck` build
+/// only). They are not DSP endpoints, so they need no DCP token.
+#[cfg(feature = "tck")]
+fn tck_routes(
+    consumer: Arc<consumer::Consumer>,
+    transfer_consumer: Arc<consumer_transfer::TransferConsumer>,
+) -> Router {
+    Router::new()
+        .route("/tck/negotiations", post(tck::initiate))
+        .with_state(consumer)
+        .merge(
+            Router::new()
+                .route("/tck/transfers", post(tck::initiate_transfer))
+                .with_state(transfer_consumer),
+        )
+}
+
+#[cfg(not(feature = "tck"))]
+fn tck_routes(_: Arc<consumer::Consumer>, _: Arc<consumer_transfer::TransferConsumer>) -> Router {
+    Router::new()
+}
+
+fn callback_routes(consumer: &Arc<consumer::Consumer>) -> Router {
     let n = format!("{CALLBACK_PATH}/negotiations");
     let router = Router::new()
         .route(&format!("{n}/{{pid}}"), get(consumer::get))
@@ -507,12 +552,10 @@ fn callback_routes(consumer: Arc<consumer::Consumer>) -> Router {
             &format!("{n}/{{pid}}/termination"),
             post(consumer::terminate),
         );
-    #[cfg(feature = "tck")]
-    let router = router.route("/tck/negotiations", post(tck::initiate));
-    router.with_state(consumer)
+    router.with_state(Arc::clone(consumer))
 }
 
-fn transfer_callback_routes(consumer: Arc<consumer_transfer::TransferConsumer>) -> Router {
+fn transfer_callback_routes(consumer: &Arc<consumer_transfer::TransferConsumer>) -> Router {
     let t = format!("{CALLBACK_PATH}/transfers");
     let router = Router::new()
         .route(&format!("{t}/{{pid}}"), get(consumer_transfer::get))
@@ -532,9 +575,7 @@ fn transfer_callback_routes(consumer: Arc<consumer_transfer::TransferConsumer>) 
             &format!("{t}/{{pid}}/termination"),
             post(consumer_transfer::termination),
         );
-    #[cfg(feature = "tck")]
-    let router = router.route("/tck/transfers", post(tck::initiate_transfer));
-    router.with_state(consumer)
+    router.with_state(Arc::clone(consumer))
 }
 
 fn negotiation_routes(provider: Arc<negotiation::Provider>) -> Router {
@@ -642,16 +683,20 @@ fn respond<T: Serialize>(outcome: Outcome<T>) -> Response {
     }
 }
 
+/// `POST /catalog/request`. Any authenticated caller may read the
+/// catalog; credential rules per dataset come in 0.6.
 async fn catalog_request(
     State(s): State<Arc<AppState>>,
-    body: Result<Json<CatalogRequestMessage>, JsonRejection>,
+    body: Result<Json<serde_json::Value>, JsonRejection>,
 ) -> Response {
+    let refused =
+        |reason: &str| respond::<()>(Outcome::BadRequest(CatalogError::new("400", reason)));
     match body {
-        Ok(Json(msg)) => respond(s.catalog.request(&msg)),
-        Err(e) => respond::<()>(Outcome::BadRequest(CatalogError::new(
-            "400",
-            &e.body_text(),
-        ))),
+        Ok(Json(value)) => match read_catalog_request(value) {
+            Ok(msg) => respond(s.catalog.request(&msg)),
+            Err(reason) => refused(&reason),
+        },
+        Err(e) => refused(&e.body_text()),
     }
 }
 

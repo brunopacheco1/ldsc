@@ -52,6 +52,24 @@ versions may change behaviour and configuration.
 - `portitor-dcp`: presentations and access tokens a holder signs, PEM
   keys, JWK thumbprints, issuer metadata. Fuzz target `dcp_access_token`.
 - `portitor-runtime`: opening and migrating SQLite files.
+- Caller authentication in the connector (DCP, ADR 0016). Every DSP
+  endpoint, provider endpoints and consumer callbacks alike, needs a
+  self-issued ID token; the connector checks it, queries the caller's
+  credential service, verifies the presentations (both profiles) and
+  requires a `MembershipCredential` about the caller from a trusted
+  issuer, not revoked or suspended (status lists must be signed by the
+  issuer; fail closed). A refusal is HTTP 401 with a DSP error. Every
+  outgoing DSP request carries a fresh token from the participant's STS for
+  the counter-party's DID. At start the connector checks that its DID
+  document and its STS agree. New settings: `PORTITOR_STS_URL`,
+  `PORTITOR_STS_CLIENT_ID`, `PORTITOR_STS_CLIENT_SECRET_FILE`,
+  `PORTITOR_TRUSTED_ISSUERS`, `PORTITOR_DCP_SCOPES`.
+- The DCP TCK 1.2.1 verifier tests (22) run in CI against the connector,
+  with `portitor-identity` as its identity.
+- `/.well-known/dspace-version` names the authentication: DCP 1.0, both
+  profiles.
+- `portitor-dcp`: reading the status list of a status entry from a status
+  list credential (`status_list::list_in`).
 - Release pipeline: a second image, `ghcr.io/brunopacheco1/portitor-identity`
   (ports 8090 and 8091, state in `/data/portitor-identity.db`), built,
   signed and attested like the connector's. One `Dockerfile` with a build
@@ -71,6 +89,17 @@ versions may change behaviour and configuration.
   DCP TCK writes both); the `id` counts.
 - The `DSP TCK` workflow is now called `TCK` and has a second job for the
   DCP TCK.
+- **Breaking:** the connector does not start without `PORTITOR_STS_URL`
+  and the other DCP settings, and refuses unauthenticated DSP requests.
+  Each negotiation and transfer is bound to the participant that started
+  it; as provider, another caller is told it does not exist, and as
+  consumer, only the provider it was started with may use the callbacks.
+- The management API refuses a `providerId` that is not a `did:web` DID,
+  and an agreement whose assigner is not the provider is refused.
+- The catalog request endpoint also reads the expanded JSON-LD request
+  the DCP TCK sends.
+- The DSP TCK job sends a fixed `Authorization` header, which the `tck`
+  build (`PORTITOR_TCK_AUTHORIZATION`) maps to the TCK participant.
 
 ### Security
 - Status lists are GZIP data from other parties: decompression is capped

@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use portitor_dsp::transfer::consumer::{
@@ -29,6 +29,7 @@ use portitor_dsp::transfer::{
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+use crate::auth::Caller;
 use crate::consumer::{InMemoryConsumerNegotiations, page};
 use crate::http_client::callback_allowed;
 use crate::outbox::{self, Link, Message, Outbox};
@@ -229,6 +230,15 @@ impl TransferConsumer {
         Ok(outbox::resume(self, pending))
     }
 
+    /// Refuses the request unless `caller` is the provider of transfer
+    /// `consumer_pid` (ADR 0016); returns the refusal to send, if any.
+    fn refusal(&self, consumer_pid: &str, caller: &str) -> Option<Response> {
+        self.service
+            .from_provider(consumer_pid, caller)
+            .err()
+            .map(failed)
+    }
+
     /// Checks the message's shape with the guard, then reads it.
     fn read<T: DeserializeOwned>(
         &self,
@@ -264,9 +274,15 @@ impl Outbox for TransferConsumer {
     type Failure = Failure;
 
     fn message(out: &Outgoing) -> Message<'_> {
-        Message::new(&out.consumer_pid, &out.url, &out.body, &out.status_url)
-            .first(out.initial)
-            .terminating(out.transition == Transition::Terminate)
+        Message::new(
+            &out.consumer_pid,
+            &out.url,
+            &out.body,
+            &out.status_url,
+            &out.counter_party,
+        )
+        .first(out.initial)
+        .terminating(out.transition == Transition::Terminate)
     }
 
     fn reached(out: &Outgoing, state: Value) -> bool {
@@ -297,7 +313,14 @@ fn refused(reason: &str) -> Failure {
 type Consumer = State<Arc<TransferConsumer>>;
 
 /// `GET <callback>/transfers/{consumerPid}`.
-pub(crate) async fn get(State(consumer): Consumer, Path(cpid): Path<String>) -> Response {
+pub(crate) async fn get(
+    State(consumer): Consumer,
+    Extension(Caller(caller)): Extension<Caller>,
+    Path(cpid): Path<String>,
+) -> Response {
+    if let Some(refused) = consumer.refusal(&cpid, &caller) {
+        return refused;
+    }
     match consumer.service.get(&cpid) {
         Ok(ack) => Json(ack).into_response(),
         Err(f) => failed(f),
@@ -307,9 +330,13 @@ pub(crate) async fn get(State(consumer): Consumer, Path(cpid): Path<String>) -> 
 /// `POST <callback>/transfers/{consumerPid}/start`.
 pub(crate) async fn start(
     State(consumer): Consumer,
+    Extension(Caller(caller)): Extension<Caller>,
     Path(cpid): Path<String>,
     body: Body,
 ) -> Response {
+    if let Some(refused) = consumer.refusal(&cpid, &caller) {
+        return refused;
+    }
     let msg: TransferStartMessage = match consumer.read(body, "TransferStartMessage", &cpid) {
         Ok(m) => m,
         Err(refused) => return bad_request(*refused),
@@ -320,9 +347,13 @@ pub(crate) async fn start(
 /// `POST <callback>/transfers/{consumerPid}/suspension`.
 pub(crate) async fn suspension(
     State(consumer): Consumer,
+    Extension(Caller(caller)): Extension<Caller>,
     Path(cpid): Path<String>,
     body: Body,
 ) -> Response {
+    if let Some(refused) = consumer.refusal(&cpid, &caller) {
+        return refused;
+    }
     let msg: TransferSuspensionMessage =
         match consumer.read(body, "TransferSuspensionMessage", &cpid) {
             Ok(m) => m,
@@ -339,9 +370,13 @@ pub(crate) async fn suspension(
 /// `POST <callback>/transfers/{consumerPid}/completion`.
 pub(crate) async fn completion(
     State(consumer): Consumer,
+    Extension(Caller(caller)): Extension<Caller>,
     Path(cpid): Path<String>,
     body: Body,
 ) -> Response {
+    if let Some(refused) = consumer.refusal(&cpid, &caller) {
+        return refused;
+    }
     let msg: TransferCompletionMessage =
         match consumer.read(body, "TransferCompletionMessage", &cpid) {
             Ok(m) => m,
@@ -358,9 +393,13 @@ pub(crate) async fn completion(
 /// `POST <callback>/transfers/{consumerPid}/termination`.
 pub(crate) async fn termination(
     State(consumer): Consumer,
+    Extension(Caller(caller)): Extension<Caller>,
     Path(cpid): Path<String>,
     body: Body,
 ) -> Response {
+    if let Some(refused) = consumer.refusal(&cpid, &caller) {
+        return refused;
+    }
     let msg: TransferTerminationMessage =
         match consumer.read(body, "TransferTerminationMessage", &cpid) {
             Ok(m) => m,

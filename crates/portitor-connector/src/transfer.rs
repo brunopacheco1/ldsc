@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path, State};
+use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use portitor_dsp::guard::{Direction, MessageGuard};
@@ -30,8 +30,9 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::InMemoryDatasets;
+use crate::auth::Caller;
 use crate::http_client::callback_allowed;
-use crate::negotiation::{InMemoryNegotiations, UNAUTHENTICATED};
+use crate::negotiation::InMemoryNegotiations;
 use crate::outbox::{self, Link, Message, Outbox};
 use crate::ports::{AnyAgreements, AnyDataFlows, AnyTransferDecider, AnyTransferStore};
 use crate::store::finalized_agreement;
@@ -206,8 +207,14 @@ impl Outbox for TransferProvider {
     }
 
     fn message(out: &Outgoing) -> Message<'_> {
-        Message::new(&out.provider_pid, &out.url, &out.body, &out.status_url)
-            .terminating(out.transition == Transition::Terminate)
+        Message::new(
+            &out.provider_pid,
+            &out.url,
+            &out.body,
+            &out.status_url,
+            &out.counter_party,
+        )
+        .terminating(out.transition == Transition::Terminate)
     }
 
     fn reached(out: &Outgoing, state: Value) -> bool {
@@ -274,15 +281,23 @@ type Provider = State<Arc<TransferProvider>>;
 pub(crate) type Body = Result<Json<Value>, JsonRejection>;
 
 /// `GET /transfers/{providerPid}`.
-pub(crate) async fn get(State(provider): Provider, Path(pid): Path<String>) -> Response {
-    match provider.service.get(&pid, UNAUTHENTICATED) {
+pub(crate) async fn get(
+    State(provider): Provider,
+    Extension(Caller(caller)): Extension<Caller>,
+    Path(pid): Path<String>,
+) -> Response {
+    match provider.service.get(&pid, &caller) {
         Ok(ack) => Json(ack).into_response(),
         Err(f) => failed(f),
     }
 }
 
 /// `POST /transfers/request`.
-pub(crate) async fn request(State(provider): Provider, body: Body) -> Response {
+pub(crate) async fn request(
+    State(provider): Provider,
+    Extension(Caller(caller)): Extension<Caller>,
+    body: Body,
+) -> Response {
     let msg: TransferRequestMessage = match provider.read(body, "TransferRequestMessage", "") {
         Ok(m) => m,
         Err(refused) => return bad_request(*refused),
@@ -291,13 +306,14 @@ pub(crate) async fn request(State(provider): Provider, body: Body) -> Response {
         let reason = "callbackAddress must be an https URL";
         return bad_request(TransferError::new("", &msg.consumer_pid, "400", reason));
     }
-    let handled = provider.service.request(&msg, UNAUTHENTICATED);
+    let handled = provider.service.request(&msg, &caller);
     provider.finish(handled, StatusCode::CREATED)
 }
 
 /// `POST /transfers/{providerPid}/start`.
 pub(crate) async fn start(
     State(provider): Provider,
+    Extension(Caller(caller)): Extension<Caller>,
     Path(pid): Path<String>,
     body: Body,
 ) -> Response {
@@ -305,13 +321,14 @@ pub(crate) async fn start(
         Ok(m) => m,
         Err(refused) => return bad_request(*refused),
     };
-    let handled = provider.service.start(&pid, &msg, UNAUTHENTICATED);
+    let handled = provider.service.start(&pid, &msg, &caller);
     provider.finish(handled, StatusCode::OK)
 }
 
 /// `POST /transfers/{providerPid}/suspension`.
 pub(crate) async fn suspension(
     State(provider): Provider,
+    Extension(Caller(caller)): Extension<Caller>,
     Path(pid): Path<String>,
     body: Body,
 ) -> Response {
@@ -321,13 +338,14 @@ pub(crate) async fn suspension(
             Err(refused) => return bad_request(*refused),
         };
     let ids = (msg.provider_pid.as_str(), msg.consumer_pid.as_str());
-    let handled = provider.service.suspend(&pid, ids, UNAUTHENTICATED);
+    let handled = provider.service.suspend(&pid, ids, &caller);
     provider.finish(handled, StatusCode::OK)
 }
 
 /// `POST /transfers/{providerPid}/completion`.
 pub(crate) async fn completion(
     State(provider): Provider,
+    Extension(Caller(caller)): Extension<Caller>,
     Path(pid): Path<String>,
     body: Body,
 ) -> Response {
@@ -337,13 +355,14 @@ pub(crate) async fn completion(
             Err(refused) => return bad_request(*refused),
         };
     let ids = (msg.provider_pid.as_str(), msg.consumer_pid.as_str());
-    let handled = provider.service.complete(&pid, ids, UNAUTHENTICATED);
+    let handled = provider.service.complete(&pid, ids, &caller);
     provider.finish(handled, StatusCode::OK)
 }
 
 /// `POST /transfers/{providerPid}/termination`.
 pub(crate) async fn termination(
     State(provider): Provider,
+    Extension(Caller(caller)): Extension<Caller>,
     Path(pid): Path<String>,
     body: Body,
 ) -> Response {
@@ -353,6 +372,6 @@ pub(crate) async fn termination(
             Err(refused) => return bad_request(*refused),
         };
     let ids = (msg.provider_pid.as_str(), msg.consumer_pid.as_str());
-    let handled = provider.service.terminate(&pid, ids, UNAUTHENTICATED);
+    let handled = provider.service.terminate(&pid, ids, &caller);
     provider.finish(handled, StatusCode::OK)
 }

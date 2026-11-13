@@ -288,6 +288,7 @@ const NEGOTIATION_COLUMNS: &str = "provider_pid, consumer_pid, state, callback_a
 
 fn negotiation_from_row(row: &Row<'_>) -> Result<Negotiation, StoreError> {
     let provider_pid: String = col(row, 0)?;
+    let counter_party: String = col(row, 4)?;
     let pending = col::<Option<String>>(row, 7)?
         .map(|p| -> Result<provider::Outgoing, StoreError> {
             let m: StoredMessage<NegotiationState> = parsed("pending message", &p)?;
@@ -298,6 +299,7 @@ fn negotiation_from_row(row: &Row<'_>) -> Result<Negotiation, StoreError> {
                 status_url: m.status_url,
                 body: m.body,
                 to: m.to,
+                counter_party: counter_party.clone(),
             })
         })
         .transpose()?;
@@ -305,7 +307,7 @@ fn negotiation_from_row(row: &Row<'_>) -> Result<Negotiation, StoreError> {
         consumer_pid: col(row, 1)?,
         state: parsed_state(col(row, 2)?)?,
         callback_address: col(row, 3)?,
-        counter_party: col(row, 4)?,
+        counter_party,
         offer: parsed("offer", &col::<String>(row, 5)?)?,
         agreement: col::<Option<String>>(row, 6)?
             .map(|a| parsed("agreement", &a))
@@ -390,6 +392,7 @@ const CONSUMER_COLUMNS: &str = "consumer_pid, provider_pid, state, provider_addr
 
 fn consumer_negotiation_from_row(row: &Row<'_>) -> Result<ConsumerNegotiation, StoreError> {
     let consumer_pid: String = col(row, 0)?;
+    let provider_id: String = col(row, 4)?;
     let pending = col::<Option<String>>(row, 7)?
         .map(|p| -> Result<consumer::Outgoing, StoreError> {
             let m: StoredMessage<NegotiationState> = parsed("pending message", &p)?;
@@ -401,6 +404,7 @@ fn consumer_negotiation_from_row(row: &Row<'_>) -> Result<ConsumerNegotiation, S
                 body: m.body,
                 to: m.to,
                 initial: m.initial,
+                counter_party: provider_id.clone(),
             })
         })
         .transpose()?;
@@ -408,7 +412,7 @@ fn consumer_negotiation_from_row(row: &Row<'_>) -> Result<ConsumerNegotiation, S
         provider_pid: col(row, 1)?,
         state: parsed_state(col(row, 2)?)?,
         provider_address: col(row, 3)?,
-        provider_id: col(row, 4)?,
+        provider_id,
         offer: parsed("offer", &col::<String>(row, 5)?)?,
         agreement: col::<Option<String>>(row, 6)?
             .map(|a| parsed("agreement", &a))
@@ -579,6 +583,7 @@ mod tests {
             transition: Transition::Finalize,
             to: NegotiationState::Finalized,
             status_url: "https://c.example/cb/negotiations/urn:uuid:c".into(),
+            counter_party: "did:web:c.example".into(),
         });
         assert!(store.replace_if(&sending, 1).unwrap());
         assert_eq!(store.get("p").unwrap().unwrap(), sending);
@@ -707,6 +712,7 @@ mod tests {
             to: NegotiationState::Requested,
             status_url: String::new(),
             initial: true,
+            counter_party: "did:web:p.example".into(),
         });
         c.insert(&first).unwrap();
         assert_eq!(c.get("urn:uuid:e").unwrap().unwrap(), first);

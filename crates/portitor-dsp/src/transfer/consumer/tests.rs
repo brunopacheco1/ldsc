@@ -329,3 +329,24 @@ fn an_answer_without_a_provider_pid_is_refused() {
     );
     assert!(s.delivered(&out, None).is_err());
 }
+
+#[test]
+fn only_the_provider_it_was_requested_from_may_answer() {
+    // ADR 0016: the caller's proven DID must be the transfer's provider
+    let store = Store::default();
+    let steps = Steps::default();
+    let s = requested(&store, &steps);
+    assert!(s.from_provider(CPID, "did:web:p").is_ok());
+    assert!(matches!(
+        s.from_provider(CPID, "did:web:eve"),
+        Err(Failure::NotFound(_))
+    ));
+    assert!(matches!(
+        s.from_provider("unknown", "did:web:p"),
+        Err(Failure::NotFound(_))
+    ));
+    let (_, out) = s
+        .start("https://p.example/dsp/", "did:web:q", "a2", "HttpData-PULL")
+        .unwrap();
+    assert_eq!(out.counter_party, "did:web:q");
+}

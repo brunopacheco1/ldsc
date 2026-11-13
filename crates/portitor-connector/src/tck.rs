@@ -15,6 +15,16 @@
 //! (`ATP0101` and so on, from `tck/dsp-tck.properties`); this build holds
 //! them as finalized agreements for dataset `CAT0101` ([`TckAgreements`]).
 //!
+//! Caller authentication (ADR 0016): the DSP TCK v1.0.2 can only send one
+//! fixed `Authorization` header (`dataspacetck.dsp.connector.http.headers.authorization`),
+//! and a DCP token cannot be fixed. So this build takes that exact header
+//! (`PORTITOR_TCK_AUTHORIZATION`) as proof that the caller is the TCK,
+//! whose participant id is `TCK_PARTICIPANT` (TCK v1.0.2,
+//! `DspConstants.TCK_PARTICIPANT_ID`, the `assigner` of its agreements and
+//! the `providerId` it starts consumer tests with), and sends the same
+//! header on its own requests ([`TckVerifier`], [`TckProver`]). Any other
+//! header goes to the DCP verifier when one is configured.
+//!
 //! The TCK starts each consumer test with a POST to `/tck/negotiations`
 //! or `/tck/transfers` (`dataspacetck.dsp.connector.negotiation.initiate.url`
 //! and `...transfer.initiate.url`). Those endpoints exist only in this
@@ -46,6 +56,7 @@ use portitor_dsp::transfer::{TransferError, TransferState};
 use portitor_dsp::{OfferType, Rule};
 use serde::Deserialize;
 
+use crate::auth::{AuthFuture, Caller, CallerVerifier, Prover};
 use crate::consumer::Consumer;
 use crate::consumer_transfer::TransferConsumer;
 use crate::http_client::{SendFuture, Sender};
@@ -190,8 +201,8 @@ impl<A: Agreements> Agreements for TckAgreements<A> {
             target: "CAT0101".to_owned(),
             // the participant id in tck/dsp-tck.properties
             assigner: "did:web:localhost%3A8080".to_owned(),
-            // no caller authentication until 0.5
-            assignee: crate::negotiation::UNAUTHENTICATED.to_owned(),
+            // the caller the TCK's fixed Authorization header stands for
+            assignee: TCK_PARTICIPANT.to_owned(),
             timestamp: Some("2026-11-13T00:00:00Z".to_owned()),
             permission: vec![Rule {
                 action: "use".to_owned(),
@@ -201,6 +212,50 @@ impl<A: Agreements> Agreements for TckAgreements<A> {
             obligation: Vec::new(),
             profile: None,
         }))
+    }
+}
+
+/// The DSP TCK's participant id (TCK v1.0.2, `DspConstants.TCK_PARTICIPANT_ID`).
+pub const TCK_PARTICIPANT: &str = "TCK_PARTICIPANT";
+
+/// Verifier: the fixed header stands for [`TCK_PARTICIPANT`]; any other
+/// header goes to `inner`.
+pub struct TckVerifier {
+    /// The exact `Authorization` header the TCK sends.
+    pub fixed: Option<String>,
+    /// The verifier for every other header.
+    pub inner: Arc<dyn CallerVerifier>,
+}
+
+impl CallerVerifier for TckVerifier {
+    fn verify<'a>(
+        &'a self,
+        authorization: Option<&'a str>,
+    ) -> AuthFuture<'a, Result<Caller, String>> {
+        if self.fixed.is_some() && authorization == self.fixed.as_deref() {
+            return Box::pin(async { Ok(Caller(TCK_PARTICIPANT.to_owned())) });
+        }
+        self.inner.verify(authorization)
+    }
+}
+
+/// Prover: the fixed header for requests to [`TCK_PARTICIPANT`]; a token
+/// from `inner` for anyone else.
+pub struct TckProver {
+    /// The exact `Authorization` header the TCK sends.
+    pub fixed: Option<String>,
+    /// The prover for everyone else.
+    pub inner: Arc<dyn Prover>,
+}
+
+impl Prover for TckProver {
+    fn authorization<'a>(&'a self, audience: &'a str) -> AuthFuture<'a, Result<String, String>> {
+        if audience == TCK_PARTICIPANT
+            && let Some(fixed) = self.fixed.clone()
+        {
+            return Box::pin(async move { Ok(fixed) });
+        }
+        self.inner.authorization(audience)
     }
 }
 
@@ -223,9 +278,7 @@ const START_DELAY: std::time::Duration = std::time::Duration::from_millis(300);
 impl<S: Sender> Sender for LateStart<S> {
     fn post<'a>(&'a self, url: &'a str, body: &'a serde_json::Value) -> SendFuture<'a> {
         Box::pin(async move {
-            let is_start = body.get("@type").and_then(serde_json::Value::as_str)
-                == Some("TransferStartMessage");
-            if is_start {
+            if is_start(body) {
                 tokio::time::sleep(START_DELAY).await;
             }
             self.0.post(url, body).await
@@ -234,6 +287,27 @@ impl<S: Sender> Sender for LateStart<S> {
     fn get<'a>(&'a self, url: &'a str) -> SendFuture<'a> {
         self.0.get(url)
     }
+    fn post_authorized<'a>(
+        &'a self,
+        url: &'a str,
+        body: &'a serde_json::Value,
+        authorization: &'a str,
+    ) -> SendFuture<'a> {
+        Box::pin(async move {
+            if is_start(body) {
+                tokio::time::sleep(START_DELAY).await;
+            }
+            self.0.post_authorized(url, body, authorization).await
+        })
+    }
+    fn get_authorized<'a>(&'a self, url: &'a str, authorization: &'a str) -> SendFuture<'a> {
+        self.0.get_authorized(url, authorization)
+    }
+}
+
+/// Whether `body` is a transfer start message.
+fn is_start(body: &serde_json::Value) -> bool {
+    body.get("@type").and_then(serde_json::Value::as_str) == Some("TransferStartMessage")
 }
 
 /// What the TCK sends to start a consumer test (TCK v1.0.2,
@@ -466,5 +540,34 @@ mod tests {
                 "{agreement} {state:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn the_fixed_header_stands_for_the_tck() {
+        let fixed = Some("Bearer tck".to_owned());
+        let verifier = TckVerifier {
+            fixed: fixed.clone(),
+            inner: Arc::new(crate::auth::RefuseAll),
+        };
+        assert_eq!(
+            verifier.verify(Some("Bearer tck")).await.unwrap(),
+            Caller(TCK_PARTICIPANT.to_owned())
+        );
+        assert!(verifier.verify(Some("Bearer other")).await.is_err());
+        assert!(verifier.verify(None).await.is_err());
+        let open = TckVerifier {
+            fixed: None,
+            inner: Arc::new(crate::auth::RefuseAll),
+        };
+        assert!(open.verify(None).await.is_err());
+        let prover = TckProver {
+            fixed,
+            inner: Arc::new(crate::auth::NoTokens),
+        };
+        assert_eq!(
+            prover.authorization(TCK_PARTICIPANT).await.unwrap(),
+            "Bearer tck"
+        );
+        assert!(prover.authorization("did:web:other").await.is_err());
     }
 }

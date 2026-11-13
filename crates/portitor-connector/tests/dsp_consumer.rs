@@ -22,6 +22,9 @@ use serde_json::{Value, json};
 use tokio::sync::Notify;
 use tower::ServiceExt as _;
 
+mod common;
+use common::{CONSUMER, PROVIDER as PROVIDER_DID, authenticating, bearer, from};
+
 const PROVIDER: &str = "https://provider.example/dsp/2025-1";
 const CALLBACK: &str = "/dsp/2025-1/callback/negotiations";
 const PPID: &str = "urn:uuid:provider-1";
@@ -132,6 +135,17 @@ struct FakeProvider {
 }
 
 impl Sender for FakeProvider {
+    /// Every message carries the consumer's token.
+    fn post_authorized<'a>(
+        &'a self,
+        url: &'a str,
+        body: &'a Value,
+        authorization: &'a str,
+    ) -> SendFuture<'a> {
+        assert_eq!(authorization, bearer(CONSUMER));
+        self.post(url, body)
+    }
+
     fn post<'a>(&'a self, url: &'a str, body: &'a Value) -> SendFuture<'a> {
         Box::pin(async move {
             assert_valid(body);
@@ -188,7 +202,10 @@ struct Connector {
 
 fn connector() -> Connector {
     let provider = Arc::new(FakeProvider::default());
-    let mut ports = Ports::new(Arc::clone(&provider) as Arc<dyn Sender>);
+    let mut ports = authenticating(
+        Ports::new(Arc::clone(&provider) as Arc<dyn Sender>),
+        CONSUMER,
+    );
     ports.retry = Retry {
         attempts: 2,
         first_delay: Duration::from_millis(1),
@@ -230,7 +247,7 @@ async fn call(app: &Router, req: Request<Body>) -> (StatusCode, Value) {
 }
 
 fn post(uri: &str, body: &Value) -> Request<Body> {
-    Request::post(uri)
+    from(Request::post(uri), PROVIDER_DID)
         .header("content-type", "application/json")
         .body(Body::from(body.to_string()))
         .unwrap()
@@ -239,7 +256,7 @@ fn post(uri: &str, body: &Value) -> Request<Body> {
 async fn state(app: &Router, cpid: &str) -> String {
     let (status, body) = call(
         app,
-        Request::get(format!("{CALLBACK}/{cpid}"))
+        from(Request::get(format!("{CALLBACK}/{cpid}")), PROVIDER_DID)
             .body(Body::empty())
             .unwrap(),
     )
@@ -280,7 +297,7 @@ fn termination_msg(cpid: &str) -> Value {
 async fn started(c: &Connector, dataset: &str) -> String {
     let n = c
         .negotiator
-        .start(PROVIDER, "did:web:p", offer(dataset))
+        .start(PROVIDER, "did:web:provider.example", offer(dataset))
         .unwrap();
     assert_eq!(
         n.state,
@@ -290,9 +307,12 @@ async fn started(c: &Connector, dataset: &str) -> String {
     for _ in 0..500 {
         let (_, body) = call(
             &c.app,
-            Request::get(format!("{CALLBACK}/{}", n.consumer_pid))
-                .body(Body::empty())
-                .unwrap(),
+            from(
+                Request::get(format!("{CALLBACK}/{}", n.consumer_pid)),
+                PROVIDER_DID,
+            )
+            .body(Body::empty())
+            .unwrap(),
         )
         .await;
         if body["providerPid"] == PPID {
@@ -428,7 +448,7 @@ fn leave_pending(path: &std::path::Path) {
             provider_pid: Some(PPID.into()),
             state: NegotiationState::Offered,
             provider_address: PROVIDER.into(),
-            provider_id: "did:web:p".into(),
+            provider_id: "did:web:provider.example".into(),
             offer: offer("d1"),
             agreement: None,
             pending: Some(consumer::Outgoing {
@@ -439,6 +459,7 @@ fn leave_pending(path: &std::path::Path) {
                 to: NegotiationState::Accepted,
                 status_url: format!("{PROVIDER}/negotiations/{PPID}"),
                 initial: false,
+                counter_party: "did:web:provider.example".into(),
             }),
             version: 3,
         },
@@ -463,6 +484,7 @@ fn leave_pending(path: &std::path::Path) {
                 transition: Transition::Agree,
                 to: NegotiationState::Agreed,
                 status_url: format!("{callback}/negotiations/c-9"),
+                counter_party: "x".into(),
             }),
             version: 1,
         },
@@ -485,7 +507,10 @@ async fn pending_messages_are_sent_after_a_restart() {
     leave_pending(&path);
 
     let provider = Arc::new(FakeProvider::default());
-    let mut ports = Ports::new(Arc::clone(&provider) as Arc<dyn Sender>);
+    let mut ports = authenticating(
+        Ports::new(Arc::clone(&provider) as Arc<dyn Sender>),
+        CONSUMER,
+    );
     let store = Arc::new(SqliteNegotiations::open(&path).unwrap());
     ports.store = Shared(Arc::clone(&store) as _);
     ports.consumer_store = Shared(Arc::clone(&store) as _);
@@ -568,10 +593,13 @@ async fn invalid_messages_are_refused() {
     }
     let (s, _) = call(
         &c.app,
-        Request::post(format!("{CALLBACK}/{cpid}/offers"))
-            .header("content-type", "application/json")
-            .body(Body::from("{not json"))
-            .unwrap(),
+        from(
+            Request::post(format!("{CALLBACK}/{cpid}/offers")),
+            PROVIDER_DID,
+        )
+        .header("content-type", "application/json")
+        .body(Body::from("{not json"))
+        .unwrap(),
     )
     .await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
@@ -583,7 +611,7 @@ async fn invalid_messages_are_refused() {
     assert_eq!(s, StatusCode::NOT_FOUND);
     let (s, _) = call(
         &c.app,
-        Request::get(format!("{CALLBACK}/unknown"))
+        from(Request::get(format!("{CALLBACK}/unknown")), PROVIDER_DID)
             .body(Body::empty())
             .unwrap(),
     )
@@ -591,6 +619,29 @@ async fn invalid_messages_are_refused() {
     assert_eq!(s, StatusCode::NOT_FOUND);
     assert_eq!(state(&c.app, &cpid).await, "REQUESTED");
     assert_eq!(c.provider.count(), 1);
+}
+
+/// Only the provider the negotiation was started with may send to its
+/// callback; anyone else is told it does not exist.
+#[tokio::test]
+async fn other_participants_cannot_use_the_callback() {
+    let c = connector();
+    let cpid = started(&c, "d1").await;
+    let uri = format!("{CALLBACK}/{cpid}/offers");
+    let body = Body::from(offer_msg(&cpid, "d1").to_string());
+    let stranger = from(Request::post(&uri), "did:web:stranger.example")
+        .header("content-type", "application/json")
+        .body(body)
+        .unwrap();
+    let (s, err) = call(&c.app, stranger).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{err}");
+    let anonymous = Request::get(format!("{CALLBACK}/{cpid}"))
+        .body(Body::empty())
+        .unwrap();
+    let (s, err) = call(&c.app, anonymous).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    assert_eq!(err["code"], "401");
+    assert_eq!(state(&c.app, &cpid).await, "REQUESTED");
 }
 
 /// The provider ends the negotiation (TCK `CN_C:02-01`).
@@ -628,7 +679,7 @@ async fn unreachable_provider_ends_the_negotiation() {
     *c.provider.fail.lock().unwrap() = Some("/negotiations/request");
     let n = c
         .negotiator
-        .start(PROVIDER, "did:web:p", offer("d1"))
+        .start(PROVIDER, "did:web:provider.example", offer("d1"))
         .unwrap();
     c.provider.sent(2).await; // two attempts
     for _ in 0..500 {
@@ -679,14 +730,18 @@ async fn refuses_bad_starts() {
     for address in ["http://provider.example/dsp", "provider.example", ""] {
         assert!(
             c.negotiator
-                .start(address, "did:web:p", offer("d1"))
+                .start(address, "did:web:provider.example", offer("d1"))
                 .is_err(),
             "{address}"
         );
     }
     let mut no_rules = offer("d1");
     no_rules.permission.clear();
-    assert!(c.negotiator.start(PROVIDER, "did:web:p", no_rules).is_err());
+    assert!(
+        c.negotiator
+            .start(PROVIDER, "did:web:provider.example", no_rules)
+            .is_err()
+    );
     assert_eq!(c.provider.count(), 0);
     assert_eq!(format!("{:?}", c.negotiator), "Negotiator");
 }

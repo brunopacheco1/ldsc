@@ -29,6 +29,7 @@ use portitor_dsp::transfer::provider::{
     Agreements, DataFlows, Transfer, TransferDecider, TransferDecision, TransferStore,
 };
 
+use crate::auth::{CallerVerifier, NoTokens, Prover, RefuseAll};
 use crate::consumer::InMemoryConsumerNegotiations;
 use crate::consumer_transfer::InMemoryConsumerTransfers;
 use crate::data_plane::{Flow, FlowStore, FlowStoreError, InMemoryFlows};
@@ -63,6 +64,13 @@ pub struct Ports {
     pub decider: AnyDecider,
     /// Sends messages to consumers.
     pub sender: Arc<dyn Sender>,
+    /// Who sent a DSP request (ADR 0016). [`Ports::new`] starts with
+    /// [`RefuseAll`]: no caller is let in until a verifier is set.
+    pub verifier: Arc<dyn CallerVerifier>,
+    /// The `Authorization` header of each DSP request we send (ADR 0016).
+    /// [`Ports::new`] starts with [`NoTokens`]: nothing is sent until a
+    /// prover is set.
+    pub prover: Arc<dyn Prover>,
     /// The dataspace's rules for DSP messages (ADR 0005).
     pub guard: Arc<dyn MessageGuard + Send + Sync>,
     /// Retry policy for outgoing messages.
@@ -90,7 +98,8 @@ impl std::fmt::Debug for Ports {
 }
 
 impl Ports {
-    /// In-memory stores (tests and development), no extra message rules,
+    /// In-memory stores (tests and development), no caller let in and no
+    /// tokens to send (set `verifier` and `prover`), no extra message rules,
     /// and the default deciders: as provider, agree to any offer from the
     /// catalog; as consumer, accept offers and verify agreements. With the
     /// `tck` feature the deciders follow the DSP TCK scripts instead.
@@ -106,6 +115,8 @@ impl Ports {
             flow_store: Some(Shared(Arc::new(InMemoryFlows::default()))),
             decider: default_decider(),
             sender,
+            verifier: Arc::new(RefuseAll),
+            prover: Arc::new(NoTokens),
             guard: Arc::new(AllowAll),
             retry: Retry::default(),
             consumer_transfers: ConsumerTransferPorts::in_memory(consumer_negotiations.clone()),

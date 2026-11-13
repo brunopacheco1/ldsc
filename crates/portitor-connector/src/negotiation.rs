@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path, State};
+use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use portitor_dsp::guard::Direction;
@@ -27,14 +27,11 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::InMemoryDatasets;
+use crate::auth::Caller;
 use crate::http_client::callback_allowed;
 use crate::outbox::{self, Link, Message, Outbox};
 use crate::ports::{AnyDecider, AnyStore, Ports};
 use crate::system::SystemEnvironment;
-
-/// The identity of every caller until DSP requests are authenticated with
-/// DCP (release 0.5). It is the `assignee` of agreements until then.
-pub const UNAUTHENTICATED: &str = "urn:portitor:unauthenticated";
 
 /// Adapter: negotiations kept in memory (lost on restart). The `SQLite`
 /// adapter replaces it for real use.
@@ -155,8 +152,14 @@ impl Outbox for Provider {
     }
 
     fn message(out: &Outgoing) -> Message<'_> {
-        Message::new(&out.provider_pid, &out.url, &out.body, &out.status_url)
-            .terminating(out.transition == Transition::Terminate)
+        Message::new(
+            &out.provider_pid,
+            &out.url,
+            &out.body,
+            &out.status_url,
+            &out.counter_party,
+        )
+        .terminating(out.transition == Transition::Terminate)
     }
 
     fn reached(out: &Outgoing, state: Value) -> bool {
@@ -218,9 +221,10 @@ pub(crate) fn failed(failure: Failure) -> Response {
 /// `GET /negotiations/{providerPid}`.
 pub(crate) async fn get(
     State(provider): State<Arc<Provider>>,
+    Extension(Caller(caller)): Extension<Caller>,
     Path(pid): Path<String>,
 ) -> Response {
-    match provider.service.get(&pid, UNAUTHENTICATED) {
+    match provider.service.get(&pid, &caller) {
         Ok(ack) => Json(ack).into_response(),
         Err(f) => failed(f),
     }
@@ -229,6 +233,7 @@ pub(crate) async fn get(
 /// `POST /negotiations/request`.
 pub(crate) async fn request_new(
     State(provider): State<Arc<Provider>>,
+    Extension(Caller(caller)): Extension<Caller>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
     let msg: ContractRequestMessage = match provider.read(body, "ContractRequestMessage", "") {
@@ -243,13 +248,14 @@ pub(crate) async fn request_new(
             "callbackAddress must be an https URL",
         ));
     }
-    let handled = provider.service.request(None, msg, UNAUTHENTICATED);
+    let handled = provider.service.request(None, msg, &caller);
     finish(&provider, handled, StatusCode::CREATED)
 }
 
 /// `POST /negotiations/{providerPid}/request`.
 pub(crate) async fn request_counter(
     State(provider): State<Arc<Provider>>,
+    Extension(Caller(caller)): Extension<Caller>,
     Path(pid): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
@@ -257,13 +263,14 @@ pub(crate) async fn request_counter(
         Ok(m) => m,
         Err(e) => return bad_request(*e),
     };
-    let handled = provider.service.request(Some(&pid), msg, UNAUTHENTICATED);
+    let handled = provider.service.request(Some(&pid), msg, &caller);
     finish(&provider, handled, StatusCode::OK)
 }
 
 /// `POST /negotiations/{providerPid}/events`.
 pub(crate) async fn event(
     State(provider): State<Arc<Provider>>,
+    Extension(Caller(caller)): Extension<Caller>,
     Path(pid): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
@@ -272,13 +279,14 @@ pub(crate) async fn event(
             Ok(m) => m,
             Err(e) => return bad_request(*e),
         };
-    let handled = provider.service.event(&pid, &msg, UNAUTHENTICATED);
+    let handled = provider.service.event(&pid, &msg, &caller);
     finish(&provider, handled, StatusCode::OK)
 }
 
 /// `POST /negotiations/{providerPid}/agreement/verification`.
 pub(crate) async fn verify(
     State(provider): State<Arc<Provider>>,
+    Extension(Caller(caller)): Extension<Caller>,
     Path(pid): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
@@ -287,13 +295,14 @@ pub(crate) async fn verify(
             Ok(m) => m,
             Err(e) => return bad_request(*e),
         };
-    let handled = provider.service.verify(&pid, &msg, UNAUTHENTICATED);
+    let handled = provider.service.verify(&pid, &msg, &caller);
     finish(&provider, handled, StatusCode::OK)
 }
 
 /// `POST /negotiations/{providerPid}/termination`.
 pub(crate) async fn terminate(
     State(provider): State<Arc<Provider>>,
+    Extension(Caller(caller)): Extension<Caller>,
     Path(pid): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
@@ -302,7 +311,7 @@ pub(crate) async fn terminate(
             Ok(m) => m,
             Err(e) => return bad_request(*e),
         };
-    let handled = provider.service.terminate(&pid, &msg, UNAUTHENTICATED);
+    let handled = provider.service.terminate(&pid, &msg, &caller);
     finish(&provider, handled, StatusCode::OK)
 }
 
@@ -313,7 +322,9 @@ mod tests {
     use portitor_dsp::Offer;
     use portitor_dsp::negotiation::NegotiationState;
 
+    use crate::auth::{AuthFuture, Prover};
     use crate::http_client::{HttpSender, SendFuture, Sender};
+    use crate::outbox::Link;
     use crate::ports::Shared;
 
     fn negotiation(state: NegotiationState) -> Negotiation {
@@ -322,7 +333,7 @@ mod tests {
             consumer_pid: "c".into(),
             state,
             callback_address: "https://c.example".into(),
-            counter_party: UNAUTHENTICATED.into(),
+            counter_party: "did:web:c.example".into(),
             offer: serde_json::from_value::<Offer>(
                 serde_json::json!({"@id": "o", "@type": "Offer", "target": "d"}),
             )
@@ -362,6 +373,7 @@ mod tests {
             transition: Transition::Agree,
             to: NegotiationState::Agreed,
             status_url: "https://c.example/negotiations/c".into(),
+            counter_party: "did:web:c.example".into(),
         });
         assert!(store.replace_if(&offered, 1).unwrap());
         assert_eq!(store.pending().unwrap(), vec![offered]);
@@ -384,12 +396,34 @@ mod tests {
         }
     }
 
-    /// Whether `sender` reads state `to` at `url`.
-    async fn arrived(sender: &dyn Sender, url: &str, to: NegotiationState) -> bool {
+    /// A prover with a fixed token.
+    struct FixedToken;
+
+    impl Prover for FixedToken {
+        fn authorization<'a>(&'a self, _: &'a str) -> AuthFuture<'a, Result<String, String>> {
+            Box::pin(async { Ok("Bearer t".to_owned()) })
+        }
+    }
+
+    /// Whether `sender`, with tokens from `prover`, reads state `to` at
+    /// `url`.
+    async fn read_state(
+        sender: Arc<dyn Sender>,
+        prover: Arc<dyn Prover>,
+        url: &str,
+        to: NegotiationState,
+    ) -> bool {
+        let mut ports = Ports::new(sender);
+        ports.prover = prover;
         let reached = |state: Value| {
             serde_json::from_value::<ContractNegotiation>(state).is_ok_and(|n| n.state == to)
         };
-        outbox::arrived(sender, url, reached).await
+        outbox::arrived(&Link::new(&ports), url, "did:web:c.example", reached).await
+    }
+
+    /// Whether `sender` reads state `to` at `url`.
+    async fn arrived(sender: Arc<dyn Sender>, url: &str, to: NegotiationState) -> bool {
+        read_state(sender, Arc::new(FixedToken), url, to).await
     }
 
     #[tokio::test]
@@ -408,16 +442,20 @@ mod tests {
                 axum::routing::get(|| async { Json(serde_json::json!({"state": 1})) }),
             );
         tokio::spawn(async move { axum::serve(listener, app).await });
-        let sender = HttpSender::new(true).unwrap();
+        let sender: Arc<dyn Sender> = Arc::new(HttpSender::new(true).unwrap());
         let url = format!("http://{addr}/negotiations/c");
-        assert!(arrived(&sender, &url, NegotiationState::Agreed).await);
-        assert!(!arrived(&sender, &url, NegotiationState::Verified).await);
+        let http = || Arc::clone(&sender);
+        assert!(arrived(http(), &url, NegotiationState::Agreed).await);
+        assert!(!arrived(http(), &url, NegotiationState::Verified).await);
         let garbage = format!("http://{addr}/negotiations/x");
-        assert!(!arrived(&sender, &garbage, NegotiationState::Agreed).await);
+        assert!(!arrived(http(), &garbage, NegotiationState::Agreed).await);
         let missing = format!("http://{addr}/negotiations/none");
-        assert!(!arrived(&sender, &missing, NegotiationState::Agreed).await);
-        assert!(!arrived(&sender, "", NegotiationState::Agreed).await);
+        assert!(!arrived(http(), &missing, NegotiationState::Agreed).await);
+        assert!(!arrived(http(), "", NegotiationState::Agreed).await);
         // a sender that cannot read never claims delivery
-        assert!(!arrived(&PostOnly, &url, NegotiationState::Agreed).await);
+        assert!(!arrived(Arc::new(PostOnly), &url, NegotiationState::Agreed).await);
+        // nor does one without a token
+        let no_tokens = Arc::new(crate::auth::NoTokens);
+        assert!(!read_state(http(), no_tokens, &url, NegotiationState::Agreed).await);
     }
 }
