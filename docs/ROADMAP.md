@@ -268,3 +268,7 @@ TCK v1.2.1 are the targets (latest releases, checked 2026-11-13).
   in the catalog, with its own data address and authentication
   (maintainer, 2026-11-13). It is a second data plane behind the Data
   Plane Signaling port; the DSP code does not change.
+- Join a Simpl-Open data space behind the participant's Simpl Tier 2
+  gateway, with a small login adapter ([ADR 0017](adr/0017-simpl-open.md)).
+  Parked until the maintainer sets up a Simpl-Open sandbox to test
+  against (maintainer, 2026-11-13).
