@@ -27,6 +27,8 @@ path = [
     # Gradle (--write-verification-metadata), so no header
     "interop/edc/runtimes/gradle/verification-metadata.xml",
     "docs/api/*.json",
+    # C4 diagrams: draw.io rewrites the whole .drawio.svg file on save
+    "docs/diagrams/*.drawio.svg",
     # Bruno API client collection (.bru and bruno.json have no comment syntax we rely on)
     "_http/**",
     # VS Code configuration (JSON with comments)

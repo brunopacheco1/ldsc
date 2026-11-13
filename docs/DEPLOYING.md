@@ -222,6 +222,9 @@ participant.
 | public | `GET /health` | probes |
 | management | `POST /v1/credential-requests`, `GET /v1/credentials`, `DELETE /v1/credentials/{id}`, `GET /v1/offers`, `GET /v1/openapi.json` | operators ([OpenAPI](api/identity-management-openapi.json)) |
 
+The public endpoints are described in
+[api/identity-openapi.json](api/identity-openapi.json).
+
 The connector then needs these settings to get tokens from the identity
 and to check partners' credentials:
 

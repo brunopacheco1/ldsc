@@ -45,6 +45,8 @@ jobs:
               echo "::error::$c depends on an I/O crate"; exit 1
             fi
           done
+      - name: Documentation matches the code (C4 diagrams, OpenAPI versions)
+        run: python3 scripts/check_docs.py
       - name: Build static binaries
         run: |
           start=$(date +%s)

@@ -52,6 +52,11 @@ The build enforces the style, so a pull request that breaks it fails:
   long chain of closures, and a comment where a pattern hides what the
   code does. [docs/RUST-IDIOMS.md](docs/RUST-IDIOMS.md) explains the
   patterns the code uses.
+- **Docs with the code.** A change that adds, removes or renames a
+  crate, image, port, adapter or HTTP route updates the C4 diagrams
+  (`docs/diagrams/`, edited in draw.io), the OpenAPI files in `docs/api/`
+  and the docs that describe it, in the same pull request.
+  `scripts/check_docs.py` (in CI) catches part of it.
 
 ## Pull requests
 

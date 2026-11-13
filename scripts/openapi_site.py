@@ -73,6 +73,10 @@ def page(spec):
         <p>{esc(info.get('description', ''))}</p>
         <p>Machine-readable: <a href="openapi.json">openapi.json</a> (OpenAPI {esc(spec['openapi'])}),
         with the official DSP JSON Schemas next to it. Open it in any OpenAPI viewer.</p>
+        <p>The other HTTP interfaces, also OpenAPI:
+        <a href="management-openapi.json">connector management API</a>,
+        <a href="identity-openapi.json">identity (DID document, STS, DCP credential service)</a> and
+        <a href="identity-management-openapi.json">identity management API</a>.</p>
         <table>
           <thead><tr><th>Method</th><th>Path</th><th>What it does</th><th>Responses</th></tr></thead>
           <tbody>

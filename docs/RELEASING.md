@@ -56,12 +56,39 @@ notices script runs the same build as a dry run: nothing is pushed or signed.
    repository if GitHub did not. A new package starts private, so pulling
    it fails until this is done.
 
+## Documentation review
+
+Every release checks its documentation against the code before the
+version is set, as part of the release's quality review (on the release
+branch, next to the readability review). Fix what is wrong in the release
+pull request, or record why it stays.
+
+- `python3 scripts/check_docs.py` passes (CI runs it too): the C4
+  diagrams in `docs/diagrams/` show every crate and image, and name only
+  files and types that exist; every OpenAPI file has the new version.
+- The C4 diagrams ([ARCHITECTURE.md](ARCHITECTURE.md), "Diagrams") still
+  tell the truth: new components, ports, adapters, containers or outside
+  systems are drawn, removed ones are gone. Edit them in draw.io.
+- [ARCHITECTURE.md](ARCHITECTURE.md), [DEPLOYING.md](DEPLOYING.md),
+  [TESTING.md](TESTING.md) and the README match what the release does
+  (settings, ports, images, flows).
+- The OpenAPI files in `docs/api/`: the generated management descriptions
+  are current (their tests fail otherwise); the hand-written
+  `openapi.json` (DSP) and `identity-openapi.json` (DID document, STS,
+  DCP credential service) list every route (their tests check that each
+  listed route is served) and describe what changed.
+- The website (`site/index.html`, published with the API pages by
+  `pages.yml`) shows the release's features and the roadmap state.
+- [ROADMAP.md](ROADMAP.md) and the [CHANGELOG](../CHANGELOG.md) say what
+  shipped.
+
 ## Releasing a version
 
 1. In a pull request, set `version` in `Cargo.toml` (`[workspace.package]`)
    to `X.Y.Z`, rename `## [Unreleased]` in `CHANGELOG.md` to
    `## [X.Y.Z] - YYYY-MM-DD`, add a fresh empty `## [Unreleased]` above it,
-   set `info.version` in `docs/api/openapi.json`, regenerate
+   set `info.version` in `docs/api/openapi.json` and
+   `docs/api/identity-openapi.json`, regenerate
    `docs/api/management-openapi.json`
    and `docs/api/identity-management-openapi.json`
    (`PORTITOR_UPDATE_OPENAPI=1 cargo test -p portitor-connector --test management_api`

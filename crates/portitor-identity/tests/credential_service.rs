@@ -9,7 +9,7 @@
 
 mod common;
 
-use axum::body::Body;
+use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
 use common::*;
 use portitor_dcp::credential::{Presentation, Profile};
@@ -17,6 +17,7 @@ use portitor_dcp::holder::AccessToken;
 use portitor_dcp::{DidDocument, Purpose, unverified_claims};
 use portitor_runtime::system::now_secs;
 use serde_json::{Value, json};
+use tower::ServiceExt as _;
 
 const SENSITIVE_SCOPE: &str = "org.eclipse.dspace.dcp.vc.type:SensitiveDataCredential";
 const EVERY_SCOPE: &str = "org.eclipse.dspace.dcp.vc.type:VerifiableCredential";
@@ -616,4 +617,43 @@ async fn held_credentials(world: &World) -> Vec<Value> {
     .await;
     assert_eq!(status, StatusCode::OK);
     list.as_array().unwrap().clone()
+}
+
+/// Every operation in docs/api/identity-openapi.json is routed. Paths with
+/// their own `servers` entry sit under the credential service URL, which
+/// is `https://holder.example/cs` here.
+#[tokio::test]
+async fn openapi_paths_are_served() {
+    let raw = include_str!("../../../docs/api/identity-openapi.json");
+    let spec: Value = serde_json::from_str(raw).unwrap();
+    assert_eq!(spec["info"]["version"], env!("CARGO_PKG_VERSION"));
+    let world = World::new();
+    let mut count = 0;
+    for (path, item) in spec["paths"].as_object().unwrap() {
+        let uri = if item.get("servers").is_some() {
+            format!("/cs{path}")
+        } else {
+            path.clone()
+        };
+        for method in ["get", "post", "put", "delete"] {
+            if item.get(method).is_none() {
+                continue;
+            }
+            let request = Request::builder()
+                .method(method.to_uppercase().as_str())
+                .uri(&uri)
+                .body(Body::empty())
+                .unwrap();
+            let response = world.app.clone().oneshot(request).await.unwrap();
+            let status = response.status();
+            let bytes = to_bytes(response.into_body(), 1 << 20).await.unwrap();
+            assert_ne!(status, StatusCode::METHOD_NOT_ALLOWED, "{method} {uri}");
+            assert!(
+                status != StatusCode::NOT_FOUND || !bytes.is_empty(),
+                "{method} {uri} is not routed"
+            );
+            count += 1;
+        }
+    }
+    assert_eq!(count, 6);
 }
