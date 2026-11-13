@@ -45,14 +45,23 @@ pub enum ScopeError {
     /// The alias is neither a DCP alias nor a configured one.
     #[error("scope alias {0:?} is not supported")]
     UnknownAlias(String),
+    /// The scope asks for every credential: each one has the type
+    /// `VerifiableCredential`.
+    #[error("scope {0:?} is too broad: every credential is a VerifiableCredential")]
+    TooBroad(String),
 }
+
+/// The type every credential has; a scope by this type would allow them
+/// all.
+const EVERY_CREDENTIAL: &str = "VerifiableCredential";
 
 impl Scope {
     /// Parses `text`. `type_aliases` are extra aliases that mean the same
     /// as [`VC_TYPE`] (for example EDC's `org.eclipse.edc.vc.type`).
     ///
     /// # Errors
-    /// The text is malformed or uses an unknown alias.
+    /// The text is malformed, uses an unknown alias, or asks for the type
+    /// `VerifiableCredential`, which every credential has.
     pub fn parse(text: &str, type_aliases: &[&str]) -> Result<Self, ScopeError> {
         let malformed = || ScopeError::Malformed(text.to_owned());
         let (alias, discriminator) = text.split_once(':').ok_or_else(malformed)?;
@@ -72,6 +81,9 @@ impl Scope {
         };
         if credential_type.is_empty() {
             return Err(malformed());
+        }
+        if credential_type == EVERY_CREDENTIAL {
+            return Err(ScopeError::TooBroad(text.to_owned()));
         }
         Ok(Self::ByType {
             credential_type: credential_type.to_owned(),
@@ -146,6 +158,19 @@ mod tests {
             Scope::parse("org.eclipse.edc.vc.type:T", &[]),
             Err(ScopeError::UnknownAlias(EDC.to_owned()))
         );
+    }
+
+    #[test]
+    fn refuses_a_scope_for_every_credential() {
+        for broad in [
+            "org.eclipse.dspace.dcp.vc.type:VerifiableCredential",
+            "org.eclipse.edc.vc.type:VerifiableCredential:read",
+        ] {
+            assert_eq!(
+                Scope::parse(broad, &[EDC]),
+                Err(ScopeError::TooBroad(broad.to_owned()))
+            );
+        }
     }
 
     #[test]

@@ -89,6 +89,10 @@ versions may change behaviour and configuration.
   signed and attested like the connector's. One `Dockerfile` with a build
   target per image; the image jobs run as a matrix over the components.
   CI builds and starts both images.
+- `PORTITOR_STS_ALLOW_HTTP` (connector): plain HTTP for the STS URL only,
+  for an STS on the internal network. An `http://` `PORTITOR_STS_URL`
+  without it stops the start.
+- Fuzz target `dcp_did_document`: DID document parsing and key selection.
 
 ### Changed
 - Release assets: one provenance bundle per image,
@@ -133,6 +137,15 @@ versions may change behaviour and configuration.
   consumer's STS before every DSP request.
 - The DSP TCK job sends a fixed `Authorization` header, which the `tck`
   build (`PORTITOR_TCK_AUTHORIZATION`) maps to the TCK participant.
+- The Storage API takes one answer per credential request (ADR 0015):
+  `ISSUED` or `REJECTED` closes it, and a renewal needs a new request.
+  The DCP TCK run records one request per test that delivers.
+- As consumer, an agreement whose `assignee` is not our participant id is
+  refused (400).
+- A scope for the type `VerifiableCredential` is refused (STS
+  `invalid_scope`, presentation API 400), and the connector checks
+  `PORTITOR_DCP_SCOPES` at start.
+- The empty `tck` feature of `portitor-identity` is gone.
 
 - `scripts/measure.sh` runs with DCP: it starts a provider and a
   consumer identity as the demo does, and measures with the new
@@ -153,6 +166,14 @@ versions may change behaviour and configuration.
 - Status lists are GZIP data from other parties: decompression is capped
   at 16 MiB, and uses `miniz_oxide` without its unsafe SIMD feature
   (banned in `deny.toml`), with Portitor's own CRC-32 check.
+- Both components refuse self-issued ID tokens valid for more than an
+  hour, and remember at most 100,000 used token ids (new tokens are
+  refused when full; expired ids are dropped in order of expiry).
+- The connector's caller check skips credentials from untrusted issuers
+  before fetching anything for them, reads at most 8 presentations, 16
+  credentials each and 4 status entries per credential, and ends after
+  20 s. The `did:web` cache holds at most 1,000 documents. The public
+  ports answer 503 after 60 s and work on at most 256 requests at once.
 
 ## [0.4.0] - 2026-11-13
 

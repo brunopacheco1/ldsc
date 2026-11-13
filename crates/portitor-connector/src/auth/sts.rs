@@ -68,14 +68,16 @@ impl std::fmt::Debug for StsClient {
 }
 
 impl StsClient {
-    /// A client for the STS in `settings`.
+    /// A client for the STS in `settings`. Its HTTP client is used for
+    /// the STS URL only, so `PORTITOR_STS_ALLOW_HTTP` allows plain HTTP
+    /// there and nowhere else.
     ///
     /// # Errors
     ///
     /// The HTTP client cannot be built.
     pub fn new(settings: &AuthSettings) -> Result<Self, String> {
         Ok(Self {
-            http: HttpSender::new(settings.allow_http)?,
+            http: HttpSender::new(settings.allow_http || settings.sts_allow_http)?,
             url: settings.sts_url.clone(),
             client_id: settings.sts_client_id.clone(),
             client_secret: settings.sts_client_secret.clone(),
@@ -189,6 +191,7 @@ mod tests {
         AuthSettings {
             participant_id: "did:web:me.example".into(),
             sts_url: url,
+            sts_allow_http: false,
             sts_client_id: "me client".into(),
             sts_client_secret: "s&cret=1".into(),
             trusted_issuers: vec!["did:web:issuer.example".into()],
@@ -234,6 +237,15 @@ mod tests {
             .route(
                 "/empty",
                 axum::routing::post(|| async { axum::Json(serde_json::json!({})) }),
+            )
+            .route(
+                "/refuse",
+                axum::routing::post(|| async {
+                    (
+                        axum::http::StatusCode::UNAUTHORIZED,
+                        axum::Json(serde_json::json!([{"error": "invalid_client"}])),
+                    )
+                }),
             );
         tokio::spawn(async move { axum::serve(listener, app).await });
         format!("http://{addr}")
@@ -274,5 +286,30 @@ mod tests {
                 .unwrap_err()
                 .starts_with("STS: HTTP 404")
         );
+        // a wrong client id or secret
+        let refused = StsClient::new(&settings(format!("{base}/refuse"))).unwrap();
+        let err = refused.token(request).await.unwrap_err();
+        assert!(err.starts_with("STS: HTTP 401"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn plain_http_needs_one_of_the_flags() {
+        let base = serve().await;
+        let request = TokenRequest {
+            audience: "did:web:you",
+            scopes: &[],
+            access_token: None,
+        };
+        let mut s = settings(format!("{base}/token"));
+        s.allow_http = false;
+        let refused = StsClient::new(&s)
+            .unwrap()
+            .token(request)
+            .await
+            .unwrap_err();
+        assert!(refused.contains("refused callback URL"), "{refused}");
+        // PORTITOR_STS_ALLOW_HTTP alone is enough for the STS
+        s.sts_allow_http = true;
+        assert!(StsClient::new(&s).unwrap().token(request).await.is_ok());
     }
 }

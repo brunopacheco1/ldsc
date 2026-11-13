@@ -9,7 +9,7 @@
 // each test binary uses only part of this module
 #![allow(dead_code)]
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use axum::http::request::Builder;
 use portitor_connector::Ports;
@@ -36,12 +36,20 @@ impl CallerVerifier for NamedCaller {
     }
 }
 
-/// Proves `did` by naming it: `Bearer <did>`, whatever the audience.
-pub struct NameSelf(pub String);
+/// The audience of every token a [`NameSelf`] gave, in order.
+pub type Audiences = Arc<Mutex<Vec<String>>>;
+
+/// Proves `did` by naming it: `Bearer <did>`, whatever the audience. Each
+/// call stands for a fresh token, and its audience is recorded.
+pub struct NameSelf {
+    pub did: String,
+    pub audiences: Audiences,
+}
 
 impl Prover for NameSelf {
-    fn authorization<'a>(&'a self, _audience: &'a str) -> AuthFuture<'a, Result<String, String>> {
-        Box::pin(async move { Ok(bearer(&self.0)) })
+    fn authorization<'a>(&'a self, audience: &'a str) -> AuthFuture<'a, Result<String, String>> {
+        self.audiences.lock().unwrap().push(audience.to_owned());
+        Box::pin(async move { Ok(bearer(&self.did)) })
     }
 }
 
@@ -53,10 +61,21 @@ pub fn bearer(did: &str) -> String {
 
 /// `ports` with the test verifier, and the test prover for `own_did`.
 #[must_use]
-pub fn authenticating(mut ports: Ports, own_did: &str) -> Ports {
+pub fn authenticating(ports: Ports, own_did: &str) -> Ports {
+    recording(ports, own_did).0
+}
+
+/// Like [`authenticating`], and the audiences of the tokens the prover
+/// gives.
+#[must_use]
+pub fn recording(mut ports: Ports, own_did: &str) -> (Ports, Audiences) {
+    let audiences = Audiences::default();
     ports.verifier = Arc::new(NamedCaller);
-    ports.prover = Arc::new(NameSelf(own_did.to_owned()));
-    ports
+    ports.prover = Arc::new(NameSelf {
+        did: own_did.to_owned(),
+        audiences: Arc::clone(&audiences),
+    });
+    (ports, audiences)
 }
 
 /// `request` sent by `did`.

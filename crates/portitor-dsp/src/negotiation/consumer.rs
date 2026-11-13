@@ -196,17 +196,25 @@ pub struct ConsumerService<S, D, E> {
     decider: D,
     env: E,
     callback_address: String,
+    participant_id: String,
 }
 
 impl<S: ConsumerStore, D: ConsumerDecider, E: Environment> ConsumerService<S, D, E> {
-    /// Builds the service. Providers send their messages to
-    /// `callback_address`.
-    pub fn new(store: S, decider: D, env: E, callback_address: String) -> Self {
+    /// Builds the service for consumer `participant_id`. Providers send
+    /// their messages to `callback_address`.
+    pub fn new(
+        store: S,
+        decider: D,
+        env: E,
+        callback_address: String,
+        participant_id: String,
+    ) -> Self {
         Self {
             store,
             decider,
             env,
             callback_address,
+            participant_id,
         }
     }
 
@@ -341,8 +349,8 @@ impl<S: ConsumerStore, D: ConsumerDecider, E: Environment> ConsumerService<S, D,
     /// # Errors
     ///
     /// Unknown negotiation, mismatched ids, an agreement for another
-    /// dataset or from another provider (its `assigner`), invalid
-    /// transition, or store failure.
+    /// dataset, from another provider (its `assigner`) or for another
+    /// consumer (its `assignee`), invalid transition, or store failure.
     pub fn agreement(&self, consumer_pid: &str, msg: &ContractAgreementMessage) -> Handled {
         self.handle(consumer_pid, |negotiation| {
             check_ids(negotiation, &msg.provider_pid, Some(&msg.consumer_pid))?;
@@ -360,6 +368,16 @@ impl<S: ConsumerStore, D: ConsumerDecider, E: Environment> ConsumerService<S, D,
                     &msg.provider_pid,
                     &negotiation.consumer_pid,
                     "the agreement's assigner is not the provider",
+                ));
+            }
+            // the assignee must be us: an agreement for someone else could
+            // not be used for a transfer (the provider checks the caller
+            // against it)
+            if msg.agreement.assignee != self.participant_id {
+                return Err(bad(
+                    &msg.provider_pid,
+                    &negotiation.consumer_pid,
+                    "the agreement's assignee is not this consumer",
                 ));
             }
             receive(negotiation, Transition::Agree)?;

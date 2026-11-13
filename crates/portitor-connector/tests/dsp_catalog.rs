@@ -219,6 +219,66 @@ async fn cat_01_03_dataset_not_found() {
     assert_valid("catalog/catalog-error-schema.json", &body);
 }
 
+/// EDC v1.0.0-RC7 sends its `QuerySpec` as the filter even when it wants
+/// the whole catalog: `JsonObjectFromQuerySpecTransformer` writes `@type`,
+/// `limit`, `offset`, `sortOrder` and an empty `filterExpression` in the
+/// EDC namespace, and the DSP context compacts `filter` as a set (an
+/// array). Such a request gets the whole catalog; one with a filter
+/// expression gets 400; a filter that is one object, not an array, is not
+/// the DSP shape and gets 400 too.
+#[tokio::test]
+async fn edc_query_specs_over_http() {
+    const EDC: &str = "https://w3id.org/edc/v0.0.1/ns/";
+    let query_spec = |expressions: Value| {
+        json!({"@type": format!("{EDC}QuerySpec"), format!("{EDC}limit"): 50,
+            format!("{EDC}offset"): 0, format!("{EDC}sortOrder"): "ASC",
+            format!("{EDC}filterExpression"): expressions})
+    };
+    let message = |filter: Value| {
+        json!({"@context": ["https://w3id.org/dspace/2025/1/context.jsonld"],
+            "@type": "CatalogRequestMessage", "filter": filter})
+    };
+    // also with EDC's prefix instead of the full IRIs
+    let prefixed = json!({"@type": "edc:QuerySpec", "edc:limit": 50, "edc:offset": 0,
+        "edc:sortOrder": "ASC", "edc:filterExpression": []});
+    for whole in [json!([query_spec(json!([]))]), json!([prefixed])] {
+        let (s, body) = call(post("/dsp/2025-1/catalog/request", &message(whole))).await;
+        assert_eq!(s, StatusCode::OK, "{body}");
+        assert_valid("catalog/catalog-schema.json", &body);
+        assert!(
+            body["dataset"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|d| d["@id"] == "CAT0101"),
+            "the whole catalog"
+        );
+    }
+    let expression = json!([{"@type": format!("{EDC}Criterion"),
+        format!("{EDC}operandLeft"): "id", format!("{EDC}operator"): "=",
+        format!("{EDC}operandRight"): "CAT0101"}]);
+    let (s, body) = call(post(
+        "/dsp/2025-1/catalog/request",
+        &message(json!([query_spec(expression)])),
+    ))
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
+    assert_valid("catalog/catalog-error-schema.json", &body);
+    assert!(
+        body.to_string()
+            .contains("filter expressions are not supported"),
+        "{body}"
+    );
+    // one object instead of an array: refused as malformed
+    let (s, body) = call(post(
+        "/dsp/2025-1/catalog/request",
+        &message(query_spec(json!([]))),
+    ))
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
+    assert_valid("catalog/catalog-error-schema.json", &body);
+}
+
 #[tokio::test]
 async fn bad_requests_get_catalog_errors() {
     for msg in [

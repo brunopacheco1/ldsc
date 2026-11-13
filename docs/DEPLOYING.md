@@ -91,10 +91,11 @@ All configuration is by environment variable. The full table is in the
 | `PORTITOR_ALLOW_HTTP_CALLBACKS` | **unset** (never `true` in production) |
 | `PORTITOR_DATA_TOKEN_SECONDS` | leave the default, `3600`, unless consumers need longer to fetch |
 | `PORTITOR_STS_URL` | **required**: your identity's STS token endpoint, `<identity base URL>/sts/token` |
+| `PORTITOR_STS_ALLOW_HTTP` | unset; `true` only when `PORTITOR_STS_URL` is plain `http://` on an internal network ([section 4](#endpoints)) |
 | `PORTITOR_STS_CLIENT_SECRET_FILE` | **required**: path of the mounted STS secret, the same file as the identity's |
 | `PORTITOR_STS_CLIENT_ID` | leave the default, `PORTITOR_PARTICIPANT_ID` |
 | `PORTITOR_TRUSTED_ISSUERS` | **required**: comma-separated DIDs trusted to issue `MembershipCredential` |
-| `PORTITOR_DCP_SCOPES` | leave the default, `org.eclipse.dspace.dcp.vc.type:MembershipCredential` (comma-separated) |
+| `PORTITOR_DCP_SCOPES` | leave the default, `org.eclipse.dspace.dcp.vc.type:MembershipCredential` (comma-separated). Each must be a DCP scope (`org.eclipse.dspace.dcp.vc.type:<Type>[:access]` or `org.eclipse.dspace.dcp.vc.id:<id>`); the type `VerifiableCredential` is refused, as it would let a partner read every credential. The connector does not start otherwise |
 | `RUST_LOG` | `info` (default); `debug` only while diagnosing |
 
 ### Private CAs
@@ -215,7 +216,7 @@ participant.
 | Port | Path | Who calls it |
 |---|---|---|
 | public | `GET /.well-known/did.json` (or the DID's path) | anyone |
-| public | `POST /sts/token` | your connector only (client id and secret); keep it off the public proxy if you can |
+| public | `POST /sts/token` | your connector only (client id and secret); route it on the internal network only, never through the public proxy |
 | public | `POST <credential service>/presentations/query` | verifiers, with a self-issued ID token and an access token from your STS (DCP 5.4) |
 | public | `POST <credential service>/credentials`, `/offers` | trusted issuers (DCP 6.5, 6.6) |
 | public | `GET /health` | probes |
@@ -227,7 +228,8 @@ and to check partners' credentials:
 | Variable (connector) | Production value |
 |---|---|
 | `PORTITOR_PARTICIPANT_ID` | the identity's DID |
-| `PORTITOR_STS_URL` | **required**: the identity's STS token endpoint, `<identity base URL>/sts/token` |
+| `PORTITOR_STS_URL` | **required**: the identity's STS token endpoint on the internal network, for example `http://identity:8090/sts/token` |
+| `PORTITOR_STS_ALLOW_HTTP` | `true` when `PORTITOR_STS_URL` is plain `http://`: allows plain HTTP for that URL only, nothing else (the connector refuses to start with an `http://` STS URL without it) |
 | `PORTITOR_STS_CLIENT_SECRET_FILE` | **required**: the same secret file as the identity's |
 | `PORTITOR_STS_CLIENT_ID` | leave the default, `PORTITOR_PARTICIPANT_ID` |
 | `PORTITOR_TRUSTED_ISSUERS` | **required**: DIDs trusted to issue `MembershipCredential` |
@@ -237,7 +239,7 @@ and to check partners' credentials:
 
 | Port | Serves | Reached by | Expose |
 |---|---|---|---|
-| 8090 | DID document, credential service (presentation and Storage API), STS | partners and issuers (DID document, credential service); your connector (STS) | through your HTTPS reverse proxy |
+| 8090 | DID document, credential service (presentation and Storage API), STS | partners and issuers (DID document, credential service); your connector (STS) | through your HTTPS reverse proxy, except `/sts/token`: your connector reaches it on the internal network |
 | 8091 | management API | your operators only | **never publicly**: host loopback or an internal network, never the public proxy |
 
 ### Run
@@ -294,9 +296,10 @@ curl -X POST localhost:8091/v1/credential-requests \
 The issuer then sends its `CredentialMessage` with that `holderPid` to
 `<credential service>/credentials`. The component checks the issuer's
 token, that the issuer is trusted and matches the request, and each
-credential's signature, dates, type and subject (your DID). A request
-stays open, so the issuer can deliver again (for example a renewed
-credential). Credentials are stored as received (JWT); `GET
+credential's signature, dates, type and subject (your DID). The issuer's
+answer (`ISSUED` or `REJECTED`) closes the request: a second delivery for
+the same `holderPid` is refused, so a renewed credential needs a new
+request. Credentials are stored as received (JWT); `GET
 /v1/credentials` lists them and `DELETE /v1/credentials/{id}` removes one,
 after which it is no longer presented.
 
@@ -336,9 +339,19 @@ DID, so usually not).
   cannot be fetched or checked the caller is refused). Otherwise it
   answers HTTP 401 with a DSP error that says only "unauthorized"; the
   reason is in the log. Each negotiation and transfer is bound to the DID
-  that started it: another caller is told it does not exist. Only
-  `/.well-known/dspace-version`, `/health` and the data plane are open
-  (the data plane has its own tokens).
+  that started it: another caller is told it does not exist. As
+  consumer, an agreement must name your participant id as `assignee`.
+  Only `/.well-known/dspace-version`, `/health` and the data plane are
+  open (the data plane has its own tokens).
+- **Limits against abuse.** Tokens valid for more than an hour are
+  refused (both components), and at most 100,000 used token ids are
+  remembered; when that is full, new tokens are refused until old ones
+  expire (log reason `too many token ids in use`). The connector checks
+  only credentials from trusted issuers, reads at most 8 presentations of
+  16 credentials with 4 status entries each, and gives up on a caller
+  after 20 s. On the public ports each request gets 60 s and at most 256
+  are worked on at once; the others wait, and a request over time gets
+  HTTP 503 (log `request took too long or waited too long`, WARN).
 - **Trusted issuers.** Whoever controls a DID in
   `PORTITOR_TRUSTED_ISSUERS` can admit any participant. List only your
   dataspace's issuers.

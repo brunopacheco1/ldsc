@@ -16,6 +16,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse as _;
 use portitor_dcp::credential::{VC1_CONTEXT, VC2_CONTEXT};
 use portitor_dcp::{Claims, Relationship, Service, SigningKey, VerificationMethod};
+use portitor_runtime::system::xsd_date_time;
 use serde_json::json;
 
 use super::*;
@@ -97,10 +98,15 @@ struct World {
     documents: BTreeMap<String, Value>,
     /// The Credential Service's answer.
     answer: Value,
-    /// The status list credential (a JWT, or anything for tests).
-    status_list: String,
+    /// How long the Credential Service takes to answer.
+    delay: Duration,
+    /// Status list credentials by name, for example `1` for
+    /// `/status/1` (a JWT, or anything for tests). Others answer 404.
+    status_lists: BTreeMap<String, String>,
     /// The `Authorization` headers the Credential Service got.
     queries: Vec<String>,
+    /// Every DID document and status list asked for, by path.
+    fetched: Vec<String>,
 }
 
 type Shared = Arc<Mutex<World>>;
@@ -109,7 +115,8 @@ async fn did_document(
     State(world): State<Shared>,
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> axum::response::Response {
-    let world = world.lock().unwrap();
+    let mut world = world.lock().unwrap();
+    world.fetched.push(format!("/{name}/did.json"));
     match world.documents.get(&name) {
         Some(doc) => axum::Json(doc.clone()).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
@@ -120,18 +127,30 @@ async fn presentation_query(
     State(world): State<Shared>,
     headers: HeaderMap,
 ) -> axum::response::Response {
-    let mut world = world.lock().unwrap();
-    let auth = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default()
-        .to_owned();
-    world.queries.push(auth);
-    axum::Json(world.answer.clone()).into_response()
+    let (answer, delay) = {
+        let mut world = world.lock().unwrap();
+        let auth = headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
+        world.queries.push(auth);
+        (world.answer.clone(), world.delay)
+    };
+    tokio::time::sleep(delay).await;
+    axum::Json(answer).into_response()
 }
 
-async fn status_list(State(world): State<Shared>) -> String {
-    world.lock().unwrap().status_list.clone()
+async fn status_list(
+    State(world): State<Shared>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> axum::response::Response {
+    let mut world = world.lock().unwrap();
+    world.fetched.push(format!("/status/{name}"));
+    match world.status_lists.get(&name) {
+        Some(list) => list.clone().into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 /// Our STS: signs as `me`.
@@ -168,7 +187,7 @@ async fn dataspace() -> Dataspace {
             "/presentations/query",
             axum::routing::post(presentation_query),
         )
-        .route("/status/1", axum::routing::get(status_list))
+        .route("/status/{name}", axum::routing::get(status_list))
         .with_state(Arc::clone(&world));
     tokio::spawn(async move { axum::serve(listener, app).await });
     let (holder, issuer, third, me) = (
@@ -191,6 +210,7 @@ async fn dataspace() -> Dataspace {
     let settings = AuthSettings {
         participant_id: me.did.clone(),
         sts_url: String::new(),
+        sts_allow_http: false,
         sts_client_id: String::new(),
         sts_client_secret: String::new(),
         trusted_issuers: vec![issuer.did.clone()],
@@ -233,6 +253,62 @@ impl Dataspace {
         )
     }
 
+    /// A VC 2.0 credential JWT (`vc+jwt`) by `issuer`, about `subject`,
+    /// valid from yesterday for a year unless `extra` says otherwise.
+    fn credential20(issuer: &Party, kind: &str, subject: &str, extra: &Value) -> String {
+        let mut vc = json!({
+            "@context": [VC2_CONTEXT],
+            "id": "urn:uuid:c-2",
+            "type": ["VerifiableCredential", kind],
+            "issuer": {"id": issuer.did},
+            "validFrom": xsd_date_time(now_secs() - 86_400),
+            "validUntil": xsd_date_time(now_secs() + 365 * 86_400),
+            "credentialSubject": {"id": subject}
+        });
+        for (key, value) in extra.as_object().into_iter().flatten() {
+            vc[key] = value.clone();
+        }
+        issuer.key.sign_json(&issuer.kid(), "vc+jwt", &vc).unwrap()
+    }
+
+    /// A VC 2.0 presentation JWT (`vp+jwt`) by `holder` for us, with the
+    /// `credentials` enveloped (`EnvelopedVerifiableCredential`).
+    fn presentation20(&self, holder: &Party, credentials: &[String]) -> String {
+        let now = now_secs();
+        let entries: Vec<Value> = credentials
+            .iter()
+            .map(|jwt| {
+                json!({"@context": [VC2_CONTEXT], "type": "EnvelopedVerifiableCredential",
+                    "id": format!("data:application/vc+jwt,{jwt}")})
+            })
+            .collect();
+        holder
+            .key
+            .sign_json(
+                &holder.kid(),
+                "vp+jwt",
+                &json!({"@context": [VC2_CONTEXT], "type": "VerifiablePresentation",
+                    "holder": holder.did, "iss": holder.did, "aud": self.me_did,
+                    "iat": now, "exp": now + 300, "verifiableCredential": entries}),
+            )
+            .unwrap()
+    }
+
+    /// `presentation` in an `EnvelopedVerifiablePresentation` signed by
+    /// `by`, as EDC Identity Hub sends VC 2.0 presentations.
+    fn envelope(&self, by: &Party, presentation: &str) -> String {
+        let now = now_secs();
+        by.key
+            .sign_json(
+                &by.kid(),
+                "vp+jwt",
+                &json!({"@context": [VC2_CONTEXT], "type": "EnvelopedVerifiablePresentation",
+                    "id": format!("data:application/vp+jwt,{presentation}"),
+                    "iss": by.did, "aud": self.me_did, "iat": now, "exp": now + 300}),
+            )
+            .unwrap()
+    }
+
     /// A VC 1.1 presentation JWT by `holder` for us, with `credentials`.
     fn presentation(&self, holder: &Party, credentials: &[String]) -> String {
         let now = now_secs();
@@ -260,27 +336,65 @@ impl Dataspace {
         self.answer(&[self.presentation(&self.holder, &[credential])]);
     }
 
-    /// A status list credential by the issuer, with `revoked` bits set.
+    /// A revocation list by `issuer` at `/status/1`, with the `revoked`
+    /// bits set.
     fn publish_status_list(&self, issuer: &Party, revoked: &[usize]) {
-        let mut bits = vec![0u8; 2048];
-        for &index in revoked {
-            bits[index / 8] |= 1 << (7 - index % 8);
-        }
-        let jwt = issuer.sign(&json!({
+        self.publish_list("1", issuer, "revocation", revoked, &json!({}));
+    }
+
+    /// A Bitstring Status List credential by `issuer` at `/status/<name>`
+    /// for `purpose`, with the `set` bits set and `extra` fields.
+    fn publish_list(
+        &self,
+        name: &str,
+        issuer: &Party,
+        purpose: &str,
+        set: &[usize],
+        extra: &Value,
+    ) {
+        let mut vc = json!({
             "@context": [VC2_CONTEXT],
             "type": ["VerifiableCredential", "BitstringStatusListCredential"],
             "issuer": issuer.did,
             "credentialSubject": {"id": "urn:uuid:list", "type": "BitstringStatusList",
-                "statusPurpose": "revocation",
-                "encodedList": portitor_dcp::status_list::encode_list(&bits)}
-        }));
-        self.world.lock().unwrap().status_list = jwt;
+                "statusPurpose": purpose, "encodedList": encoded_bits(set)}
+        });
+        for (key, value) in extra.as_object().into_iter().flatten() {
+            vc[key] = value.clone();
+        }
+        self.serve_list(name, issuer.sign(&vc));
     }
 
+    /// Serves `content` at `/status/<name>`.
+    fn serve_list(&self, name: &str, content: String) {
+        self.world
+            .lock()
+            .unwrap()
+            .status_lists
+            .insert(name.to_owned(), content);
+    }
+
+    /// A revocation entry at `index` of `/status/1`.
     fn status_entry(&self, index: &str) -> Value {
-        json!({"credentialStatus": {"id": "urn:uuid:s", "type": "BitstringStatusListEntry",
-            "statusPurpose": "revocation", "statusListIndex": index,
-            "statusListCredential": format!("{}/status/1", self.base)}})
+        json!({"credentialStatus": self.entry("1", "BitstringStatusListEntry", "revocation", index)})
+    }
+
+    /// One `credentialStatus` entry of `kind` for `purpose`, pointing to
+    /// `index` of `/status/<list>`.
+    fn entry(&self, list: &str, kind: &str, purpose: &str, index: &str) -> Value {
+        json!({"id": format!("urn:uuid:s-{list}"), "type": kind,
+            "statusPurpose": purpose, "statusListIndex": index,
+            "statusListCredential": format!("{}/status/{list}", self.base)})
+    }
+
+    /// Clears the record of fetched documents and lists.
+    fn forget_fetches(&self) {
+        self.world.lock().unwrap().fetched.clear();
+    }
+
+    /// The documents and lists fetched since [`Dataspace::forget_fetches`].
+    fn fetched(&self) -> Vec<String> {
+        self.world.lock().unwrap().fetched.clone()
     }
 
     /// The caller's `Authorization` header: the holder's token for us.
@@ -298,6 +412,20 @@ impl Dataspace {
     async fn verify(&self, header: &str) -> Result<Caller, String> {
         self.verifier.verify(Some(header)).await
     }
+
+    /// The reason a fresh header of the holder is refused.
+    async fn refusal(&self) -> String {
+        self.verify(&self.header()).await.unwrap_err()
+    }
+}
+
+/// A 2,048-byte bitstring with the `set` bits set, as an `encodedList`.
+fn encoded_bits(set: &[usize]) -> String {
+    let mut bits = vec![0u8; 2048];
+    for &index in set {
+        bits[index / 8] |= 1 << (7 - index % 8);
+    }
+    portitor_dcp::status_list::encode_list(&bits)
 }
 
 #[tokio::test]
@@ -341,55 +469,77 @@ async fn tokens_are_checked() {
     let signed = |by: &Party, claims: Claims| {
         format!("Bearer {}", by.key.sign(&holder.kid(), &claims).unwrap())
     };
+    let mut from_the_future = claims(&holder.did, &holder.did, me, now + 600, Some("a"));
+    from_the_future.iat = now + 300;
+    // each header, and the reason it is refused for
     let refused = [
-        // no Bearer prefix, an empty token, another scheme
-        token.to_owned(),
-        "Bearer ".to_owned(),
-        "Basic abc".to_owned(),
-        // iss and sub differ
-        signed(
-            holder,
-            claims(&holder.did, &ds.third.did, me, now + 300, Some("a")),
-        ),
-        // another audience
-        signed(
-            holder,
-            claims(
-                &holder.did,
-                &holder.did,
-                &ds.third.did,
-                now + 300,
-                Some("a"),
+        (token.to_owned(), "not a Bearer token"),
+        ("Bearer ".to_owned(), "not a Bearer token"),
+        ("Basic abc".to_owned(), "not a Bearer token"),
+        (
+            signed(
+                holder,
+                claims(&holder.did, &ds.third.did, me, now + 300, Some("a")),
             ),
+            "iss and sub differ",
         ),
-        // expired
-        signed(
-            holder,
-            claims(&holder.did, &holder.did, me, now - 3_600, Some("a")),
+        (
+            signed(
+                holder,
+                claims(
+                    &holder.did,
+                    &holder.did,
+                    &ds.third.did,
+                    now + 300,
+                    Some("a"),
+                ),
+            ),
+            "aud is not the verifier",
         ),
-        // valid for too long
-        signed(
-            holder,
-            claims(&holder.did, &holder.did, me, now + 7_200, Some("a")),
+        (
+            signed(
+                holder,
+                claims(&holder.did, &holder.did, me, now - 3_600, Some("a")),
+            ),
+            "expired",
         ),
-        // no access token
-        signed(
-            holder,
-            claims(&holder.did, &holder.did, me, now + 300, None),
+        (
+            signed(
+                holder,
+                claims(&holder.did, &holder.did, me, now + 7_200, Some("a")),
+            ),
+            "valid for too long",
         ),
-        // signed by another key than the issuer's
-        signed(
-            &ds.third,
-            claims(&holder.did, &holder.did, me, now + 300, Some("a")),
+        (signed(holder, from_the_future), "issued in the future"),
+        (
+            signed(
+                holder,
+                claims(&holder.did, &holder.did, me, now + 300, None),
+            ),
+            "no access token",
+        ),
+        (
+            signed(
+                &ds.third,
+                claims(&holder.did, &holder.did, me, now + 300, Some("a")),
+            ),
+            "bad signature",
         ),
     ];
-    assert!(ds.verifier.verify(None).await.is_err());
-    for header in refused {
-        assert!(ds.verify(&header).await.is_err(), "{header}");
+    let err = ds.verifier.verify(None).await.unwrap_err();
+    assert!(err.contains("no Authorization header"), "{err}");
+    for (header, reason) in refused {
+        let err = ds.verify(&header).await.unwrap_err();
+        assert!(err.contains(reason), "{reason}: {err}");
     }
     // a token is good once
     assert!(ds.verify(&header).await.is_ok());
-    assert!(ds.verify(&header).await.unwrap_err().contains("jti"));
+    assert!(
+        ds.verify(&header)
+            .await
+            .unwrap_err()
+            .contains("jti replayed")
+    );
 }
 
 #[tokio::test]
@@ -496,10 +646,12 @@ async fn presentations_and_credentials_are_checked() {
     // a presentation that is not a JWT
     ds.world.lock().unwrap().answer = json!({"@context": ["https://w3id.org/dspace-dcp/v1.0/dcp.jsonld"],
         "type": "PresentationResponseMessage", "presentation": [{"a": 1}]});
-    assert!(ds.verify(&header()).await.is_err());
+    let err = ds.verify(&header()).await.unwrap_err();
+    assert!(err.contains("a presentation is not a JWT"), "{err}");
     // not a presentation response
     ds.world.lock().unwrap().answer = json!({"presentation": []});
-    assert!(ds.verify(&header()).await.is_err());
+    let err = ds.verify(&header()).await.unwrap_err();
+    assert!(err.starts_with("presentation response:"), "{err}");
     // more credentials than asked for are fine
     ds.answer(&[ds.presentation(
         &ds.holder,
@@ -512,22 +664,230 @@ async fn presentations_and_credentials_are_checked() {
 }
 
 #[tokio::test]
-async fn revoked_credentials_and_unsigned_status_lists_are_refused() {
+async fn revoked_credentials_and_bad_status_lists_are_refused() {
     let ds = dataspace().await;
     ds.answer_member(&ds.status_entry("5"));
     ds.publish_status_list(&ds.issuer, &[3]);
     assert!(ds.verify(&ds.header()).await.is_ok(), "bit 5 is clear");
     ds.publish_status_list(&ds.issuer, &[5]);
-    let err = ds.verify(&ds.header()).await.unwrap_err();
-    assert!(err.contains("revoked"), "{err}");
-    // a list by another issuer, an unsigned list, a list too short
-    ds.publish_status_list(&ds.third, &[]);
-    assert!(ds.verify(&ds.header()).await.is_err());
-    ds.world.lock().unwrap().status_list = json!({"credentialSubject": {}}).to_string();
-    assert!(ds.verify(&ds.header()).await.is_err());
+    let err = ds.refusal().await;
+    assert!(err.contains("revoked or suspended (revocation)"), "{err}");
+
+    // each list, and the reason it is refused for
+    let unsigned = json!({"credentialSubject": {}}).to_string();
+    let too_large = "a".repeat(MAX_STATUS_LIST + 1);
+    for (list, reason) in [
+        (None, "has another issuer"),
+        (Some(unsigned), "malformed token"),
+        (Some(too_large), "answer not read"),
+    ] {
+        match list {
+            None => ds.publish_status_list(&ds.third, &[]),
+            Some(text) => ds.serve_list("1", text),
+        }
+        let err = ds.refusal().await;
+        assert!(err.contains(reason), "{reason}: {err}");
+    }
+    // an expired list, signed by the issuer
+    ds.publish_list(
+        "1",
+        &ds.issuer,
+        "revocation",
+        &[],
+        &json!({"validUntil": "2026-01-01T00:00:00Z"}),
+    );
+    let err = ds.refusal().await;
+    assert!(
+        err.contains("status list") && err.contains("expired"),
+        "{err}"
+    );
+    // no list at the URL
+    ds.world.lock().unwrap().status_lists.clear();
+    let err = ds.refusal().await;
+    assert!(err.contains("HTTP 404"), "{err}");
+    // an index past the end of the list
     ds.answer_member(&ds.status_entry("999999"));
     ds.publish_status_list(&ds.issuer, &[]);
-    assert!(ds.verify(&ds.header()).await.is_err());
+    let err = ds.refusal().await;
+    assert!(err.contains("out of range"), "{err}");
+}
+
+#[tokio::test]
+async fn revocation_and_suspension_lists_are_both_checked() {
+    let ds = dataspace().await;
+    let entries = json!({"credentialStatus": [
+        ds.entry("1", "BitstringStatusListEntry", "revocation", "5"),
+        ds.entry("2", "BitstringStatusListEntry", "suspension", "7"),
+    ]});
+    ds.answer_member(&entries);
+    ds.publish_status_list(&ds.issuer, &[]);
+    ds.publish_list("2", &ds.issuer, "suspension", &[], &json!({}));
+    assert!(ds.verify(&ds.header()).await.is_ok());
+    ds.publish_list("2", &ds.issuer, "suspension", &[7], &json!({}));
+    let err = ds.refusal().await;
+    assert!(err.contains("revoked or suspended (suspension)"), "{err}");
+}
+
+#[tokio::test]
+async fn a_vc11_status_list_2021_is_read() {
+    let ds = dataspace().await;
+    ds.answer_member(&json!({"credentialStatus":
+        ds.entry("1", "StatusList2021Entry", "revocation", "5")}));
+    let now = now_secs();
+    // VC 1.1 shape: the credential in the `vc` claim, the list in standard
+    // base64 without the multibase prefix
+    let list = |set: &[usize]| {
+        let multibase = encoded_bits(set);
+        let raw = base64::Engine::decode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            &multibase[1..],
+        )
+        .unwrap();
+        let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, raw);
+        ds.issuer.sign(&json!({"iss": ds.issuer.did, "sub": "urn:uuid:list",
+            "nbf": now - 10, "exp": now + 300, "vc": {
+                "@context": [VC1_CONTEXT], "type": ["VerifiableCredential", "StatusList2021Credential"],
+                "issuer": ds.issuer.did, "issuanceDate": "2026-01-01T00:00:00Z",
+                "credentialSubject": {"id": "urn:uuid:list", "type": "StatusList2021",
+                    "statusPurpose": "revocation", "encodedList": encoded}}}))
+    };
+    ds.serve_list("1", list(&[4]));
+    assert!(ds.verify(&ds.header()).await.is_ok(), "bit 5 is clear");
+    ds.serve_list("1", list(&[5]));
+    let err = ds.refusal().await;
+    assert!(err.contains("revoked or suspended (revocation)"), "{err}");
+}
+
+#[tokio::test]
+async fn vc20_and_enveloped_presentations_are_checked() {
+    let ds = dataspace().await;
+    let holder = ds.holder.did.as_str();
+    let member20 = |extra: &Value| Dataspace::credential20(&ds.issuer, MEMBERSHIP, holder, extra);
+    let revocable = ds.entry("1", "BitstringStatusListEntry", "revocation", "5");
+    let suspendable = ds.entry("2", "BitstringStatusListEntry", "suspension", "5");
+    ds.publish_status_list(&ds.issuer, &[5]);
+    ds.publish_list("2", &ds.issuer, "suspension", &[5], &json!({}));
+    // the same checks for a plain VC 2.0 presentation and an enveloped one
+    let wrap = |enveloped: bool, presentation: String| {
+        if enveloped {
+            ds.envelope(&ds.holder, &presentation)
+        } else {
+            presentation
+        }
+    };
+    for enveloped in [false, true] {
+        let present = |credential: String| {
+            ds.answer(&[wrap(
+                enveloped,
+                ds.presentation20(&ds.holder, &[credential]),
+            )]);
+        };
+        present(member20(&json!({})));
+        let caller = ds.verify(&ds.header()).await;
+        assert_eq!(
+            caller,
+            Ok(Caller(holder.to_owned())),
+            "enveloped: {enveloped}"
+        );
+
+        let past = xsd_date_time(now_secs() - 3_600);
+        let future = xsd_date_time(now_secs() + 3_600);
+        for (credential, reason) in [
+            (
+                member20(&json!({"credentialStatus": revocable})),
+                "revoked or suspended (revocation)",
+            ),
+            (
+                member20(&json!({"credentialStatus": suspendable})),
+                "revoked or suspended (suspension)",
+            ),
+            (member20(&json!({"validUntil": past})), "expired"),
+            (member20(&json!({"validFrom": future})), "not yet valid"),
+            (
+                Dataspace::credential20(&ds.third, MEMBERSHIP, holder, &json!({})),
+                "no MembershipCredential from a trusted issuer",
+            ),
+        ] {
+            present(credential);
+            let err = ds.refusal().await;
+            assert!(
+                err.contains(reason),
+                "enveloped {enveloped}, {reason}: {err}"
+            );
+        }
+    }
+    // the inner presentation by a third party, the envelope by the holder
+    let inner = ds.presentation20(&ds.third, &[member20(&json!({}))]);
+    ds.answer(&[ds.envelope(&ds.holder, &inner)]);
+    let err = ds.refusal().await;
+    assert!(err.contains("holder is not the caller"), "{err}");
+}
+
+#[tokio::test]
+async fn nothing_is_fetched_for_an_untrusted_issuer() {
+    let ds = dataspace().await;
+    let holder = ds.holder.did.as_str();
+    let mut entry = ds.status_entry("5");
+    entry["credentialStatus"]["statusListCredential"] = json!(format!("{}/status/9", ds.base));
+    let untrusted = Dataspace::credential(&ds.third, MEMBERSHIP, holder, &entry);
+    let trusted = Dataspace::credential(&ds.issuer, MEMBERSHIP, holder, &json!({}));
+    ds.answer(&[ds.presentation(&ds.holder, &[untrusted, trusted])]);
+    ds.forget_fetches();
+    assert!(
+        ds.verify(&ds.header()).await.is_ok(),
+        "the trusted one counts"
+    );
+    let fetched = ds.fetched();
+    assert!(
+        !fetched.contains(&"/third/did.json".to_owned()),
+        "{fetched:?}"
+    );
+    assert!(!fetched.contains(&"/status/9".to_owned()), "{fetched:?}");
+    assert!(
+        fetched.contains(&"/issuer/did.json".to_owned()),
+        "{fetched:?}"
+    );
+}
+
+#[tokio::test]
+async fn answers_are_bounded() {
+    let ds = dataspace().await;
+    let holder = ds.holder.did.as_str();
+    let member = Dataspace::credential(&ds.issuer, MEMBERSHIP, holder, &json!({}));
+    let one = ds.presentation(&ds.holder, std::slice::from_ref(&member));
+
+    ds.answer(&vec![one.clone(); MAX_PRESENTATIONS]);
+    assert!(ds.verify(&ds.header()).await.is_ok(), "at the limit");
+    ds.answer(&vec![one; MAX_PRESENTATIONS + 1]);
+    let err = ds.refusal().await;
+    assert!(err.contains("more than 8 presentations"), "{err}");
+
+    ds.answer(&[ds.presentation(&ds.holder, &vec![member.clone(); MAX_CREDENTIALS])]);
+    assert!(ds.verify(&ds.header()).await.is_ok(), "at the limit");
+    ds.answer(&[ds.presentation(&ds.holder, &vec![member; MAX_CREDENTIALS + 1])]);
+    let err = ds.refusal().await;
+    assert!(err.contains("more than 16 credentials"), "{err}");
+
+    ds.publish_status_list(&ds.issuer, &[]);
+    let entries = |count: usize| {
+        let entry = ds.entry("1", "BitstringStatusListEntry", "revocation", "5");
+        json!({"credentialStatus": vec![entry; count]})
+    };
+    ds.answer_member(&entries(MAX_STATUS_ENTRIES));
+    assert!(ds.verify(&ds.header()).await.is_ok(), "at the limit");
+    ds.answer_member(&entries(MAX_STATUS_ENTRIES + 1));
+    let err = ds.refusal().await;
+    assert!(err.contains("more than 4 status entries"), "{err}");
+}
+
+#[tokio::test]
+async fn a_slow_check_is_cut_off() {
+    let mut ds = dataspace().await;
+    ds.answer_member(&json!({}));
+    ds.verifier.deadline = Duration::from_millis(200);
+    ds.world.lock().unwrap().delay = Duration::from_secs(2);
+    let err = ds.refusal().await;
+    assert!(err.contains("took longer than 0.2 s"), "{err}");
 }
 
 #[tokio::test]
@@ -537,6 +897,7 @@ async fn our_identity_must_match_the_sts() {
     let settings = AuthSettings {
         participant_id: ds.me_did.clone(),
         sts_url: String::new(),
+        sts_allow_http: false,
         sts_client_id: String::new(),
         sts_client_secret: String::new(),
         trusted_issuers: Vec::new(),

@@ -6,6 +6,7 @@
 //! "Contract Negotiation HTTPS Binding", consumer callback paths). A fake
 //! provider records what the consumer sends; every message it sends and
 //! every answer it gives is checked against the official DSP JSON Schemas.
+//! Who may use the transfer callbacks is checked here too.
 #![allow(clippy::unwrap_used, missing_docs)]
 
 use std::sync::{Arc, Mutex};
@@ -23,7 +24,9 @@ use tokio::sync::Notify;
 use tower::ServiceExt as _;
 
 mod common;
-use common::{CONSUMER, PROVIDER as PROVIDER_DID, authenticating, bearer, from};
+use common::{
+    Audiences, CONSUMER, PROVIDER as PROVIDER_DID, authenticating, bearer, from, recording,
+};
 
 const PROVIDER: &str = "https://provider.example/dsp/2025-1";
 const CALLBACK: &str = "/dsp/2025-1/callback/negotiations";
@@ -198,11 +201,13 @@ struct Connector {
     app: Router,
     negotiator: Negotiator,
     provider: Arc<FakeProvider>,
+    /// The audience of each token sent.
+    audiences: Audiences,
 }
 
 fn connector() -> Connector {
     let provider = Arc::new(FakeProvider::default());
-    let mut ports = authenticating(
+    let (mut ports, audiences) = recording(
         Ports::new(Arc::clone(&provider) as Arc<dyn Sender>),
         CONSUMER,
     );
@@ -224,6 +229,7 @@ fn connector() -> Connector {
         app,
         negotiator,
         provider,
+        audiences,
     }
 }
 
@@ -236,14 +242,22 @@ fn offer(dataset: &str) -> Offer {
 }
 
 async fn call(app: &Router, req: Request<Body>) -> (StatusCode, Value) {
-    let res = app.clone().oneshot(req).await.unwrap();
-    let status = res.status();
-    let bytes = to_bytes(res.into_body(), 1 << 20).await.unwrap();
-    let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    let (status, body) = call_unchecked(app, req).await;
     if body.get("@type").is_some() {
         assert_valid(&body);
     }
     (status, body)
+}
+
+/// Like [`call`], without the negotiation schema check (for transfers).
+async fn call_unchecked(app: &Router, req: Request<Body>) -> (StatusCode, Value) {
+    let res = app.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let bytes = to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
 }
 
 fn post(uri: &str, body: &Value) -> Request<Body> {
@@ -386,6 +400,8 @@ async fn request_offer_accept_agree_verify_finalize() {
     assert_eq!(finalized["state"], "FINALIZED");
     assert_eq!(state(&c.app, &cpid).await, "FINALIZED");
     assert_eq!(c.provider.count(), 3);
+    // each message went with a token for the provider
+    assert_eq!(*c.audiences.lock().unwrap(), [PROVIDER_DID; 3]);
 }
 
 /// A provider message that arrives while our message is still on its way
@@ -622,26 +638,112 @@ async fn invalid_messages_are_refused() {
 }
 
 /// Only the provider the negotiation was started with may send to its
-/// callback; anyone else is told it does not exist.
+/// callback; anyone else is told it does not exist, for every callback,
+/// and nothing changes.
 #[tokio::test]
 async fn other_participants_cannot_use_the_callback() {
     let c = connector();
     let cpid = started(&c, "d1").await;
-    let uri = format!("{CALLBACK}/{cpid}/offers");
-    let body = Body::from(offer_msg(&cpid, "d1").to_string());
-    let stranger = from(Request::post(&uri), "did:web:stranger.example")
-        .header("content-type", "application/json")
-        .body(body)
-        .unwrap();
-    let (s, err) = call(&c.app, stranger).await;
-    assert_eq!(s, StatusCode::NOT_FOUND, "{err}");
+    let stranger = "did:web:stranger.example";
+    let (s, err) = call(
+        &c.app,
+        from(Request::get(format!("{CALLBACK}/{cpid}")), stranger)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "GET: {err}");
+    for (path, body) in [
+        ("offers", offer_msg(&cpid, "d1")),
+        ("agreement", agreement_msg(&cpid, "d1")),
+        ("events", event_msg(&cpid, "FINALIZED")),
+        ("termination", termination_msg(&cpid)),
+    ] {
+        let request = from(Request::post(format!("{CALLBACK}/{cpid}/{path}")), stranger)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let (s, err) = call(&c.app, request).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{path}: {err}");
+        assert_eq!(err["@type"], "ContractNegotiationError", "{path}");
+        assert_eq!(state(&c.app, &cpid).await, "REQUESTED", "{path}");
+    }
+    assert_eq!(c.provider.count(), 1, "nothing sent because of them");
     let anonymous = Request::get(format!("{CALLBACK}/{cpid}"))
         .body(Body::empty())
         .unwrap();
     let (s, err) = call(&c.app, anonymous).await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
     assert_eq!(err["code"], "401");
-    assert_eq!(state(&c.app, &cpid).await, "REQUESTED");
+}
+
+/// The same for the transfer callbacks: only the transfer's provider may
+/// use them.
+#[tokio::test]
+async fn other_participants_cannot_use_the_transfer_callback() {
+    use portitor_dsp::transfer::TransferState;
+    use portitor_dsp::transfer::consumer::{ConsumerTransfer, ConsumerTransferStore as _};
+    let provider = Arc::new(FakeProvider::default());
+    let ports = authenticating(
+        Ports::new(Arc::clone(&provider) as Arc<dyn Sender>),
+        CONSUMER,
+    );
+    let transfer = ConsumerTransfer {
+        consumer_pid: "urn:uuid:ct-1".to_owned(),
+        provider_pid: Some("urn:uuid:pt-1".to_owned()),
+        state: TransferState::Requested,
+        provider_address: PROVIDER.to_owned(),
+        provider_id: PROVIDER_DID.to_owned(),
+        agreement_id: "urn:uuid:agreement-1".to_owned(),
+        format: "HttpData-PULL".to_owned(),
+        data_address: None,
+        pending: None,
+        version: 0,
+    };
+    ports.consumer_transfers.store.insert(&transfer).unwrap();
+    let store = ports.consumer_transfers.store.clone();
+    let config = Config {
+        participant_id: CONSUMER.into(),
+        public_url: "https://consumer.example/".into(),
+        datasets: Vec::new(),
+        allow_http_callbacks: false,
+        db_file: "unused.db".into(),
+        sources: std::collections::BTreeMap::new(),
+        data_token_seconds: 3_600,
+    };
+    let (app, _) = portitor_connector::build(&config, ports).unwrap();
+    let base = "/dsp/2025-1/callback/transfers/urn:uuid:ct-1";
+    let stranger = "did:web:stranger.example";
+    let (s, _) = call_unchecked(
+        &app,
+        from(Request::get(base), stranger)
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "GET");
+    for (path, kind) in [
+        ("start", "TransferStartMessage"),
+        ("suspension", "TransferSuspensionMessage"),
+        ("completion", "TransferCompletionMessage"),
+        ("termination", "TransferTerminationMessage"),
+    ] {
+        let body = json!({"@context": ctx(), "@type": kind,
+            "providerPid": "urn:uuid:pt-1", "consumerPid": "urn:uuid:ct-1"});
+        let request = from(Request::post(format!("{base}/{path}")), stranger)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let (s, err) = call_unchecked(&app, request).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{path}: {err}");
+        assert_eq!(err["@type"], "TransferError", "{path}");
+        assert_eq!(
+            store.get("urn:uuid:ct-1").unwrap(),
+            Some(transfer.clone()),
+            "{path}"
+        );
+    }
+    assert_eq!(provider.count(), 0);
 }
 
 /// The provider ends the negotiation (TCK `CN_C:02-01`).
@@ -689,6 +791,8 @@ async fn unreachable_provider_ends_the_negotiation() {
                 2,
                 "no termination: the provider never knew"
             );
+            // a fresh token for each attempt, each for the provider
+            assert_eq!(*c.audiences.lock().unwrap(), [PROVIDER_DID, PROVIDER_DID]);
             return;
         }
         tokio::time::sleep(Duration::from_millis(2)).await;

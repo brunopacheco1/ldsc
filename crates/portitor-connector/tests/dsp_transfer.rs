@@ -26,7 +26,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt as _;
 
 mod common;
-use common::{CONSUMER, PROVIDER, authenticating, from};
+use common::{Audiences, CONSUMER, PROVIDER, authenticating, from, recording};
 
 const BASE: &str = "/dsp/2025-1/transfers";
 const CALLBACK: &str = "https://consumer.example/cb";
@@ -141,7 +141,12 @@ fn config() -> Config {
 }
 
 fn ports(sender: &Arc<FakeSender>, flows: &Arc<FakeFlows>) -> Ports {
-    let mut p = authenticating(Ports::new(Arc::clone(sender) as Arc<dyn Sender>), PROVIDER);
+    recorded_ports(sender, flows).0
+}
+
+/// Like [`ports`], and the audience of each token the provider sends.
+fn recorded_ports(sender: &Arc<FakeSender>, flows: &Arc<FakeFlows>) -> (Ports, Audiences) {
+    let (mut p, audiences) = recording(Ports::new(Arc::clone(sender) as Arc<dyn Sender>), PROVIDER);
     p.retry = Retry {
         attempts: 2,
         first_delay: Duration::from_millis(1),
@@ -151,7 +156,15 @@ fn ports(sender: &Arc<FakeSender>, flows: &Arc<FakeFlows>) -> Ports {
     // without a flow store the built-in data plane does not start, so it
     // does not replace the fake one
     p.flow_store = None;
-    p
+    (p, audiences)
+}
+
+/// A POST of `body` to `uri` by the participant `did`.
+fn post_as(uri: &str, body: &Value, did: &str) -> Request<Body> {
+    from(Request::post(uri), did)
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
 }
 
 async fn call(app: &Router, req: Request<Body>) -> (StatusCode, Value) {
@@ -231,7 +244,8 @@ async fn request_starts_and_the_consumer_suspends_restarts_and_completes() {
         Arc::new(FakeSender::default()),
         Arc::new(FakeFlows::default()),
     );
-    let app = portitor_connector::router(&config(), ports(&sender, &flows)).unwrap();
+    let (ports, audiences) = recorded_ports(&sender, &flows);
+    let app = portitor_connector::router(&config(), ports).unwrap();
 
     let (status, ack) = call(&app, post(&format!("{BASE}/request"), &request("a1"))).await;
     assert_eq!(status, StatusCode::CREATED, "{ack}");
@@ -251,6 +265,11 @@ async fn request_starts_and_the_consumer_suspends_restarts_and_completes() {
         "https://provider.example/data"
     );
     wait_for(&app, &pid, "STARTED").await;
+    assert_eq!(
+        *audiences.lock().unwrap(),
+        [CONSUMER],
+        "the start went with a token for the consumer"
+    );
 
     let suspend = message("TransferSuspensionMessage", &pid);
     let (status, ack) = call(&app, post(&format!("{BASE}/{pid}/suspension"), &suspend)).await;
@@ -503,4 +522,33 @@ async fn a_dataset_without_a_source_cannot_be_transferred() {
         "{error}"
     );
     assert!(sender.sent().is_empty());
+}
+
+/// A stranger's messages about someone else's transfer are answered 404
+/// and change nothing, not even the data flow.
+#[tokio::test]
+async fn a_stranger_cannot_change_a_transfer() {
+    let (sender, flows) = (
+        Arc::new(FakeSender::default()),
+        Arc::new(FakeFlows::default()),
+    );
+    let app = portitor_connector::router(&config(), ports(&sender, &flows)).unwrap();
+    let (status, ack) = call(&app, post(&format!("{BASE}/request"), &request("a1"))).await;
+    assert_eq!(status, StatusCode::CREATED, "{ack}");
+    let pid = ack["providerPid"].as_str().unwrap().to_owned();
+    wait_for(&app, &pid, "STARTED").await;
+    for (path, kind) in [
+        ("start", "TransferStartMessage"),
+        ("suspension", "TransferSuspensionMessage"),
+        ("completion", "TransferCompletionMessage"),
+        ("termination", "TransferTerminationMessage"),
+    ] {
+        let uri = format!("{BASE}/{pid}/{path}");
+        let request = post_as(&uri, &message(kind, &pid), "did:web:stranger.example");
+        let (status, error) = call(&app, request).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {error}");
+        assert_eq!(error["@type"], "TransferError", "{path}");
+        assert_eq!(state(&app, &pid).await, "STARTED", "{path}");
+    }
+    assert_eq!(flows.calls(), ["start CAT0101"]);
 }

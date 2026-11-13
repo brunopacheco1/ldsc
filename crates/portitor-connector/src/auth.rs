@@ -28,6 +28,7 @@ use axum::extract::{Request, State};
 use axum::http::{StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
+use portitor_dcp::scope::Scope;
 use portitor_dsp::CatalogError;
 use portitor_dsp::negotiation::ContractNegotiationError;
 use portitor_dsp::transfer::TransferError;
@@ -150,6 +151,10 @@ pub struct AuthSettings {
     pub participant_id: String,
     /// Our STS token endpoint (`PORTITOR_STS_URL`).
     pub sts_url: String,
+    /// Allow a plain-HTTP `sts_url`, and only that URL
+    /// (`PORTITOR_STS_ALLOW_HTTP`): the STS on an internal network, next
+    /// to the connector.
+    pub sts_allow_http: bool,
     /// Our STS client id (`PORTITOR_STS_CLIENT_ID`, default the
     /// participant id).
     pub sts_client_id: String,
@@ -172,6 +177,7 @@ impl std::fmt::Debug for AuthSettings {
         f.debug_struct("AuthSettings")
             .field("participant_id", &self.participant_id)
             .field("sts_url", &self.sts_url)
+            .field("sts_allow_http", &self.sts_allow_http)
             .field("sts_client_id", &self.sts_client_id)
             .field("trusted_issuers", &self.trusted_issuers)
             .field("scopes", &self.scopes)
@@ -197,8 +203,10 @@ impl AuthSettings {
     ///
     /// # Errors
     ///
-    /// The secret file cannot be read or is empty, no trusted issuer is
-    /// set, or a scope is empty.
+    /// The STS URL is plain HTTP without `PORTITOR_STS_ALLOW_HTTP`, the
+    /// secret file cannot be read or is empty, no trusted issuer is set,
+    /// or a scope is empty, not a DCP scope, or asks for every credential
+    /// (type `VerifiableCredential`).
     pub fn from_vars(
         participant_id: &str,
         allow_http: bool,
@@ -208,6 +216,16 @@ impl AuthSettings {
         let Some(sts_url) = text("PORTITOR_STS_URL").filter(|url| !url.is_empty()) else {
             return Ok(None);
         };
+        let sts_allow_http =
+            text("PORTITOR_STS_ALLOW_HTTP").is_some_and(|v| v.eq_ignore_ascii_case("true"));
+        let plain_http = sts_url
+            .get(..7)
+            .is_some_and(|scheme| scheme.eq_ignore_ascii_case("http://"));
+        if plain_http && !sts_allow_http && !allow_http {
+            return Err(format!(
+                "PORTITOR_STS_URL {sts_url} is plain HTTP: set PORTITOR_STS_ALLOW_HTTP=true if the STS is on an internal network"
+            ));
+        }
         let secret_file = text("PORTITOR_STS_CLIENT_SECRET_FILE")
             .ok_or("PORTITOR_STS_CLIENT_SECRET_FILE is required with PORTITOR_STS_URL")?;
         let sts_client_secret = std::fs::read_to_string(&secret_file)
@@ -228,9 +246,15 @@ impl AuthSettings {
         if scopes.is_empty() {
             return Err("PORTITOR_DCP_SCOPES is set but empty".to_owned());
         }
+        for scope in &scopes {
+            // the DCP aliases only: they are what other Credential Services
+            // must understand
+            Scope::parse(scope, &[]).map_err(|e| format!("PORTITOR_DCP_SCOPES: {e}"))?;
+        }
         Ok(Some(Self {
             participant_id: participant_id.to_owned(),
             sts_url,
+            sts_allow_http,
             sts_client_id: text("PORTITOR_STS_CLIENT_ID")
                 .filter(|id| !id.is_empty())
                 .unwrap_or_else(|| participant_id.to_owned()),
@@ -327,12 +351,16 @@ mod tests {
                 ("PORTITOR_STS_CLIENT_ID", "client"),
                 ("PORTITOR_STS_CLIENT_SECRET_FILE", &secret),
                 ("PORTITOR_TRUSTED_ISSUERS", "did:web:a"),
-                ("PORTITOR_DCP_SCOPES", "x:A,y:B"),
+                (
+                    "PORTITOR_DCP_SCOPES",
+                    "org.eclipse.dspace.dcp.vc.type:A,org.eclipse.dspace.dcp.vc.id:B",
+                ),
             ]),
         )
         .unwrap()
         .unwrap();
         assert_eq!((s.sts_client_id.as_str(), s.scopes.len()), ("client", 2));
+        assert!(!s.sts_allow_http);
         for missing in [
             vec![
                 ("PORTITOR_STS_URL", "u"),
@@ -359,6 +387,76 @@ mod tests {
                 "{missing:?}"
             );
         }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A secret file in a fresh directory; the directory is removed by
+    /// the caller.
+    fn secret_file(name: &str) -> (std::path::PathBuf, String) {
+        let dir = std::env::temp_dir().join(format!("portitor-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let secret = dir.join("secret");
+        std::fs::write(&secret, "s3cret\n").unwrap();
+        let path = secret.to_string_lossy().into_owned();
+        (dir, path)
+    }
+
+    #[test]
+    fn a_plain_http_sts_needs_its_flag() {
+        let (dir, secret) = secret_file("sts-http");
+        let me = "did:web:me.example";
+        let internal = [
+            ("PORTITOR_STS_URL", "http://identity:8090/sts/token"),
+            ("PORTITOR_STS_CLIENT_SECRET_FILE", secret.as_str()),
+            ("PORTITOR_TRUSTED_ISSUERS", "did:web:a"),
+        ];
+        let err = AuthSettings::from_vars(me, false, vars(&internal)).unwrap_err();
+        assert!(err.contains("PORTITOR_STS_ALLOW_HTTP"), "{err}");
+        let mut allowed = internal.to_vec();
+        allowed.push(("PORTITOR_STS_ALLOW_HTTP", "true"));
+        let s = AuthSettings::from_vars(me, false, vars(&allowed))
+            .unwrap()
+            .unwrap();
+        assert!(s.sts_allow_http && !s.allow_http);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn scopes_are_checked_at_start() {
+        let (dir, secret) = secret_file("scopes");
+        let me = "did:web:me.example";
+        let base = [
+            ("PORTITOR_STS_URL", "https://me.example/sts/token"),
+            ("PORTITOR_STS_CLIENT_SECRET_FILE", secret.as_str()),
+            ("PORTITOR_TRUSTED_ISSUERS", "did:web:a"),
+        ];
+        for (scopes, reason) in [
+            ("no-colon", "not of the form alias:discriminator"),
+            (
+                "org.eclipse.dspace.dcp.vc.type:",
+                "not of the form alias:discriminator",
+            ),
+            ("com.example:MembershipCredential", "is not supported"),
+            (
+                "org.eclipse.dspace.dcp.vc.type:VerifiableCredential",
+                "too broad",
+            ),
+        ] {
+            let mut with = base.to_vec();
+            with.push(("PORTITOR_DCP_SCOPES", scopes));
+            let err = AuthSettings::from_vars(me, false, vars(&with)).unwrap_err();
+            assert!(
+                err.starts_with("PORTITOR_DCP_SCOPES") && err.contains(reason),
+                "{scopes}: {err}"
+            );
+        }
+        // EDC's scope, with its access part
+        let mut edc = base.to_vec();
+        edc.push((
+            "PORTITOR_DCP_SCOPES",
+            "org.eclipse.dspace.dcp.vc.type:MembershipCredential:read",
+        ));
+        assert!(AuthSettings::from_vars(me, false, vars(&edc)).is_ok());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

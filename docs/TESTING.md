@@ -176,10 +176,13 @@ PORTITOR_STS_CLIENT_SECRET_FILE=/tmp/id-sts.secret PORTITOR_MANAGEMENT_API_KEY_F
 PORTITOR_TRUSTED_ISSUERS='did:web:127.0.0.1%3A8083:issuer' PORTITOR_ALLOW_HTTP_CALLBACKS=true \
 PORTITOR_DB_FILE=/tmp/portitor-identity-tck.db target/debug/portitor-identity &
 
-# 3. Record the request the test credentials answer
-curl -X POST localhost:8091/v1/credential-requests -H "Authorization: Bearer $(cat /tmp/id-api.key)" \
-  -H 'Content-Type: application/json' \
-  -d '{"issuerDid": "did:web:127.0.0.1%3A8083:issuer", "holderPid": "portitor-dcp-tck"}'
+# 3. Record the requests the test credentials answer: one per correlation id
+#    in the properties file, as a delivery closes its request
+for pid in $(sed -n 's/^dataspacetck\.credentials\.correlation\.id[^=]*=//p' tck/dcp-tck.properties); do
+  curl -sf -X POST localhost:8091/v1/credential-requests -H "Authorization: Bearer $(cat /tmp/id-api.key)" \
+    -H 'Content-Type: application/json' \
+    -d "{\"issuerDid\": \"did:web:127.0.0.1%3A8083:issuer\", \"holderPid\": \"$pid\"}"
+done
 
 # 4. Run it and check that all 54 tests passed
 DATASPACETCK_STS_CLIENT_SECRET=$(cat /tmp/id-sts.secret) \
@@ -296,7 +299,7 @@ cargo +nightly fuzz run dsp_negotiation -- -max_total_time=60
 
 Targets (`fuzz/fuzz_targets`): `dsp_messages`, `dsp_negotiation`, `dsp_transfer`,
 `odrl_policy`, `dcp_token_parse`, `dcp_token_validate`, `dcp_messages`,
-`dcp_status_list`, `dcp_credentials`, `dcp_access_token`. A new parser of untrusted input
+`dcp_status_list`, `dcp_credentials`, `dcp_access_token`, `dcp_did_document`. A new parser of untrusted input
 gets a target. In CI, ClusterFuzzLite fuzzes every pull request briefly
 (`cflite_pr.yml`) and runs longer each week (`cflite_batch.yml`). A crash
 is a bug: add the input that caused it as a regression test.

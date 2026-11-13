@@ -125,12 +125,15 @@ jobs:
           PORTITOR_DB_FILE="$RUNNER_TEMP/identity/identity.db" \
             nohup target/debug/portitor-identity > identity.log 2>&1 &
           for _ in $(seq 50); do curl -sf http://127.0.0.1:8090/health && break; sleep 0.2; done
-          # the request the TCK's test credentials answer
-          # (dataspacetck.credentials.correlation.id in tck/dcp-tck.properties)
-          curl -sf -X POST http://127.0.0.1:8091/v1/credential-requests \
-            -H "Authorization: Bearer $(cat "$RUNNER_TEMP/identity/api.key")" \
-            -H 'Content-Type: application/json' \
-            -d '{"issuerDid": "did:web:127.0.0.1%3A8083:issuer", "holderPid": "portitor-dcp-tck"}'
+          # the requests the TCK's test credentials answer, one per
+          # correlation id in tck/dcp-tck.properties (a delivery closes its
+          # request)
+          for pid in $(sed -n 's/^dataspacetck\.credentials\.correlation\.id[^=]*=//p' tck/dcp-tck.properties); do
+            curl -sf -X POST http://127.0.0.1:8091/v1/credential-requests \
+              -H "Authorization: Bearer $(cat "$RUNNER_TEMP/identity/api.key")" \
+              -H 'Content-Type: application/json' \
+              -d "{\"issuerDid\": \"did:web:127.0.0.1%3A8083:issuer\", \"holderPid\": \"$pid\"}"
+          done
       - name: Run TCK
         run: |
           DATASPACETCK_STS_CLIENT_SECRET="$(cat "$RUNNER_TEMP/identity/sts.secret")" \

@@ -8,7 +8,9 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use portitor_connector::auth::{AuthSettings, CallerVerifier, Prover, dcp_adapters};
-use portitor_runtime::serve::{bind_management, init_logging, serve};
+use portitor_runtime::serve::{
+    MAX_CONCURRENT_REQUESTS, REQUEST_TIMEOUT, bind_management, init_logging, serve, with_limits,
+};
 
 /// The verifier and the prover (ADR 0016).
 type AuthAdapters = (Arc<dyn CallerVerifier>, Arc<dyn Prover>);
@@ -69,6 +71,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         db = %config.db_file.display(),
         "portitor-connector listening"
     );
+    // the public routes: anyone can call them
+    let app = with_limits(app, REQUEST_TIMEOUT, MAX_CONCURRENT_REQUESTS);
     serve((listener, app), management).await?;
     Ok(())
 }
