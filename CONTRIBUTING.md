@@ -47,6 +47,11 @@ The build enforces the style, so a pull request that breaks it fails:
 - **Hexagonal architecture** ([ADR 0004](docs/adr/0004-hexagonal-architecture.md)):
   domain crates have no I/O dependencies; CI checks it.
 - **SonarCloud** reviews every pull request; its quality gate must pass.
+- **Plain code.** Write for a maintainer who reads Rust now and then:
+  full names rather than one letter, a `match` or a loop rather than a
+  long chain of closures, and a comment where a pattern hides what the
+  code does. [docs/RUST-IDIOMS.md](docs/RUST-IDIOMS.md) explains the
+  patterns the code uses.
 
 ## Pull requests
 

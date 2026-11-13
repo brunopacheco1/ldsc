@@ -150,6 +150,7 @@ all checks green, Scorecard published.
   comments where an idiom hides the intent, and a short guide to the Rust
   idioms the code uses (closures `|x| ...`, the `?` operator, `match`,
   `Option` and `Result`). Findings are fixed or recorded before tagging.
+  Done: `docs/RUST-IDIOMS.md`, and the review's fixes (2026-11-13).
 - Exit: DSP TCK transfer tests green; end-to-end file transfer between two
   instances in Docker Compose. The EDC interop test moved to 0.5, so it
   runs once with real identity (DCP) instead of EDC's mock (maintainer,

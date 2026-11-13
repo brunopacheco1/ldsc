@@ -65,10 +65,27 @@ versions may change behaviour and configuration.
 - VS Code debugging: shared `.vscode/launch.json` (CodeLLDB) for the connector
   and every test target, tasks, and recommended extensions. See
   [TESTING.md](docs/TESTING.md#debugging-in-vs-code).
+- `docs/RUST-IDIOMS.md`: a short guide to the Rust patterns the code uses,
+  for readers who use Rust now and then.
+
+### Changed
+- Readability review before the release (no behaviour change): the
+  connector's wiring is in `ports.rs`, outbound HTTP in `http_client.rs`,
+  and ids and time in `system.rs`, instead of all in `negotiation.rs`;
+  one wrapper (`Shared`) for every port chosen at start; full names
+  instead of one-letter ones; comments where a pattern hides the intent
+  (the DSP message macros, boxed futures and errors, proof of delivery).
+  In Rust code, the port wrappers moved from `negotiation`, `consumer`,
+  `transfer` and `data_plane` to `portitor_connector::ports`, and
+  `Sender` and `SendFuture` to `portitor_connector::http_client`.
 
 ### Fixed
 - `.vscode/launch.json` was not valid JSON (a test configuration was cut
   short).
+- ADR 0014 and ARCHITECTURE described the DSP TCK race slightly wrongly:
+  the TCK's consumer has the transfer but marks it REQUESTED only after
+  reading the answer, and its start handler removes itself even after a
+  refusal.
 
 ## [0.3.0] - 2026-11-12
 
