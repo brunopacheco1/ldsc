@@ -192,8 +192,9 @@ mod tests {
         }
         // the first two have expired
         for did in &dids[..2] {
-            resolver.cache.lock().unwrap().get_mut(did).unwrap().0 =
-                Instant::now() - Duration::from_secs(120);
+            resolver.cache.lock().unwrap().get_mut(did).unwrap().0 = Instant::now()
+                .checked_sub(Duration::from_secs(120))
+                .unwrap();
         }
         resolver.resolve(&dids[3]).await.unwrap();
         let mut cached: Vec<String> = resolver.cache.lock().unwrap().keys().cloned().collect();

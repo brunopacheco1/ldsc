@@ -361,52 +361,6 @@ mod tests {
         .unwrap();
         assert_eq!((s.sts_client_id.as_str(), s.scopes.len()), ("client", 2));
         assert!(!s.sts_allow_http);
-        // a plain-HTTP STS needs PORTITOR_STS_ALLOW_HTTP (or the test flag)
-        let internal = [
-            ("PORTITOR_STS_URL", "http://identity:8090/sts/token"),
-            ("PORTITOR_STS_CLIENT_SECRET_FILE", secret.as_str()),
-            ("PORTITOR_TRUSTED_ISSUERS", "did:web:a"),
-        ];
-        let err = AuthSettings::from_vars(me, false, vars(&internal)).unwrap_err();
-        assert!(err.contains("PORTITOR_STS_ALLOW_HTTP"), "{err}");
-        let mut allowed = internal.to_vec();
-        allowed.push(("PORTITOR_STS_ALLOW_HTTP", "true"));
-        let s = AuthSettings::from_vars(me, false, vars(&allowed))
-            .unwrap()
-            .unwrap();
-        assert!(s.sts_allow_http && !s.allow_http);
-        // scopes are checked at start, each with its reason
-        let base = [
-            ("PORTITOR_STS_URL", "https://me.example/sts/token"),
-            ("PORTITOR_STS_CLIENT_SECRET_FILE", secret.as_str()),
-            ("PORTITOR_TRUSTED_ISSUERS", "did:web:a"),
-        ];
-        for (scopes, reason) in [
-            ("no-colon", "not of the form alias:discriminator"),
-            (
-                "org.eclipse.dspace.dcp.vc.type:",
-                "not of the form alias:discriminator",
-            ),
-            ("com.example:MembershipCredential", "is not supported"),
-            (
-                "org.eclipse.dspace.dcp.vc.type:VerifiableCredential",
-                "too broad",
-            ),
-        ] {
-            let mut with = base.to_vec();
-            with.push(("PORTITOR_DCP_SCOPES", scopes));
-            let err = AuthSettings::from_vars(me, false, vars(&with)).unwrap_err();
-            assert!(
-                err.starts_with("PORTITOR_DCP_SCOPES") && err.contains(reason),
-                "{scopes}: {err}"
-            );
-        }
-        let mut edc = base.to_vec();
-        edc.push((
-            "PORTITOR_DCP_SCOPES",
-            "org.eclipse.dspace.dcp.vc.type:MembershipCredential:read",
-        ));
-        assert!(AuthSettings::from_vars(me, false, vars(&edc)).is_ok());
         for missing in [
             vec![
                 ("PORTITOR_STS_URL", "u"),
@@ -433,6 +387,76 @@ mod tests {
                 "{missing:?}"
             );
         }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A secret file in a fresh directory; the directory is removed by
+    /// the caller.
+    fn secret_file(name: &str) -> (std::path::PathBuf, String) {
+        let dir = std::env::temp_dir().join(format!("portitor-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let secret = dir.join("secret");
+        std::fs::write(&secret, "s3cret\n").unwrap();
+        let path = secret.to_string_lossy().into_owned();
+        (dir, path)
+    }
+
+    #[test]
+    fn a_plain_http_sts_needs_its_flag() {
+        let (dir, secret) = secret_file("sts-http");
+        let me = "did:web:me.example";
+        let internal = [
+            ("PORTITOR_STS_URL", "http://identity:8090/sts/token"),
+            ("PORTITOR_STS_CLIENT_SECRET_FILE", secret.as_str()),
+            ("PORTITOR_TRUSTED_ISSUERS", "did:web:a"),
+        ];
+        let err = AuthSettings::from_vars(me, false, vars(&internal)).unwrap_err();
+        assert!(err.contains("PORTITOR_STS_ALLOW_HTTP"), "{err}");
+        let mut allowed = internal.to_vec();
+        allowed.push(("PORTITOR_STS_ALLOW_HTTP", "true"));
+        let s = AuthSettings::from_vars(me, false, vars(&allowed))
+            .unwrap()
+            .unwrap();
+        assert!(s.sts_allow_http && !s.allow_http);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn scopes_are_checked_at_start() {
+        let (dir, secret) = secret_file("scopes");
+        let me = "did:web:me.example";
+        let base = [
+            ("PORTITOR_STS_URL", "https://me.example/sts/token"),
+            ("PORTITOR_STS_CLIENT_SECRET_FILE", secret.as_str()),
+            ("PORTITOR_TRUSTED_ISSUERS", "did:web:a"),
+        ];
+        for (scopes, reason) in [
+            ("no-colon", "not of the form alias:discriminator"),
+            (
+                "org.eclipse.dspace.dcp.vc.type:",
+                "not of the form alias:discriminator",
+            ),
+            ("com.example:MembershipCredential", "is not supported"),
+            (
+                "org.eclipse.dspace.dcp.vc.type:VerifiableCredential",
+                "too broad",
+            ),
+        ] {
+            let mut with = base.to_vec();
+            with.push(("PORTITOR_DCP_SCOPES", scopes));
+            let err = AuthSettings::from_vars(me, false, vars(&with)).unwrap_err();
+            assert!(
+                err.starts_with("PORTITOR_DCP_SCOPES") && err.contains(reason),
+                "{scopes}: {err}"
+            );
+        }
+        // EDC's scope, with its access part
+        let mut edc = base.to_vec();
+        edc.push((
+            "PORTITOR_DCP_SCOPES",
+            "org.eclipse.dspace.dcp.vc.type:MembershipCredential:read",
+        ));
+        assert!(AuthSettings::from_vars(me, false, vars(&edc)).is_ok());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
