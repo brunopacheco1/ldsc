@@ -136,6 +136,12 @@ all checks green, Scorecard published.
   error) whose `$ref` to `AbstractTransferCodeMessage` is not a valid JSON
   pointer (`#definitions/...` instead of `#/definitions/...`; tag
   2025-1-err2). Each report links back from the code that works around it.
+- Code quality and readability review of the whole code base before the
+  release, so a maintainer who is not a Rust expert can follow it (asked
+  by the maintainer, 2026-11-13): simpler code where it is hard to read,
+  comments where an idiom hides the intent, and a short guide to the Rust
+  idioms the code uses (closures `|x| ...`, the `?` operator, `match`,
+  `Option` and `Result`). Findings are fixed or recorded before tagging.
 - Exit: DSP TCK transfer tests green; end-to-end file transfer between two
   instances in Docker Compose. The EDC interop test moved to 0.5, so it
   runs once with real identity (DCP) instead of EDC's mock (maintainer,
