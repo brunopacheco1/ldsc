@@ -13,7 +13,8 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
-use utoipa::ToSchema;
+use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+use utoipa::{Modify, ToSchema};
 
 /// The shortest API key accepted, in bytes. 32 random bytes, as made by
 /// `openssl rand -hex 32`, give 64.
@@ -53,7 +54,7 @@ impl ApiKey {
     pub fn new(key: &str) -> Result<Self, String> {
         if key.len() < MIN_KEY_LEN {
             return Err(format!(
-                "the management API key must have at least {MIN_KEY_LEN} characters"
+                "the key must have at least {MIN_KEY_LEN} characters"
             ));
         }
         let rng = ring::rand::SystemRandom::new();
@@ -115,5 +116,28 @@ pub async fn require_key(
         res.headers_mut()
             .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
         res
+    }
+}
+
+/// Adds the `api_key` security scheme (`Authorization: Bearer <key>`) to
+/// a management API's `OpenAPI` description; use it as
+/// `#[openapi(modifiers(&BearerKey))]`.
+#[derive(Debug)]
+pub struct BearerKey;
+
+impl Modify for BearerKey {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        let components = openapi.components.get_or_insert_with(Default::default);
+        components.add_security_scheme(
+            "api_key",
+            SecurityScheme::Http(
+                HttpBuilder::new()
+                    .scheme(HttpAuthScheme::Bearer)
+                    .description(Some(
+                        "The key from PORTITOR_MANAGEMENT_API_KEY_FILE: Authorization: Bearer <key>",
+                    ))
+                    .build(),
+            ),
+        );
     }
 }

@@ -849,8 +849,14 @@ dependencies = [
  "axum",
  "portitor-dcp",
  "portitor-runtime",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror",
  "tokio",
+ "tower",
  "tracing",
+ "utoipa",
 ]
 
 [[package]]
@@ -864,6 +870,7 @@ dependencies = [
  "hyper-util",
  "portitor-dcp",
  "ring",
+ "rusqlite",
  "rustls",
  "serde",
  "serde_json",

@@ -53,6 +53,14 @@ impl Profile {
             Self::Vc20 => "vc20-bssl/jwt",
         }
     }
+
+    /// The profile with this alias, if Portitor supports it.
+    #[must_use]
+    pub fn from_alias(alias: &str) -> Option<Self> {
+        [Self::Vc11, Self::Vc20]
+            .into_iter()
+            .find(|profile| profile.alias() == alias)
+    }
 }
 
 /// Why a credential or presentation is refused.

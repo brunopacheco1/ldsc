@@ -186,9 +186,16 @@ impl DidDocument {
     /// The URL of the first `CredentialService` listed, if any.
     #[must_use]
     pub fn credential_service(&self) -> Option<&str> {
+        self.service_url("CredentialService")
+    }
+
+    /// The URL of the first service of type `kind` (for example
+    /// `IssuerService`, DCP issuance protocol, section 6.1), if any.
+    #[must_use]
+    pub fn service_url(&self, kind: &str) -> Option<&str> {
         self.service
             .iter()
-            .find(|s| s.kind == "CredentialService")
+            .find(|s| s.kind == kind)
             .and_then(|s| s.service_endpoint.as_str())
     }
 
