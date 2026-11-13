@@ -22,7 +22,7 @@ use tokio::sync::Notify;
 use tower::ServiceExt as _;
 
 mod common;
-use common::{CONSUMER, PROVIDER, authenticating, from};
+use common::{Audiences, CONSUMER, PROVIDER, from, recording};
 
 const BASE: &str = "/dsp/2025-1/negotiations";
 const CALLBACK: &str = "https://consumer.example/cb";
@@ -118,14 +118,19 @@ fn config(allow_http: bool) -> Config {
 }
 
 fn ports(sender: &Arc<FakeSender>) -> Ports {
-    let mut p = authenticating(Ports::new(Arc::clone(sender) as Arc<dyn Sender>), PROVIDER);
+    recorded_ports(sender).0
+}
+
+/// Like [`ports`], and the audience of each token the provider sends.
+fn recorded_ports(sender: &Arc<FakeSender>) -> (Ports, Audiences) {
+    let (mut p, audiences) = recording(Ports::new(Arc::clone(sender) as Arc<dyn Sender>), PROVIDER);
     // the default build agrees to catalog offers; the tck build scripts
     // only ACN* datasets, so CAT0101 behaves the same in both
     p.retry = Retry {
         attempts: 2,
         first_delay: Duration::from_millis(1),
     };
-    p
+    (p, audiences)
 }
 
 fn app(ports: Ports) -> Router {
@@ -143,7 +148,12 @@ async fn call(app: &Router, req: Request<Body>) -> (StatusCode, Value) {
 }
 
 fn post(uri: &str, body: &Value) -> Request<Body> {
-    from(Request::post(uri), CONSUMER)
+    post_as(uri, body, CONSUMER)
+}
+
+/// A POST of `body` to `uri` by the participant `did`.
+fn post_as(uri: &str, body: &Value, did: &str) -> Request<Body> {
+    from(Request::post(uri), did)
         .header("content-type", "application/json")
         .body(Body::from(body.to_string()))
         .unwrap()
@@ -222,7 +232,8 @@ async fn start(app: &Router) -> String {
 #[tokio::test]
 async fn request_agree_verify_finalize() {
     let sender = Arc::new(FakeSender::default());
-    let app = app(ports(&sender));
+    let (ports, audiences) = recorded_ports(&sender);
+    let app = app(ports);
     let pid = start(&app).await;
     assert!(pid.starts_with("urn:uuid:"));
 
@@ -260,6 +271,8 @@ async fn request_agree_verify_finalize() {
     );
     assert_eq!(event["eventType"], "FINALIZED");
     state(&app, &pid, "FINALIZED").await;
+    // both messages went with a token for the consumer
+    assert_eq!(*audiences.lock().unwrap(), [CONSUMER, CONSUMER]);
 }
 
 #[tokio::test]
@@ -517,4 +530,48 @@ async fn only_the_consumer_that_started_a_negotiation_sees_it() {
     assert_eq!(s, StatusCode::NOT_FOUND);
     let (s, body) = call(&app, get(&uri)).await;
     assert_eq!(s, StatusCode::OK, "{body}");
+}
+
+/// A stranger's messages about someone else's negotiation are answered
+/// 404 and change nothing.
+#[tokio::test]
+async fn a_stranger_cannot_change_a_negotiation() {
+    let sender = Arc::new(FakeSender::default());
+    let app = app(ports(&sender));
+    let pid = start(&app).await;
+    state(&app, &pid, "AGREED").await;
+    let messages = [
+        (
+            "request",
+            with(request(CALLBACK), &json!({"providerPid": pid})),
+        ),
+        (
+            "events",
+            with(
+                ids(&pid),
+                &json!({"@type": "ContractNegotiationEventMessage", "eventType": "ACCEPTED"}),
+            ),
+        ),
+        (
+            "agreement/verification",
+            with(
+                ids(&pid),
+                &json!({"@type": "ContractAgreementVerificationMessage"}),
+            ),
+        ),
+        (
+            "termination",
+            with(
+                ids(&pid),
+                &json!({"@type": "ContractNegotiationTerminationMessage", "code": "1"}),
+            ),
+        ),
+    ];
+    for (path, body) in messages {
+        let uri = format!("{BASE}/{pid}/{path}");
+        let (s, err) = call(&app, post_as(&uri, &body, "did:web:stranger.example")).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{path}: {err}");
+        assert_eq!(err["@type"], "ContractNegotiationError", "{path}");
+        state(&app, &pid, "AGREED").await;
+    }
 }
