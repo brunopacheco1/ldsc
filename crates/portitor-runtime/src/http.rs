@@ -40,6 +40,28 @@ pub trait Sender: Send + Sync {
     fn get<'a>(&'a self, url: &'a str) -> SendFuture<'a> {
         Box::pin(async move { Err(format!("cannot read {url}")) })
     }
+
+    /// Like [`Sender::post`], with the header `Authorization:
+    /// <authorization>` (a DSP request carries the caller's DCP token,
+    /// ADR 0016). The default leaves the header out: only senders that do
+    /// not speak HTTP (test fakes) keep it; [`HttpSender`] sends it.
+    fn post_authorized<'a>(
+        &'a self,
+        url: &'a str,
+        body: &'a Value,
+        authorization: &'a str,
+    ) -> SendFuture<'a> {
+        let _ = authorization;
+        self.post(url, body)
+    }
+
+    /// Like [`Sender::get`], with the header `Authorization:
+    /// <authorization>`. The default leaves the header out, as
+    /// [`Sender::post_authorized`] does.
+    fn get_authorized<'a>(&'a self, url: &'a str, authorization: &'a str) -> SendFuture<'a> {
+        let _ = authorization;
+        self.get(url)
+    }
 }
 
 /// How long one POST to a counter-party may take, answer included.
@@ -132,29 +154,114 @@ pub fn https_client(allow_http: bool) -> Result<(HttpsClient, bool), String> {
 
 impl Sender for HttpSender {
     fn post<'a>(&'a self, url: &'a str, body: &'a Value) -> SendFuture<'a> {
-        Box::pin(async move {
-            let bytes = serde_json::to_vec(body).map_err(|e| e.to_string())?;
-            let request = hyper::Request::post(url)
-                .header(hyper::header::CONTENT_TYPE, "application/json")
-                .body(Full::new(Bytes::from(bytes)))
-                .map_err(|e| e.to_string())?;
-            self.call(url, request).await
-        })
+        Box::pin(async move { self.json(json_post(url, body, None)?, url).await })
     }
 
     fn get<'a>(&'a self, url: &'a str) -> SendFuture<'a> {
+        Box::pin(async move { self.json(json_get(url, None)?, url).await })
+    }
+
+    fn post_authorized<'a>(
+        &'a self,
+        url: &'a str,
+        body: &'a Value,
+        authorization: &'a str,
+    ) -> SendFuture<'a> {
         Box::pin(async move {
-            let request = hyper::Request::get(url)
-                .header(hyper::header::ACCEPT, "application/json")
-                .body(Full::new(Bytes::new()))
-                .map_err(|e| e.to_string())?;
-            self.call(url, request).await
+            let request = json_post(url, body, Some(authorization))?;
+            self.json(request, url).await
         })
+    }
+
+    fn get_authorized<'a>(&'a self, url: &'a str, authorization: &'a str) -> SendFuture<'a> {
+        Box::pin(async move { self.json(json_get(url, Some(authorization))?, url).await })
     }
 }
 
+/// A POST of `body` as JSON, with an `Authorization` header if given.
+fn json_post(
+    url: &str,
+    body: &Value,
+    authorization: Option<&str>,
+) -> Result<hyper::Request<Full<Bytes>>, String> {
+    let bytes = serde_json::to_vec(body).map_err(|e| e.to_string())?;
+    let mut builder =
+        hyper::Request::post(url).header(hyper::header::CONTENT_TYPE, "application/json");
+    if let Some(value) = authorization {
+        builder = builder.header(hyper::header::AUTHORIZATION, value);
+    }
+    builder
+        .body(Full::new(Bytes::from(bytes)))
+        .map_err(|e| e.to_string())
+}
+
+/// A GET that asks for JSON, with an `Authorization` header if given.
+fn json_get(url: &str, authorization: Option<&str>) -> Result<hyper::Request<Full<Bytes>>, String> {
+    let mut builder = hyper::Request::get(url).header(hyper::header::ACCEPT, "application/json");
+    if let Some(value) = authorization {
+        builder = builder.header(hyper::header::AUTHORIZATION, value);
+    }
+    builder
+        .body(Full::new(Bytes::new()))
+        .map_err(|e| e.to_string())
+}
+
 impl HttpSender {
-    async fn call(&self, url: &str, request: hyper::Request<Full<Bytes>>) -> Result<Value, String> {
+    /// POSTs `form`, already encoded as `application/x-www-form-urlencoded`
+    /// (for example a token request to a Secure Token Service), and reads
+    /// the JSON answer.
+    ///
+    /// # Errors
+    ///
+    /// The URL is not allowed, the request failed, or the answer is not
+    /// HTTP 2xx.
+    pub async fn post_form(&self, url: &str, form: String) -> Result<Value, String> {
+        let request = hyper::Request::post(url)
+            .header(
+                hyper::header::CONTENT_TYPE,
+                "application/x-www-form-urlencoded",
+            )
+            .header(hyper::header::ACCEPT, "application/json")
+            .body(Full::new(Bytes::from(form)))
+            .map_err(|e| e.to_string())?;
+        self.json(request, url).await
+    }
+
+    /// GETs `url` asking for the media type `accept`, and returns the
+    /// answer as text, read up to `max_bytes` (for example a status list
+    /// credential as a JWT, `application/vc+jwt`).
+    ///
+    /// # Errors
+    ///
+    /// The URL is not allowed, the request failed, the answer is not HTTP
+    /// 2xx, larger than `max_bytes`, or not UTF-8.
+    pub async fn get_text(
+        &self,
+        url: &str,
+        accept: &str,
+        max_bytes: usize,
+    ) -> Result<String, String> {
+        let request = hyper::Request::get(url)
+            .header(hyper::header::ACCEPT, accept)
+            .body(Full::new(Bytes::new()))
+            .map_err(|e| e.to_string())?;
+        let bytes = self.call(url, request, max_bytes).await?;
+        String::from_utf8(bytes.to_vec()).map_err(|_| "the answer is not UTF-8 text".to_owned())
+    }
+
+    /// Sends `request` and reads the answer as JSON (`Value::Null` when it
+    /// is empty or not JSON), up to [`MAX_ANSWER`] bytes.
+    async fn json(&self, request: hyper::Request<Full<Bytes>>, url: &str) -> Result<Value, String> {
+        let bytes = self.call(url, request, MAX_ANSWER).await?;
+        Ok(serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    async fn call(
+        &self,
+        url: &str,
+        request: hyper::Request<Full<Bytes>>,
+        max_bytes: usize,
+    ) -> Result<Bytes, String> {
         if !callback_allowed(url, self.allow_http) {
             return Err(format!("refused callback URL {url}"));
         }
@@ -164,12 +271,16 @@ impl HttpSender {
                     .to_owned(),
             );
         }
-        tokio::time::timeout(SEND_TIMEOUT, self.exchange(request))
+        tokio::time::timeout(SEND_TIMEOUT, self.exchange(request, max_bytes))
             .await
             .map_err(|_| format!("no answer within {}s", SEND_TIMEOUT.as_secs()))?
     }
 
-    async fn exchange(&self, request: hyper::Request<Full<Bytes>>) -> Result<Value, String> {
+    async fn exchange(
+        &self,
+        request: hyper::Request<Full<Bytes>>,
+        max_bytes: usize,
+    ) -> Result<Bytes, String> {
         use http_body_util::BodyExt as _;
         let response = self
             .client
@@ -180,13 +291,13 @@ impl HttpSender {
         if !status.is_success() {
             return Err(format!("HTTP {status}"));
         }
-        // read at most MAX_ANSWER bytes: the counter-party controls the size
-        let body = http_body_util::Limited::new(response.into_body(), MAX_ANSWER)
+        // read at most max_bytes: the counter-party controls the size
+        let body = http_body_util::Limited::new(response.into_body(), max_bytes)
             .collect()
             .await
             .map_err(|e| format!("answer not read: {e}"))?
             .to_bytes();
-        Ok(serde_json::from_slice(&body).unwrap_or(Value::Null))
+        Ok(body)
     }
 }
 
@@ -259,6 +370,93 @@ mod tests {
                 .contains("500")
         );
         assert!(sender.post("http://127.0.0.1:1/cb", &body).await.is_err());
+    }
+
+    /// Echoes the request's `Authorization` and `Content-Type` headers and
+    /// body as JSON (POST /echo), and serves a plain-text JWT (GET /jwt).
+    async fn echo() -> String {
+        use axum::http::HeaderMap;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let header = |headers: &HeaderMap, name| {
+            headers
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_owned()
+        };
+        let app = axum::Router::new()
+            .route(
+                "/echo",
+                axum::routing::post(move |headers: HeaderMap, body: String| async move {
+                    axum::Json(serde_json::json!({
+                        "authorization": header(&headers, "authorization"),
+                        "contentType": header(&headers, "content-type"),
+                        "body": body,
+                    }))
+                })
+                .get(move |headers: HeaderMap| async move {
+                    axum::Json(
+                        serde_json::json!({"authorization": header(&headers, "authorization")}),
+                    )
+                }),
+            )
+            .route(
+                "/jwt",
+                axum::routing::get(move |headers: HeaderMap| async move {
+                    format!("a.b.c accept={}", header(&headers, "accept"))
+                }),
+            );
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn http_sender_sends_authorization_forms_and_reads_text() {
+        let base = echo().await;
+        let sender = HttpSender::new(true).unwrap();
+        let url = format!("{base}/echo");
+        let body = serde_json::json!({"a": 1});
+        let answer = sender
+            .post_authorized(&url, &body, "Bearer t0ken")
+            .await
+            .unwrap();
+        assert_eq!(answer["authorization"], "Bearer t0ken");
+        assert_eq!(answer["contentType"], "application/json");
+        let answer = sender.get_authorized(&url, "Bearer x").await.unwrap();
+        assert_eq!(answer["authorization"], "Bearer x");
+        // without the header
+        assert_eq!(sender.get(&url).await.unwrap()["authorization"], "");
+        let answer = sender.post_form(&url, "a=1&b=2".to_owned()).await.unwrap();
+        assert_eq!(answer["contentType"], "application/x-www-form-urlencoded");
+        assert_eq!(answer["body"], "a=1&b=2");
+        let jwt = format!("{base}/jwt");
+        let text = sender
+            .get_text(&jwt, "application/vc+jwt", 1024)
+            .await
+            .unwrap();
+        assert_eq!(text, "a.b.c accept=application/vc+jwt");
+        assert!(sender.get_text(&jwt, "text/plain", 3).await.is_err());
+    }
+
+    /// A sender with only the required methods: the authorized variants
+    /// fall back to them.
+    struct Plain;
+
+    impl Sender for Plain {
+        fn post<'a>(&'a self, _: &'a str, _: &'a Value) -> SendFuture<'a> {
+            Box::pin(async { Ok(Value::from("posted")) })
+        }
+    }
+
+    #[tokio::test]
+    async fn default_methods_fall_back() {
+        let body = serde_json::json!({});
+        assert_eq!(
+            Plain.post_authorized("u", &body, "x").await.unwrap(),
+            "posted"
+        );
+        assert!(Plain.get_authorized("u", "x").await.is_err());
     }
 
     #[tokio::test]
