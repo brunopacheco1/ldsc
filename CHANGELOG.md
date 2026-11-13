@@ -12,6 +12,8 @@ versions may change behaviour and configuration.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-13
+
 ### Added
 - Demo in Docker Compose (`examples/compose`, `scripts/demo-compose.sh`):
   a provider, a consumer and a web server for the provider's data. Two
