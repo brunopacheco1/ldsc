@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Portitor contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "portitor-time"
+description = "xsd:date and xsd:dateTime parsing for ODRL policies and verifiable credentials"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true

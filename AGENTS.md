@@ -32,7 +32,8 @@ decided in ADR 0003 (`portitor-connector`, `portitor-identity`, `portitor-issuer
 Today's crates:
 
 - `crates/portitor-dsp`: DSP message types (plain JSON, schema-checked).
-- `crates/portitor-dcp`: DCP self-issued tokens, did:web, JWS (ES256, PS256 only).
+- `crates/portitor-dcp`: DCP v1.0.1: self-issued tokens, did:web, JWS (ES256, PS256 only), credentials and presentations (VC 1.1 and 2.0 JWT), messages, scopes, status lists.
+- `crates/portitor-time`: `xsd:date` and `xsd:dateTime` parsing, shared by ODRL policies and credentials.
 - `crates/portitor-dps`: Data Plane Signaling v1.0-RC4: data flow messages, state machine, and the two ports between control plane and data plane.
 - `crates/portitor-connector`: the connector binary (HTTP adapter and routes), one image (ADR 0003).
 - `docs/`: architecture, ADRs, roadmap, security assurance, releasing.

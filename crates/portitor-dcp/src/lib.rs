@@ -3,8 +3,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Decentralized Claims Protocol 1.0: self-issued ID tokens, did:web and
-//! JWS verification (this file), the DCP messages ([`message`]), scopes
-//! ([`scope`]) and status list checks ([`status_list`]).
+//! JWS verification (this file), credentials and presentations
+//! ([`credential`]), the DCP messages ([`message`]), scopes ([`scope`])
+//! and status list checks ([`status_list`]).
 //!
 //! Only `ES256` and `PS256` are accepted. Any other `alg`, including
 //! `none`, is rejected before a key is even looked up.
@@ -17,13 +18,14 @@ use ring::rand::SystemRandom;
 use ring::signature::{self, EcdsaKeyPair, KeyPair as _, RsaPublicKeyComponents};
 use serde::{Deserialize, Serialize};
 
+pub mod credential;
 mod gzip;
 pub mod message;
 pub mod scope;
 pub mod status_list;
 
 /// Errors from token creation or validation.
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Error {
     /// The token is not three base64url segments with JSON header and claims.
     #[error("malformed token: {0}")]
@@ -110,8 +112,35 @@ impl Relationship {
     }
 }
 
-/// The parts of a DID document DCP needs.
+/// A service a DID document lists, such as the participant's Credential
+/// Service (DCP presentation protocol, section 5.2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Service {
+    /// Service id, for example `did:web:example.com#credential-service`.
+    pub id: String,
+    /// Service type, for example `CredentialService`.
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// Where the service is. DID Core allows a string, a map or a list;
+    /// DCP uses a URL string.
+    pub service_endpoint: serde_json::Value,
+}
+
+/// What a key is used for: each use has its own verification
+/// relationship in the DID document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Purpose {
+    /// Signing self-issued ID tokens (DCP base protocol, section 4.3).
+    CapabilityInvocation,
+    /// Signing presentations (DCP presentation protocol, section 5.4.3).
+    Authentication,
+    /// Signing credentials (the issuer's key; VC Data Model).
+    AssertionMethod,
+}
+
+/// The parts of a DID document DCP needs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DidDocument {
     /// The DID.
@@ -122,6 +151,74 @@ pub struct DidDocument {
     /// Keys allowed to sign self-issued ID tokens.
     #[serde(default)]
     pub capability_invocation: Vec<Relationship>,
+    /// Keys allowed to sign presentations.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub authentication: Vec<Relationship>,
+    /// Keys allowed to sign credentials.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assertion_method: Vec<Relationship>,
+    /// Services, such as the Credential Service.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub service: Vec<Service>,
+}
+
+impl DidDocument {
+    /// The URL of the first `CredentialService` listed, if any.
+    #[must_use]
+    pub fn credential_service(&self) -> Option<&str> {
+        self.service
+            .iter()
+            .find(|s| s.kind == "CredentialService")
+            .and_then(|s| s.service_endpoint.as_str())
+    }
+
+    fn relationship(&self, purpose: Purpose) -> &[Relationship] {
+        match purpose {
+            Purpose::CapabilityInvocation => &self.capability_invocation,
+            Purpose::Authentication => &self.authentication,
+            Purpose::AssertionMethod => &self.assertion_method,
+        }
+    }
+
+    /// The key to check a signature with: the one named by `kid` (a full
+    /// id, or `#fragment` relative to this DID), or, without `kid`, the
+    /// only verification method. The key must have the verification
+    /// relationship of `purpose`, by reference or embedded there.
+    ///
+    /// # Errors
+    /// No such key, `kid` is missing while there are several keys, or the
+    /// key lacks the relationship.
+    pub fn key_for(
+        &self,
+        kid: Option<&str>,
+        purpose: Purpose,
+    ) -> Result<&VerificationMethod, Error> {
+        let allowed = self.relationship(purpose);
+        let embedded = allowed.iter().filter_map(|r| match r {
+            Relationship::Embedded(vm) => Some(vm),
+            Relationship::Reference(_) => None,
+        });
+        let mut candidates = self.verification_method.iter().chain(embedded);
+        let vm = match kid {
+            Some(kid) => candidates
+                .find(|vm| vm.id == kid || vm.id.strip_prefix(&self.id) == Some(kid))
+                .ok_or(Error::Invalid("kid not found"))?,
+            None => match self.verification_method.as_slice() {
+                [only] => only,
+                [] => return Err(Error::Invalid("no verification method")),
+                _ => return Err(Error::Invalid("no kid and several verification methods")),
+            },
+        };
+        if allowed.iter().any(|r| r.id() == vm.id) {
+            Ok(vm)
+        } else {
+            Err(Error::Invalid(match purpose {
+                Purpose::CapabilityInvocation => "key lacks capabilityInvocation",
+                Purpose::Authentication => "key lacks authentication",
+                Purpose::AssertionMethod => "key lacks assertionMethod",
+            }))
+        }
+    }
 }
 
 /// Returns the HTTPS URL of the DID document for a `did:web` DID.
@@ -247,18 +344,32 @@ impl SigningKey {
         }
     }
 
-    /// Signs claims as a compact JWS with `alg: ES256`.
+    /// Signs claims as a compact JWS with `alg: ES256` and `typ: JWT`.
     ///
     /// # Errors
     /// Fails if signing fails.
     pub fn sign(&self, kid: &str, claims: &Claims) -> Result<String, Error> {
+        self.sign_json(kid, "JWT", claims)
+    }
+
+    /// Signs any JSON payload as a compact JWS with `alg: ES256`, the key
+    /// id `kid` and the type `typ` (for example `vp+jwt`).
+    ///
+    /// # Errors
+    /// Fails if the payload cannot be written as JSON, or signing fails.
+    pub fn sign_json(
+        &self,
+        kid: &str,
+        typ: &str,
+        payload: &impl Serialize,
+    ) -> Result<String, Error> {
         let header = Header {
             alg: "ES256".to_owned(),
             kid: Some(kid.to_owned()),
-            typ: Some("JWT".to_owned()),
+            typ: Some(typ.to_owned()),
         };
         let h = B64.encode(serde_json::to_vec(&header).map_err(|_| Error::Malformed("header"))?);
-        let c = B64.encode(serde_json::to_vec(claims).map_err(|_| Error::Malformed("claims"))?);
+        let c = B64.encode(serde_json::to_vec(payload).map_err(|_| Error::Malformed("claims"))?);
         let input = format!("{h}.{c}");
         let sig = self
             .pair
@@ -275,6 +386,7 @@ pub struct Jws<'a> {
     signature: Vec<u8>,
     alg: Alg,
     kid: Option<String>,
+    typ: Option<String>,
     payload: Vec<u8>,
 }
 
@@ -306,6 +418,7 @@ impl<'a> Jws<'a> {
                 .map_err(|_| Error::Malformed("signature b64"))?,
             alg,
             kid: header.kid,
+            typ: header.typ,
             payload: B64.decode(p).map_err(|_| Error::Malformed("payload b64"))?,
         })
     }
@@ -314,6 +427,12 @@ impl<'a> Jws<'a> {
     #[must_use]
     pub fn kid(&self) -> Option<&str> {
         self.kid.as_deref()
+    }
+
+    /// The `typ` header, if any (for example `vc+jwt`).
+    #[must_use]
+    pub fn typ(&self) -> Option<&str> {
+        self.typ.as_deref()
     }
 
     /// The decoded payload bytes (unverified until [`Jws::verify`] succeeds).
@@ -391,7 +510,7 @@ pub fn validate_self_issued(
         return Err(Error::Invalid("sub does not match DID document id"));
     }
     // 3. key selection rules, then signature
-    let vm = select_key(doc, jws.kid())?;
+    let vm = doc.key_for(jws.kid(), Purpose::CapabilityInvocation)?;
     jws.verify(&vm.public_key_jwk)?;
     // 5. nbf
     if let Some(nbf) = claims.nbf
@@ -408,30 +527,6 @@ pub fn validate_self_issued(
         return Err(Error::Invalid("jti replayed"));
     }
     Ok(claims)
-}
-
-fn select_key<'d>(
-    doc: &'d DidDocument,
-    kid: Option<&str>,
-) -> Result<&'d VerificationMethod, Error> {
-    let invocable = |id: &str| doc.capability_invocation.iter().any(|r| r.id() == id);
-    let vm = match kid {
-        Some(kid) => doc
-            .verification_method
-            .iter()
-            .find(|vm| vm.id == kid || vm.id.strip_prefix(&doc.id) == Some(kid))
-            .ok_or(Error::Invalid("kid not found"))?,
-        None => match doc.verification_method.as_slice() {
-            [only] => only,
-            [] => return Err(Error::Invalid("no verification method")),
-            _ => return Err(Error::Invalid("no kid and several verification methods")),
-        },
-    };
-    if invocable(&vm.id) {
-        Ok(vm)
-    } else {
-        Err(Error::Invalid("key lacks capabilityInvocation"))
-    }
 }
 
 #[cfg(test)]
@@ -454,6 +549,7 @@ mod tests {
                 public_key_jwk: key.public_jwk(),
             }],
             capability_invocation: vec![Relationship::Reference(vm_id)],
+            ..DidDocument::default()
         };
         let claims = Claims {
             iss: ALICE.to_owned(),

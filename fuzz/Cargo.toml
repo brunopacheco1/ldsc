@@ -78,3 +78,10 @@ path = "fuzz_targets/dcp_messages.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "dcp_credentials"
+path = "fuzz_targets/dcp_credentials.rs"
+test = false
+doc = false
+bench = false

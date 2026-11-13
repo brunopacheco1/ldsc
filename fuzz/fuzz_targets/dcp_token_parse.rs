@@ -20,8 +20,7 @@ fuzz_target!(|data: &[u8]| {
     }
     let doc = DidDocument {
         id: "did:web:alice.example".to_owned(),
-        verification_method: vec![],
-        capability_invocation: vec![],
+        ..DidDocument::default()
     };
     let _ = validate_self_issued(
         text,

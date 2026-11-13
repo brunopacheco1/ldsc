@@ -119,6 +119,7 @@ version = "0.4.0"
 dependencies = [
  "base64",
  "miniz_oxide",
+ "portitor-time",
  "ring",
  "serde",
  "serde_json",
@@ -129,6 +130,7 @@ dependencies = [
 name = "portitor-dsp"
 version = "0.4.0"
 dependencies = [
+ "portitor-time",
  "serde",
  "serde_json",
 ]
@@ -143,6 +145,10 @@ dependencies = [
  "serde",
  "serde_json",
 ]
+
+[[package]]
+name = "portitor-time"
+version = "0.4.0"
 
 [[package]]
 name = "proc-macro2"

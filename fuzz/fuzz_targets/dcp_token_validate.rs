@@ -33,6 +33,7 @@ fn setup() -> &'static (SigningKey, DidDocument) {
                 public_key_jwk: key.public_jwk(),
             }],
             capability_invocation: vec![Relationship::Reference(vm)],
+            ..DidDocument::default()
         };
         (key, doc)
     })

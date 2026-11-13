@@ -21,6 +21,15 @@ versions may change behaviour and configuration.
   (Bitstring Status List and StatusList2021). The DCP JSON Schemas and
   examples (tag v1.0.1) are bundled for tests. Two new fuzz targets:
   `dcp_messages`, `dcp_status_list`.
+- Verifiable credentials and presentations as JWTs in both DCP profiles
+  (ADR 0015): `vc11-sl2021/jwt` (VC Data Model 1.1, `vc` and `vp`
+  claims, as the DCP TCK uses) and `vc20-bssl/jwt` (VC Data Model 2.0,
+  `vc+jwt` and `vp+jwt`, including the `EnvelopedVerifiablePresentation`
+  wrapper EDC Identity Hub sends). Issuer keys need `assertionMethod`,
+  holder keys `authentication`; a presentation may not mix profiles.
+  Fuzz target `dcp_credentials`.
+- `portitor-time`: the `xsd:date` and `xsd:dateTime` parser moves out
+  of the ODRL code, so credentials can use it too.
 
 ### Security
 - Status lists are GZIP data from other parties: decompression is capped
