@@ -146,11 +146,7 @@ fn check_credential(
         .verify(issuer_document, now_secs(), LEEWAY)
         .map_err(|e| e.to_string())?;
     // every subject must be this participant, named by its DID
-    let ids: Vec<&str> = credential.subject_ids().collect();
-    let about_us = !ids.is_empty()
-        && ids.len() == credential.subjects.len()
-        && ids.iter().all(|id| *id == identity.did);
-    if !about_us {
+    if !credential.is_only_about(&identity.did) {
         return Err("the credential is not about this participant".to_owned());
     }
     Ok(credential)

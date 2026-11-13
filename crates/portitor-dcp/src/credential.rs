@@ -279,6 +279,14 @@ impl Credential {
             .filter_map(|s| s.get("id").and_then(Value::as_str))
     }
 
+    /// Whether the credential is about `did` only: it has at least one
+    /// subject, and every subject has `did` as its `id`.
+    #[must_use]
+    pub fn is_only_about(&self, did: &str) -> bool {
+        let ids: Vec<&str> = self.subject_ids().collect();
+        !ids.is_empty() && ids.len() == self.subjects.len() && ids.iter().all(|id| *id == did)
+    }
+
     /// Checks the issuer's signature and the validity period. `issuer` is
     /// the resolved DID document of [`Credential::issuer`]; the key must
     /// have the `assertionMethod` relationship. Status lists are checked

@@ -143,6 +143,20 @@ fn envelope(holder: &Party, audience: &str, vp: &str) -> String {
 }
 
 #[test]
+fn a_credential_is_only_about_its_one_subject() {
+    let issuer = Party::new(ISSUER);
+    let about_alice = |extra: &Value| Credential::parse(&vc20(&issuer, ALICE, extra)).unwrap();
+    assert!(about_alice(&json!({})).is_only_about(ALICE));
+    assert!(!about_alice(&json!({})).is_only_about(BOB));
+    let two = json!({"credentialSubject": [{"id": ALICE}, {"id": BOB}]});
+    assert!(!about_alice(&two).is_only_about(ALICE));
+    let one_without_id = json!({"credentialSubject": [{"id": ALICE}, {"name": "x"}]});
+    assert!(!about_alice(&one_without_id).is_only_about(ALICE));
+    let none = json!({"credentialSubject": []});
+    assert!(!about_alice(&none).is_only_about(ALICE));
+}
+
+#[test]
 fn vc11_credential_from_the_tck_shape() {
     let issuer = Party::new(ISSUER);
     let credential = Credential::parse(&vc11(&issuer, ALICE)).unwrap();

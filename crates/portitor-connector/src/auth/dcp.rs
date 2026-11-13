@@ -304,10 +304,7 @@ impl DcpVerifier {
         caller: &str,
         now: u64,
     ) -> Result<(), String> {
-        let about_caller = !credential.subjects.is_empty()
-            && credential.subjects.len() == credential.subject_ids().count()
-            && credential.subject_ids().all(|id| id == caller);
-        if !about_caller {
+        if !credential.is_only_about(caller) {
             return Err("a credential is not about the caller (credentialSubject.id)".to_owned());
         }
         if credential.status.len() > MAX_STATUS_ENTRIES {
