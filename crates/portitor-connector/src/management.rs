@@ -271,7 +271,7 @@ pub struct PageQuery {
     tag = "Negotiations"
 )]
 async fn start(
-    State(negotiation): State<Negotiator>,
+    State(negotiator): State<Negotiator>,
     body: Result<Json<StartNegotiation>, JsonRejection>,
 ) -> Response {
     let mut req = match body {
@@ -279,7 +279,7 @@ async fn start(
         Err(e) => return problem(StatusCode::BAD_REQUEST, &e.body_text()),
     };
     match (req.offer.target.as_deref(), req.dataset_id.take()) {
-        (Some(transfer), Some(d)) if transfer != d => {
+        (Some(target), Some(dataset_id)) if target != dataset_id => {
             return problem(
                 StatusCode::BAD_REQUEST,
                 "datasetId and the offer's target differ",
@@ -288,7 +288,7 @@ async fn start(
         (None, d) => req.offer.target = d,
         _ => {}
     }
-    match negotiation.start(&req.provider_address, &req.provider_id, req.offer) {
+    match negotiator.start(&req.provider_address, &req.provider_id, req.offer) {
         Ok(started) => (StatusCode::CREATED, Json(NegotiationView::from(started))).into_response(),
         Err(f) => failed(&f),
     }
@@ -307,8 +307,8 @@ async fn start(
     security(("api_key" = [])),
     tag = "Negotiations"
 )]
-async fn one(State(negotiation): State<Negotiator>, Path(cpid): Path<String>) -> Response {
-    match negotiation.get(&cpid) {
+async fn one(State(negotiator): State<Negotiator>, Path(cpid): Path<String>) -> Response {
+    match negotiator.get(&cpid) {
         Ok(found) => Json(NegotiationView::from(found)).into_response(),
         Err(f) => failed(&f),
     }
@@ -328,7 +328,7 @@ async fn one(State(negotiation): State<Negotiator>, Path(cpid): Path<String>) ->
     tag = "Negotiations"
 )]
 async fn list(
-    State(negotiation): State<Negotiator>,
+    State(negotiator): State<Negotiator>,
     query: Result<Query<PageQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Response {
     let Query(q) = match query {
@@ -336,7 +336,7 @@ async fn list(
         Err(e) => return problem(StatusCode::BAD_REQUEST, &e.body_text()),
     };
     let limit = q.limit.unwrap_or(MAX_PAGE).clamp(1, MAX_PAGE);
-    match negotiation.list(q.after.as_deref(), limit) {
+    match negotiator.list(q.after.as_deref(), limit) {
         Ok(found) => {
             let next = next_after(&found, limit, |negotiation| &negotiation.consumer_pid);
             Json(NegotiationPage {
@@ -454,14 +454,14 @@ pub struct TransferPage {
     tag = "Transfers"
 )]
 async fn start_transfer(
-    State(negotiation): State<Negotiator>,
+    State(negotiator): State<Negotiator>,
     body: Result<Json<StartTransfer>, JsonRejection>,
 ) -> Response {
     let req = match body {
         Ok(Json(r)) => r,
         Err(e) => return problem(StatusCode::BAD_REQUEST, &e.body_text()),
     };
-    match negotiation.request_transfer(&req.agreement_id, &req.format) {
+    match negotiator.request_transfer(&req.agreement_id, &req.format) {
         Ok(transfer) => (StatusCode::CREATED, Json(TransferView::from(transfer))).into_response(),
         Err(f) => transfer_failed(&f),
     }
@@ -480,8 +480,8 @@ async fn start_transfer(
     security(("api_key" = [])),
     tag = "Transfers"
 )]
-async fn one_transfer(State(negotiation): State<Negotiator>, Path(cpid): Path<String>) -> Response {
-    match negotiation.transfer(&cpid) {
+async fn one_transfer(State(negotiator): State<Negotiator>, Path(cpid): Path<String>) -> Response {
+    match negotiator.transfer(&cpid) {
         Ok(transfer) => Json(TransferView::from(transfer)).into_response(),
         Err(f) => transfer_failed(&f),
     }
@@ -501,7 +501,7 @@ async fn one_transfer(State(negotiation): State<Negotiator>, Path(cpid): Path<St
     tag = "Transfers"
 )]
 async fn list_transfers(
-    State(negotiation): State<Negotiator>,
+    State(negotiator): State<Negotiator>,
     query: Result<Query<PageQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Response {
     let Query(q) = match query {
@@ -509,7 +509,7 @@ async fn list_transfers(
         Err(e) => return problem(StatusCode::BAD_REQUEST, &e.body_text()),
     };
     let limit = q.limit.unwrap_or(MAX_PAGE).clamp(1, MAX_PAGE);
-    match negotiation.transfers(q.after.as_deref(), limit) {
+    match negotiator.transfers(q.after.as_deref(), limit) {
         Ok(found) => {
             let next = next_after(&found, limit, |transfer| &transfer.consumer_pid);
             Json(TransferPage {
@@ -538,10 +538,10 @@ async fn list_transfers(
     tag = "Transfers"
 )]
 async fn complete_transfer(
-    State(negotiation): State<Negotiator>,
+    State(negotiator): State<Negotiator>,
     Path(cpid): Path<String>,
 ) -> Response {
-    act(&negotiation, &cpid, ConsumerTransferDecision::Complete)
+    act(&negotiator, &cpid, ConsumerTransferDecision::Complete)
 }
 
 /// End a transfer that has not ended yet. The termination is sent in the
@@ -560,18 +560,18 @@ async fn complete_transfer(
     tag = "Transfers"
 )]
 async fn terminate_transfer(
-    State(negotiation): State<Negotiator>,
+    State(negotiator): State<Negotiator>,
     Path(cpid): Path<String>,
 ) -> Response {
-    act(&negotiation, &cpid, ConsumerTransferDecision::Terminate)
+    act(&negotiator, &cpid, ConsumerTransferDecision::Terminate)
 }
 
 fn act(
-    negotiation: &Negotiator,
+    negotiator: &Negotiator,
     consumer_pid: &str,
     decision: ConsumerTransferDecision,
 ) -> Response {
-    match negotiation.act_on_transfer(consumer_pid, decision) {
+    match negotiator.act_on_transfer(consumer_pid, decision) {
         Ok(transfer) => (StatusCode::ACCEPTED, Json(TransferView::from(transfer))).into_response(),
         Err(f) => transfer_failed(&f),
     }
