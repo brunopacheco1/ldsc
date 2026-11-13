@@ -7,6 +7,8 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD as PEM_B64, URL_SAFE_NO_PAD as B64};
+// Randomness from the operating system, not through a port: ADR 0004,
+// "Amended after the 0.5 release" (a repeated ECDSA nonce reveals the key).
 use ring::rand::SystemRandom;
 use ring::signature::{self, EcdsaKeyPair, KeyPair as _};
 use serde::{Deserialize, Serialize};
