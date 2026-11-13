@@ -113,21 +113,30 @@ impl Flows {
     }
 }
 
+/// The data address the fake data plane gives for `pid`.
+fn address(pid: &str, token: &str) -> DataAddress {
+    DataAddress {
+        kind: DataAddressType,
+        endpoint_type: "https://w3id.org/idsa/v4.1/HTTP".to_owned(),
+        endpoint: Some(format!("https://provider.example/data/{pid}")),
+        endpoint_properties: vec![
+            EndpointProperty::new("authorization", token),
+            EndpointProperty::new("authType", "bearer"),
+        ],
+    }
+}
+
 impl DataFlows for &Flows {
     fn supports(&self, _: &str, format: &str) -> bool {
         format == "HttpData-PULL"
     }
     fn start(&self, t: &Transfer) -> Result<DataAddress, String> {
         self.record(&format!("start {}", t.provider_pid))?;
-        Ok(DataAddress {
-            kind: DataAddressType,
-            endpoint_type: "https://w3id.org/idsa/v4.1/HTTP".to_owned(),
-            endpoint: Some(format!("https://provider.example/data/{}", t.provider_pid)),
-            endpoint_properties: vec![
-                EndpointProperty::new("authorization", "t0ken"),
-                EndpointProperty::new("authType", "bearer"),
-            ],
-        })
+        Ok(address(&t.provider_pid, "t0ken"))
+    }
+    fn restart(&self, pid: &str) -> Result<DataAddress, String> {
+        self.record(&format!("restart {pid}"))?;
+        Ok(address(pid, "t0ken-2"))
     }
     fn suspend(&self, pid: &str) -> Result<(), String> {
         self.record(&format!("suspend {pid}"))
@@ -360,7 +369,111 @@ fn the_decider_may_wait_or_terminate() {
         .request(&request("a1", "HttpData-PULL"), CONSUMER)
         .unwrap();
     assert_eq!(out.unwrap().transition, Transition::Terminate);
-    assert!(flows.calls().is_empty());
+    // nothing started; ending it anyway is harmless
+    assert_eq!(flows.calls(), ["terminate urn:uuid:1"]);
+}
+
+/// Each decision in turn, then [`TransferDecision::Wait`].
+struct Steps(RefCell<Vec<TransferDecision>>);
+
+impl TransferDecider for &Steps {
+    fn decide(&self, _: &Transfer) -> TransferDecision {
+        let mut steps = self.0.borrow_mut();
+        if steps.is_empty() {
+            TransferDecision::Wait
+        } else {
+            steps.remove(0)
+        }
+    }
+}
+
+/// Requests a transfer with a provider that takes `steps`, delivers every
+/// message it sends, and returns them.
+fn provider_steps(store: &Store, flows: &Flows, steps: Vec<TransferDecision>) -> Vec<Outgoing> {
+    let steps = Steps(RefCell::new(steps));
+    let s = TransferService::new(store, Agreed, flows, &steps, Catalog, Env::default());
+    let (_, out) = s
+        .request(&request("a1", "HttpData-PULL"), CONSUMER)
+        .unwrap();
+    let mut sent = Vec::new();
+    let mut next = out;
+    while let Some(out) = next {
+        next = s.delivered(&out).unwrap();
+        sent.push(out);
+    }
+    sent
+}
+
+#[test]
+fn the_provider_suspends_starts_again_and_completes() {
+    use TransferDecision::{Complete, Start, Suspend};
+    let (store, flows) = (Store::default(), Flows::default());
+    let sent = provider_steps(&store, &flows, vec![Start, Suspend, Start, Complete]);
+    let transitions: Vec<_> = sent.iter().map(|o| o.transition).collect();
+    assert_eq!(
+        transitions,
+        [
+            Transition::Start,
+            Transition::Suspend,
+            Transition::Start,
+            Transition::Complete
+        ]
+    );
+    assert!(sent[1].url.ends_with("/suspension"));
+    assert!(sent[3].url.ends_with("/completion"));
+    // started again: a new token, since the old one is not kept
+    assert_eq!(
+        sent[2].body["dataAddress"]["endpointProperties"][0]["value"],
+        "t0ken-2"
+    );
+    assert_eq!(
+        flows.calls(),
+        [
+            "start urn:uuid:1",
+            "suspend urn:uuid:1",
+            "restart urn:uuid:1",
+            "complete urn:uuid:1"
+        ]
+    );
+    assert_eq!(state(&store), TransferState::Completed);
+}
+
+#[test]
+fn the_provider_terminates_a_started_transfer() {
+    use TransferDecision::{Start, Terminate};
+    let (store, flows) = (Store::default(), Flows::default());
+    let sent = provider_steps(&store, &flows, vec![Start, Terminate]);
+    assert_eq!(sent[1].transition, Transition::Terminate);
+    assert_eq!(flows.calls(), ["start urn:uuid:1", "terminate urn:uuid:1"]);
+    assert_eq!(state(&store), TransferState::Terminated);
+}
+
+#[test]
+fn steps_the_state_machine_forbids_are_not_taken() {
+    use TransferDecision::{Complete, Start, Suspend};
+    let (store, flows) = (Store::default(), Flows::default());
+    // suspend while REQUESTED, complete while SUSPENDED: neither is allowed
+    let sent = provider_steps(&store, &flows, vec![Suspend]);
+    assert!(sent.is_empty());
+    let (store, flows) = (Store::default(), Flows::default());
+    let sent = provider_steps(&store, &flows, vec![Start, Suspend, Complete]);
+    assert_eq!(sent.len(), 2);
+    assert_eq!(state(&store), TransferState::Suspended);
+}
+
+#[test]
+fn a_data_plane_failure_on_a_provider_step_ends_the_transfer() {
+    use TransferDecision::{Start, Suspend};
+    let (store, flows) = (Store::default(), Flows::default());
+    let steps = Steps(RefCell::new(vec![Start, Suspend]));
+    let s = TransferService::new(&store, Agreed, &flows, &steps, Catalog, Env::default());
+    let (_, out) = s
+        .request(&request("a1", "HttpData-PULL"), CONSUMER)
+        .unwrap();
+    flows.1.set(true);
+    let next = s.delivered(&out.unwrap()).unwrap().unwrap();
+    assert_eq!(next.transition, Transition::Terminate);
+    assert!(format!("{}", next.body).contains("data plane refused"));
 }
 
 #[test]

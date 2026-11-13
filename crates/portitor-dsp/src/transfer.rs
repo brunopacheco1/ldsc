@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Context;
 
+pub mod consumer;
 pub mod provider;
 
 type_tag!(

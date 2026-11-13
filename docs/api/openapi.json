@@ -1113,6 +1113,296 @@
         }
       }
     },
+    "/dsp/2025-1/callback/transfers/{consumerPid}": {
+      "get": {
+        "tags": [
+          "Transfer process (consumer callback)"
+        ],
+        "summary": "State of a transfer",
+        "operationId": "consumerTransfer",
+        "parameters": [
+          {
+            "name": "consumerPid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The consumer's id for the transfer"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The transfer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-process-schema.json"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown transfer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-error-schema.json"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dsp/2025-1/callback/transfers/{consumerPid}/start": {
+      "post": {
+        "tags": [
+          "Transfer process (consumer callback)"
+        ],
+        "summary": "Provider starts the transfer (first time with the data address), or starts it again",
+        "operationId": "consumerTransferStart",
+        "parameters": [
+          {
+            "name": "consumerPid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The consumer's id for the transfer"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-start-message-schema.json"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Accepted (state STARTED)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-process-schema.json"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid message, or it does not fit the state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-error-schema.json"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown transfer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-error-schema.json"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dsp/2025-1/callback/transfers/{consumerPid}/suspension": {
+      "post": {
+        "tags": [
+          "Transfer process (consumer callback)"
+        ],
+        "summary": "Provider suspends the transfer",
+        "operationId": "consumerTransferSuspension",
+        "parameters": [
+          {
+            "name": "consumerPid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The consumer's id for the transfer"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-suspension-message-schema.json"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Accepted (state SUSPENDED)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-process-schema.json"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid message, or it does not fit the state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-error-schema.json"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown transfer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-error-schema.json"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dsp/2025-1/callback/transfers/{consumerPid}/completion": {
+      "post": {
+        "tags": [
+          "Transfer process (consumer callback)"
+        ],
+        "summary": "Provider completes the transfer",
+        "operationId": "consumerTransferCompletion",
+        "parameters": [
+          {
+            "name": "consumerPid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The consumer's id for the transfer"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-completion-message-schema.json"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Accepted (state COMPLETED)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-process-schema.json"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid message, or it does not fit the state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-error-schema.json"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown transfer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-error-schema.json"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dsp/2025-1/callback/transfers/{consumerPid}/termination": {
+      "post": {
+        "tags": [
+          "Transfer process (consumer callback)"
+        ],
+        "summary": "Provider ends the transfer",
+        "operationId": "consumerTransferTermination",
+        "parameters": [
+          {
+            "name": "consumerPid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The consumer's id for the transfer"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-termination-message-schema.json"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Accepted (state TERMINATED)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-process-schema.json"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid message, or it does not fit the state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-error-schema.json"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown transfer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "../../crates/portitor-dsp/tests/schemas/transfer-error-schema.json"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/health": {
       "get": {
         "tags": [

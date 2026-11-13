@@ -60,8 +60,11 @@ Where the tests are:
   `tests/dsp_transfer.rs` does the same for transfers as provider, with a
   fake data plane and a fixed agreement; its last tests use the built-in
   data plane and fetch data from an upstream served on a local port (no
-  network needed). The SQLite
-  store is tested on an in-memory database and on a real file.
+  network needed). `tests/end_to_end.rs` runs two connectors in one
+  process, joined by a fake network: the consumer negotiates, requests a
+  transfer, fetches the data from the provider's built-in data plane and
+  completes the transfer. The SQLite store is tested on an in-memory
+  database and on a real file.
 - `tests/dsp_catalog.rs` also checks that every path in
   [docs/api/openapi.json](api/openapi.json) is served.
 - `tests/management_api.rs` tests the management API and checks that
@@ -95,13 +98,17 @@ command above but not counted.
 The Eclipse DSP Technology Compatibility Kit (TCK) acts as the other
 connector and checks that Portitor follows DSP 2025-1. The `DSP TCK` workflow
 builds it from source at a pinned commit. Required today: metadata (MET),
-catalog (CAT) and contract negotiation as provider (CN:01 to CN:03) and
-as consumer (CN_C:01 to CN_C:03). Transfer (TP) is expected to fail until
-it is built.
+catalog (CAT), contract negotiation as provider (CN:01 to CN:03) and as
+consumer (CN_C:01 to CN_C:03), and the transfer process as provider
+(TP:01 to TP:03) and as consumer (TP_C:01 to TP_C:03). The TCK itself
+disables TP:02-04 and TP_C:02-04.
 
 In remote mode the TCK expects the connector to act differently per
-dataset (for example, terminate instead of agree), and starts each
-consumer test with a POST to `/tck/negotiations`. Portitor does both only
+dataset or agreement (for example, terminate instead of agree), and starts
+each consumer test with a POST to `/tck/negotiations` or `/tck/transfers`.
+The TCK build also holds the agreements of the provider transfer tests
+and sends transfer start messages 300 ms late, to avoid a race in the TCK
+(ADR 0014). Portitor does both only
 when built with the test-only `tck` feature (`src/tck.rs`); release builds
 never contain it. CI also runs `cargo test` and `cargo clippy` with that
 feature.
@@ -230,6 +237,13 @@ Read an offer from the provider's catalog, then start the negotiation
 from the consumer's management API (see the README for the request) and
 read it with `GET localhost:9202/v1/negotiations/<consumerPid>`. Within a
 second its state is `FINALIZED` and it holds the agreement.
+
+Then request a transfer under that agreement with
+`POST localhost:9202/v1/transfers` and `{"agreementId": "<agreement @id>"}`.
+`examples/datasets.json` names no data source, so the provider refuses
+it and the transfer ends `TERMINATED`; add `"portitor:source": "<an http
+URL>"` to a dataset there to get `STARTED` and a `dataAddress` to fetch
+from.
 
 ## Debugging in VS Code
 

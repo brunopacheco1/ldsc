@@ -26,14 +26,16 @@ use portitor_dsp::transfer::provider::{
 };
 use portitor_dsp::transfer::{
     DataAddress, TransferCompletionMessage, TransferError, TransferProcess, TransferRequestMessage,
-    TransferStartMessage, TransferSuspensionMessage, TransferTerminationMessage, Transition,
+    TransferStartMessage, TransferState, TransferSuspensionMessage, TransferTerminationMessage,
+    Transition,
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::InMemoryDatasets;
 use crate::negotiation::{
-    InMemoryNegotiations, Retry, Sender, SystemEnvironment, UNAUTHENTICATED, callback_allowed, send,
+    InMemoryNegotiations, Message, Outcome, Retry, Sender, SystemEnvironment, UNAUTHENTICATED,
+    attempt, callback_allowed,
 };
 use crate::store::finalized_agreement;
 
@@ -92,6 +94,9 @@ impl DataFlows for AnyDataFlows {
     }
     fn suspend(&self, pid: &str) -> Result<(), String> {
         self.0.suspend(pid)
+    }
+    fn restart(&self, pid: &str) -> Result<DataAddress, String> {
+        self.0.restart(pid)
     }
     fn resume(&self, pid: &str) -> Result<(), String> {
         self.0.resume(pid)
@@ -181,6 +186,9 @@ impl DataFlows for NoDataFlows {
     fn suspend(&self, _: &str) -> Result<(), String> {
         Err(NO_DATA_PLANE.to_owned())
     }
+    fn restart(&self, _: &str) -> Result<DataAddress, String> {
+        Err(NO_DATA_PLANE.to_owned())
+    }
     fn resume(&self, _: &str) -> Result<(), String> {
         Err(NO_DATA_PLANE.to_owned())
     }
@@ -219,16 +227,27 @@ pub struct TransferPorts {
 
 impl TransferPorts {
     /// Transfers in memory, agreements from `negotiations`, no data plane,
-    /// and the default policy: start every accepted request.
+    /// and the default policy: start every accepted request. With the
+    /// `tck` feature the policy follows the DSP TCK scripts instead.
     #[must_use]
     pub fn in_memory(negotiations: InMemoryNegotiations) -> Self {
         Self {
             store: Shared(Arc::new(InMemoryTransfers::default())),
             agreements: Shared(Arc::new(negotiations)),
             flows: Shared(Arc::new(NoDataFlows)),
-            decider: Shared(Arc::new(portitor_dsp::transfer::provider::StartAtOnce)),
+            decider: default_transfer_decider(),
         }
     }
+}
+
+#[cfg(feature = "tck")]
+fn default_transfer_decider() -> AnyTransferDecider {
+    Shared(Arc::new(crate::tck::TckTransferDecider::default()))
+}
+
+#[cfg(not(feature = "tck"))]
+fn default_transfer_decider() -> AnyTransferDecider {
+    Shared(Arc::new(portitor_dsp::transfer::provider::StartAtOnce))
 }
 
 /// The provider side of the transfer process, as used by the HTTP
@@ -263,28 +282,17 @@ impl TransferProvider {
     /// Checks the message's shape with the guard, then reads it.
     fn read<T: DeserializeOwned>(
         &self,
-        body: Result<Json<Value>, JsonRejection>,
+        body: Body,
         message_type: &str,
         provider_pid: &str,
     ) -> Result<T, Box<TransferError>> {
-        let refuse = |consumer_pid: &str, reason: &str| {
-            Box::new(TransferError::new(
-                provider_pid,
-                consumer_pid,
-                "400",
-                reason,
-            ))
-        };
-        let Json(value) = body.map_err(|e| refuse("", &e.body_text()))?;
-        let consumer_pid = value
-            .get("consumerPid")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned();
-        self.guard
-            .check(Direction::Inbound, message_type, &value)
-            .map_err(|r| refuse(&consumer_pid, &r.to_string()))?;
-        serde_json::from_value(value).map_err(|e| refuse(&consumer_pid, &e.to_string()))
+        read_message(
+            &*self.guard,
+            body,
+            message_type,
+            "consumerPid",
+            |cpid, reason| TransferError::new(provider_pid, cpid, "400", reason),
+        )
     }
 
     /// Sends every message saved as pending, for example after a restart.
@@ -298,32 +306,29 @@ impl TransferProvider {
         Ok(count)
     }
 
-    /// Sends `out`. If the consumer cannot be reached, the transfer ends
-    /// and the termination is sent instead.
+    /// Sends `out`, then the provider's next message, if any. If the
+    /// consumer cannot be reached, the transfer ends and the termination is
+    /// sent instead.
     async fn deliver(self: Arc<Self>, mut out: Outgoing) {
         loop {
-            let sent = send(&*self.sender, &*self.guard, self.retry, &out.url, &out.body).await;
-            let next = match sent {
-                Ok(_) => self.service.delivered(&out).map(|()| None),
-                // the consumer refused or did not answer, but may have
-                // received it before: its state says
-                Err(error) if self.arrived(&out).await => {
-                    tracing::info!(pid = %out.provider_pid, %error, "message had arrived before");
-                    self.service.delivered(&out).map(|()| None)
-                }
-                // DSP: errors answering a termination may be ignored
-                Err(error) if out.transition == Transition::Terminate => {
-                    tracing::warn!(pid = %out.provider_pid, %error, "termination not acknowledged");
-                    self.service.delivered(&out).map(|()| None)
-                }
-                Err(error) => {
-                    tracing::warn!(pid = %out.provider_pid, %error, "consumer not reachable; terminating");
-                    self.service
-                        .abort(&out, "the consumer could not be reached")
-                }
+            let msg = Message {
+                pid: &out.provider_pid,
+                url: &out.url,
+                body: &out.body,
+                first: false,
+                terminating: out.transition == Transition::Terminate,
+            };
+            let arrived = arrived(&*self.sender, &out.status_url, out.to);
+            let next = match attempt(&*self.sender, &*self.guard, self.retry, &msg, arrived).await {
+                Outcome::Acknowledged(_)
+                | Outcome::ArrivedBefore
+                | Outcome::TerminationUnanswered => self.service.delivered(&out),
+                Outcome::NotStarted | Outcome::Unreachable => self
+                    .service
+                    .abort(&out, "the consumer could not be reached"),
             };
             match next {
-                Ok(Some(termination)) => out = termination,
+                Ok(Some(next)) => out = next,
                 Ok(None) => return,
                 Err(failure) => {
                     tracing::warn!(pid = %out.provider_pid, ?failure, "outgoing message not recorded");
@@ -331,15 +336,6 @@ impl TransferProvider {
                 }
             }
         }
-    }
-
-    /// Whether the consumer reports the state `out` leads to, that is,
-    /// `out` has arrived. `false` when it cannot tell.
-    async fn arrived(&self, out: &Outgoing) -> bool {
-        let answer = self.sender.get(&out.status_url).await;
-        answer.is_ok_and(|value| {
-            serde_json::from_value::<TransferProcess>(value).is_ok_and(|t| t.state == out.to)
-        })
     }
 
     /// Turns the service's answer into the HTTP response and starts
@@ -357,11 +353,47 @@ impl TransferProvider {
     }
 }
 
-fn bad_request(e: TransferError) -> Response {
+/// Checks a message's shape with `guard`, then reads it. A refusal is
+/// built by `refuse` from the other party's process id (the message's
+/// `other_pid_key` field, if any) and the reason.
+pub(crate) fn read_message<T: DeserializeOwned>(
+    guard: &(dyn MessageGuard + Send + Sync),
+    body: Body,
+    message_type: &str,
+    other_pid_key: &str,
+    refuse: impl Fn(&str, &str) -> TransferError,
+) -> Result<T, Box<TransferError>> {
+    let refuse = |other_pid: &str, reason: &str| Box::new(refuse(other_pid, reason));
+    let Json(value) = body.map_err(|e| refuse("", &e.body_text()))?;
+    let other_pid = value
+        .get(other_pid_key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    guard
+        .check(Direction::Inbound, message_type, &value)
+        .map_err(|r| refuse(&other_pid, &r.to_string()))?;
+    serde_json::from_value(value).map_err(|e| refuse(&other_pid, &e.to_string()))
+}
+
+/// Whether the other party reports, at `status_url`, the state `to` that
+/// our message leads to, that is, our message has arrived. `false` when it
+/// cannot tell.
+pub(crate) async fn arrived(sender: &dyn Sender, status_url: &str, to: TransferState) -> bool {
+    if status_url.is_empty() {
+        return false;
+    }
+    let answer = sender.get(status_url).await;
+    answer.is_ok_and(|value| {
+        serde_json::from_value::<TransferProcess>(value).is_ok_and(|t| t.state == to)
+    })
+}
+
+pub(crate) fn bad_request(e: TransferError) -> Response {
     (StatusCode::BAD_REQUEST, Json(e)).into_response()
 }
 
-fn failed(failure: Failure) -> Response {
+pub(crate) fn failed(failure: Failure) -> Response {
     let internal = |what: &str, error: &str| {
         tracing::error!(%error, "{what} failed");
         let e = TransferError::new("", "", "500", "internal error");
@@ -376,7 +408,7 @@ fn failed(failure: Failure) -> Response {
 }
 
 type Provider = State<Arc<TransferProvider>>;
-type Body = Result<Json<Value>, JsonRejection>;
+pub(crate) type Body = Result<Json<Value>, JsonRejection>;
 
 /// `GET /transfers/{providerPid}`.
 pub(crate) async fn get(State(p): Provider, Path(pid): Path<String>) -> Response {

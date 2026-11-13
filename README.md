@@ -58,6 +58,11 @@ The DSP endpoints follow the HTTPS bindings of
 | `POST /dsp/2025-1/transfers/{providerPid}/suspension` | Consumer suspends a transfer |
 | `POST /dsp/2025-1/transfers/{providerPid}/completion` | Consumer completes a transfer |
 | `POST /dsp/2025-1/transfers/{providerPid}/termination` | Consumer ends a transfer |
+| `GET /dsp/2025-1/callback/transfers/{consumerPid}` | Returns the state of a transfer this connector requested as consumer |
+| `POST /dsp/2025-1/callback/transfers/{consumerPid}/start` | Provider starts a transfer (with the data address) or starts it again |
+| `POST /dsp/2025-1/callback/transfers/{consumerPid}/suspension` | Provider suspends a transfer |
+| `POST /dsp/2025-1/callback/transfers/{consumerPid}/completion` | Provider completes a transfer |
+| `POST /dsp/2025-1/callback/transfers/{consumerPid}/termination` | Provider ends a transfer |
 | `GET /data/{flowId}` | The data of a started transfer, for the bearer token in its data address |
 | `GET /health` | Returns `ok` while the process runs |
 
@@ -125,8 +130,8 @@ state before giving up. See
 
 ### Management API
 
-Your own systems start and follow negotiations as consumer through the
-management API. It is not part of DSP, so it has its own port
+Your own systems start and follow negotiations and transfers as consumer
+through the management API. It is not part of DSP, so it has its own port
 (`PORTITOR_MANAGEMENT_BIND`) and is off unless `PORTITOR_MANAGEMENT_API_KEY_FILE`
 is set. Every call needs `Authorization: Bearer <key>`.
 
@@ -135,6 +140,11 @@ is set. Every call needs `Authorization: Bearer <key>`.
 | `POST /v1/negotiations` | Starts a negotiation with a provider for an offer from its catalog |
 | `GET /v1/negotiations/{consumerPid}` | Returns a negotiation; it holds the agreement once `state` is `FINALIZED` |
 | `GET /v1/negotiations?after=&limit=` | Lists negotiations, up to 100 at a time |
+| `POST /v1/transfers` | Requests a transfer under the agreement of one of our `FINALIZED` negotiations (`{"agreementId": ...}`; `format` defaults to `HttpData-PULL`) |
+| `GET /v1/transfers/{consumerPid}` | Returns a transfer; once `state` is `STARTED` it holds the `dataAddress` to fetch the data from |
+| `GET /v1/transfers?after=&limit=` | Lists transfers, up to 100 at a time |
+| `POST /v1/transfers/{consumerPid}/completion` | Completes a started transfer (you have the data) |
+| `POST /v1/transfers/{consumerPid}/termination` | Ends a transfer |
 | `GET /v1/openapi.json` | The OpenAPI description (no key needed); also in [docs/api/management-openapi.json](docs/api/management-openapi.json) |
 
 For example, with an offer copied unchanged from the provider's catalog
@@ -149,6 +159,22 @@ curl -s -X POST localhost:8081/v1/negotiations \
   "offer": {"@id": "air-quality:offer:until-2030", "@type": "Offer",
             "permission": [{"action": "use", "constraint": [{"leftOperand": "dateTime",
               "operator": "lteq", "rightOperand": "2030-12-31"}]}]}}'
+```
+
+Once the negotiation is `FINALIZED`, request a transfer under its
+agreement, wait for `STARTED`, then fetch the data yourself with the token
+from the data address (pull transfer,
+[ADR 0014](docs/adr/0014-transfers-as-consumer.md)):
+
+```sh
+curl -s -X POST localhost:8081/v1/transfers \
+  -H "authorization: Bearer $(cat key)" -H 'content-type: application/json' \
+  -d '{"agreementId": "urn:uuid:..."}'
+curl -s localhost:8081/v1/transfers/urn:uuid:... -H "authorization: Bearer $(cat key)"
+# dataAddress.endpoint, and the "authorization" endpoint property as a bearer token:
+curl -s https://provider.example/data/... -H "authorization: Bearer <token>"
+curl -s -X POST localhost:8081/v1/transfers/urn:uuid:.../completion \
+  -H "authorization: Bearer $(cat key)"
 ```
 
 The image carries

@@ -413,6 +413,8 @@ pub struct Ports {
     pub consumer_decider: AnyConsumerDecider,
     /// The adapters for transfers as provider.
     pub transfers: crate::transfer::TransferPorts,
+    /// The adapters for transfers as consumer.
+    pub consumer_transfers: crate::consumer_transfer::ConsumerTransferPorts,
     /// Where the built-in data plane keeps its flows. With a store (and
     /// the `data-plane` feature) the connector runs its HTTP pull data
     /// plane and uses it for transfers; `None` keeps `transfers.flows`.
@@ -436,6 +438,8 @@ impl Ports {
     pub fn new(sender: Arc<dyn Sender>) -> Self {
         // one store for negotiations and the agreements transfers need
         let negotiations = InMemoryNegotiations::default();
+        // likewise for the consumer side
+        let consumer_negotiations = InMemoryConsumerNegotiations::default();
         Self {
             store: AnyStore(Arc::new(negotiations.clone())),
             transfers: crate::transfer::TransferPorts::in_memory(negotiations),
@@ -446,20 +450,25 @@ impl Ports {
             sender,
             guard: Arc::new(AllowAll),
             retry: Retry::default(),
-            consumer_store: AnyConsumerStore(Arc::new(InMemoryConsumerNegotiations::default())),
+            consumer_transfers: crate::consumer_transfer::ConsumerTransferPorts::in_memory(
+                consumer_negotiations.clone(),
+            ),
+            consumer_store: AnyConsumerStore(Arc::new(consumer_negotiations)),
             consumer_decider: default_consumer_decider(),
         }
     }
 }
 
 impl Ports {
-    /// Keeps negotiations (as provider and as consumer), transfers and
+    /// Keeps negotiations and transfers (as provider and as consumer) and
     /// the agreements transfers are checked against in one `SQLite` file.
     pub fn use_sqlite(&mut self, store: &Arc<crate::store::SqliteNegotiations>) {
         self.store = AnyStore(Arc::clone(store) as _);
         self.consumer_store = AnyConsumerStore(Arc::clone(store) as _);
         self.transfers.store = crate::transfer::Shared(Arc::clone(store) as _);
         self.transfers.agreements = crate::transfer::Shared(Arc::clone(store) as _);
+        self.consumer_transfers.store = crate::transfer::Shared(Arc::clone(store) as _);
+        self.consumer_transfers.held = crate::transfer::Shared(Arc::clone(store) as _);
         if self.flow_store.is_some() {
             self.flow_store = Some(crate::transfer::Shared(Arc::clone(store) as _));
         }
@@ -562,25 +571,21 @@ impl Provider {
     /// for the consumer or the negotiation ends.
     async fn deliver(self: Arc<Self>, mut out: Outgoing) {
         loop {
-            let next = match self.send(&out).await {
-                Ok(_) => self.service.delivered(&out),
-                // the consumer refused or did not answer, but may have
-                // received it before (a lost answer, or a resend after a
-                // restart): its state says
-                Err(error) if arrived(&*self.sender, &out.status_url, out.to).await => {
-                    tracing::info!(pid = %out.provider_pid, %error, "message had arrived before");
-                    self.service.delivered(&out)
-                }
-                // DSP: errors answering a termination may be ignored
-                Err(error) if out.transition == Transition::Terminate => {
-                    tracing::warn!(pid = %out.provider_pid, %error, "termination not acknowledged");
-                    self.service.delivered(&out)
-                }
-                Err(error) => {
-                    tracing::warn!(pid = %out.provider_pid, %error, "consumer not reachable; terminating");
-                    self.service
-                        .abort(&out, "the consumer could not be reached")
-                }
+            let msg = Message {
+                pid: &out.provider_pid,
+                url: &out.url,
+                body: &out.body,
+                first: false,
+                terminating: out.transition == Transition::Terminate,
+            };
+            let arrived = arrived(&*self.sender, &out.status_url, out.to);
+            let next = match attempt(&*self.sender, &*self.guard, self.retry, &msg, arrived).await {
+                Outcome::Acknowledged(_)
+                | Outcome::ArrivedBefore
+                | Outcome::TerminationUnanswered => self.service.delivered(&out),
+                Outcome::NotStarted | Outcome::Unreachable => self
+                    .service
+                    .abort(&out, "the consumer could not be reached"),
             };
             match next {
                 Ok(Some(n)) => out = n,
@@ -591,10 +596,6 @@ impl Provider {
                 }
             }
         }
-    }
-
-    async fn send(&self, out: &Outgoing) -> Result<Value, String> {
-        send(&*self.sender, &*self.guard, self.retry, &out.url, &out.body).await
     }
 }
 
@@ -607,6 +608,68 @@ pub(crate) async fn arrived(sender: &dyn Sender, status_url: &str, to: Negotiati
     sender.get(status_url).await.is_ok_and(|answer| {
         serde_json::from_value::<ContractNegotiation>(answer).is_ok_and(|n| n.state == to)
     })
+}
+
+/// One saved message to send (ADR 0007), as [`attempt`] needs it.
+pub(crate) struct Message<'a> {
+    /// Our process id, for the log.
+    pub pid: &'a str,
+    /// Where to POST it.
+    pub url: &'a str,
+    /// The message.
+    pub body: &'a Value,
+    /// The consumer's first message (a request): if it never arrives, the
+    /// process never started on the other side.
+    pub first: bool,
+    /// A termination, whose missing answer DSP allows to ignore.
+    pub terminating: bool,
+}
+
+/// What became of a message [`attempt`] sent.
+pub(crate) enum Outcome {
+    /// The counter-party acknowledged it, with this answer.
+    Acknowledged(Value),
+    /// The counter-party refused it or did not answer, but its state shows
+    /// the message had arrived before (a lost answer, or a resend after a
+    /// restart).
+    ArrivedBefore,
+    /// The first message could not be delivered.
+    NotStarted,
+    /// A termination was not acknowledged; DSP lets us ignore that.
+    TerminationUnanswered,
+    /// The counter-party could not be reached: the process must end.
+    Unreachable,
+}
+
+/// Sends `msg` (see [`send`]) and says what became of it. `arrived` asks
+/// the counter-party whether the message had arrived before; it runs only
+/// when the send failed. The four adapters that send DSP messages share
+/// these rules and map the outcome to their own domain service.
+pub(crate) async fn attempt(
+    sender: &dyn Sender,
+    guard: &(dyn MessageGuard + Send + Sync),
+    retry: Retry,
+    msg: &Message<'_>,
+    arrived: impl Future<Output = bool>,
+) -> Outcome {
+    let pid = msg.pid;
+    let error = match send(sender, guard, retry, msg.url, msg.body).await {
+        Ok(answer) => return Outcome::Acknowledged(answer),
+        Err(error) => error,
+    };
+    if arrived.await {
+        tracing::info!(%pid, %error, "message had arrived before");
+        Outcome::ArrivedBefore
+    } else if msg.first {
+        tracing::warn!(%pid, %error, "counter-party not reachable; process not started");
+        Outcome::NotStarted
+    } else if msg.terminating {
+        tracing::warn!(%pid, %error, "termination not acknowledged");
+        Outcome::TerminationUnanswered
+    } else {
+        tracing::warn!(%pid, %error, "counter-party not reachable; terminating");
+        Outcome::Unreachable
+    }
 }
 
 /// Checks `body` with the guard, then POSTs it to `url`, retrying as

@@ -34,7 +34,8 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::negotiation::{
-    Ports, Retry, Sender, SystemEnvironment, arrived, bad_request, callback_allowed, failed, send,
+    Message, Outcome, Ports, Retry, Sender, SystemEnvironment, arrived, attempt, bad_request,
+    callback_allowed, failed,
 };
 
 /// Adapter: consumer negotiations kept in memory (lost on restart).
@@ -42,7 +43,7 @@ use crate::negotiation::{
 pub struct InMemoryConsumerNegotiations(Arc<Mutex<BTreeMap<String, ConsumerNegotiation>>>);
 
 impl InMemoryConsumerNegotiations {
-    fn map(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, ConsumerNegotiation>> {
+    pub(crate) fn map(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, ConsumerNegotiation>> {
         // every write is a single insert, so a panic cannot leave half an entry
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -78,14 +79,7 @@ impl ConsumerStore for InMemoryConsumerNegotiations {
         after: Option<&str>,
         limit: usize,
     ) -> Result<Vec<ConsumerNegotiation>, StoreError> {
-        let map = self.map();
-        let range = match after {
-            Some(a) => {
-                map.range::<str, _>((std::ops::Bound::Excluded(a), std::ops::Bound::Unbounded))
-            }
-            None => map.range::<str, _>(..),
-        };
-        Ok(range.take(limit).map(|(_, n)| n.clone()).collect())
+        Ok(page(&self.map(), after, limit))
     }
 
     fn pending(&self) -> Result<Vec<ConsumerNegotiation>, StoreError> {
@@ -96,6 +90,20 @@ impl ConsumerStore for InMemoryConsumerNegotiations {
             .cloned()
             .collect())
     }
+}
+
+/// Up to `limit` values of `map` whose keys sort after `after`, in key
+/// order: one page for the in-memory stores.
+pub(crate) fn page<V: Clone>(
+    map: &BTreeMap<String, V>,
+    after: Option<&str>,
+    limit: usize,
+) -> Vec<V> {
+    let range = match after {
+        Some(a) => map.range::<str, _>((std::ops::Bound::Excluded(a), std::ops::Bound::Unbounded)),
+        None => map.range::<str, _>(..),
+    };
+    range.take(limit).map(|(_, v)| v.clone()).collect()
 }
 
 /// Any [`ConsumerStore`], chosen at start.
@@ -292,29 +300,21 @@ impl Consumer {
     /// Sends one message and records the outcome; returns the next one.
     async fn step(&self, out: &Outgoing) -> Option<Outgoing> {
         let pid = &out.consumer_pid;
-        let sent = send(&*self.sender, &*self.guard, self.retry, &out.url, &out.body).await;
-        let next = match sent {
-            Ok(answer) => self.service.delivered(out, Some(&answer)),
-            // the provider refused or did not answer, but may have received
-            // it before (a lost answer, or a resend after a restart): its
-            // state says
-            Err(error) if arrived(&*self.sender, &out.status_url, out.to).await => {
-                tracing::info!(%pid, %error, "message had arrived before");
+        let msg = Message {
+            pid,
+            url: &out.url,
+            body: &out.body,
+            first: out.initial,
+            terminating: out.transition == Transition::Terminate,
+        };
+        let arrived = arrived(&*self.sender, &out.status_url, out.to);
+        let next = match attempt(&*self.sender, &*self.guard, self.retry, &msg, arrived).await {
+            Outcome::Acknowledged(answer) => self.service.delivered(out, Some(&answer)),
+            Outcome::ArrivedBefore | Outcome::TerminationUnanswered => {
                 self.service.delivered(out, None)
             }
-            Err(error) if out.initial => {
-                tracing::warn!(%pid, %error, "provider not reachable; negotiation not started");
-                self.service.not_started(pid).map(|()| None)
-            }
-            // DSP: errors answering a termination may be ignored
-            Err(error) if out.transition == Transition::Terminate => {
-                tracing::warn!(%pid, %error, "termination not acknowledged");
-                self.service.delivered(out, None)
-            }
-            Err(error) => {
-                tracing::warn!(%pid, %error, "provider not reachable; terminating");
-                self.service.abort(out, "the provider could not be reached")
-            }
+            Outcome::NotStarted => self.service.not_started(pid).map(|()| None),
+            Outcome::Unreachable => self.service.abort(out, "the provider could not be reached"),
         };
         match next {
             Ok(n) => n,

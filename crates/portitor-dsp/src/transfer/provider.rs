@@ -26,9 +26,11 @@ use crate::negotiation::Agreement;
 pub use crate::negotiation::provider::{Environment, StoreError};
 
 use super::{
-    DataAddress, Role, TransferError, TransferProcess, TransferRequestMessage,
-    TransferStartMessage, TransferStartMessageType, TransferState, TransferTerminationMessage,
-    TransferTerminationMessageType, Transition, TransitionError, next_state,
+    DataAddress, Role, TransferCompletionMessage, TransferCompletionMessageType, TransferError,
+    TransferProcess, TransferRequestMessage, TransferStartMessage, TransferStartMessageType,
+    TransferState, TransferSuspensionMessage, TransferSuspensionMessageType,
+    TransferTerminationMessage, TransferTerminationMessageType, Transition, TransitionError,
+    next_state,
 };
 
 /// One transfer as the provider keeps it.
@@ -145,12 +147,23 @@ pub trait DataFlows {
     fn suspend(&self, provider_pid: &str) -> Result<(), String>;
 
     /// Gives access again after [`DataFlows::suspend`], with the same
-    /// token.
+    /// token. Used when the consumer starts the transfer again.
     ///
     /// # Errors
     ///
     /// The data plane refused or failed, with the reason.
     fn resume(&self, provider_pid: &str) -> Result<(), String>;
+
+    /// Gives access again after [`DataFlows::suspend`] with a new token,
+    /// and returns the new address. Used when the provider starts the
+    /// transfer again: its start message must carry a data address (DSP
+    /// 2025-1, "Transfer Start Message"), and only the token's hash is
+    /// kept, so the old token cannot be sent again (ADR 0014).
+    ///
+    /// # Errors
+    ///
+    /// The data plane refused or failed, with the reason.
+    fn restart(&self, provider_pid: &str) -> Result<DataAddress, String>;
 
     /// Ends the data flow normally. Final.
     ///
@@ -167,31 +180,43 @@ pub trait DataFlows {
     fn terminate(&self, provider_pid: &str) -> Result<(), String>;
 }
 
-/// What the provider does with a transfer that is REQUESTED.
+/// What the provider does next with a transfer. A step the state machine
+/// does not allow in the transfer's state is not taken.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransferDecision {
-    /// Start the data flow and send the start message.
+    /// Start the data flow (REQUESTED) or start it again (SUSPENDED), and
+    /// send the start message with the data address.
     Start,
-    /// End the transfer.
+    /// Stop access for now and send the suspension (STARTED).
+    Suspend,
+    /// End the data flow normally and send the completion (STARTED).
+    Complete,
+    /// End the data flow and the transfer.
     Terminate,
     /// Do nothing now.
     Wait,
 }
 
-/// Port: the provider's policy for a requested transfer.
+/// Port: the provider's policy. It is asked when a transfer is new, and
+/// again each time the consumer acknowledges one of our messages.
 pub trait TransferDecider {
     /// The next step for `transfer`.
     fn decide(&self, transfer: &Transfer) -> TransferDecision;
 }
 
 /// The default policy: every accepted request starts at once (the request
-/// was already checked against the agreement).
+/// was already checked against the agreement); after that the provider
+/// only answers the consumer.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct StartAtOnce;
 
 impl TransferDecider for StartAtOnce {
-    fn decide(&self, _: &Transfer) -> TransferDecision {
-        TransferDecision::Start
+    fn decide(&self, t: &Transfer) -> TransferDecision {
+        if t.state == TransferState::Requested {
+            TransferDecision::Start
+        } else {
+            TransferDecision::Wait
+        }
     }
 }
 
@@ -384,21 +409,25 @@ where
         self.handle(pid, ids, caller, Transition::Terminate)
     }
 
-    /// Records that the consumer acknowledged `sent`. A message that is no
-    /// longer pending changes nothing.
+    /// Records that the consumer acknowledged `sent`, then asks the
+    /// decider for the next step and returns the message to send for it,
+    /// if any. A message that is no longer pending changes nothing.
     ///
     /// # Errors
     ///
     /// Unknown transfer, or the store failed.
-    pub fn delivered(&self, sent: &Outgoing) -> Result<(), Failure> {
-        self.update(&sent.provider_pid, None, |t| {
+    pub fn delivered(&self, sent: &Outgoing) -> Result<Option<Outgoing>, Failure> {
+        let saved = self.update(&sent.provider_pid, None, |t| {
             if t.pending.as_ref() != Some(sent) {
                 return Ok(false);
             }
             apply_sent(t, sent).map_err(|e| transition_failure(t, e))?;
+            if !t.state.is_terminal() {
+                t.pending = self.next(t);
+            }
             Ok(true)
-        })
-        .map(|_| ())
+        })?;
+        Ok(saved.and_then(|t| t.pending))
     }
 
     /// `sent` could not be delivered: end the data flow and the transfer,
@@ -512,16 +541,40 @@ where
         ))
     }
 
-    /// The provider's next message for a new transfer.
+    /// The provider's next message for `t`, as the decider says. The data
+    /// plane is told first (ADR 0013); if it refuses, the transfer ends.
     fn next(&self, t: &Transfer) -> Option<Outgoing> {
-        match self.decider.decide(t) {
-            TransferDecision::Wait => None,
-            TransferDecision::Terminate => Some(termination(t, "terminated by the provider")),
-            TransferDecision::Start => Some(match self.flows.start(t) {
-                Ok(address) => start_message(t, address),
-                Err(reason) => termination(t, &format!("the data plane refused: {reason}")),
-            }),
-        }
+        let transition = match self.decider.decide(t) {
+            TransferDecision::Wait => return None,
+            TransferDecision::Start => Transition::Start,
+            TransferDecision::Suspend => Transition::Suspend,
+            TransferDecision::Complete => Transition::Complete,
+            TransferDecision::Terminate => Transition::Terminate,
+        };
+        // a step the state machine does not allow here is not taken
+        next_state(Some(t.state), transition, Role::Provider).ok()?;
+        let pid = t.provider_pid.as_str();
+        // only a start gives an address (for the start message)
+        let signalled = match transition {
+            Transition::Start if t.state == TransferState::Requested => {
+                self.flows.start(t).map(Some)
+            }
+            Transition::Start => self.flows.restart(pid).map(Some),
+            Transition::Suspend => self.flows.suspend(pid).map(|()| None),
+            Transition::Complete => self.flows.complete(pid).map(|()| None),
+            _ => self.flows.terminate(pid).map(|()| None),
+        };
+        Some(match (signalled, transition) {
+            (Ok(Some(address)), _) => start_message(t, address),
+            (Ok(None), Transition::Suspend) => suspension(t),
+            (Ok(None), Transition::Complete) => completion(t),
+            (Ok(None), _) => termination(t, "terminated by the provider"),
+            (Err(reason), _) => {
+                // end whatever the data plane still serves (best effort)
+                let _ = self.flows.terminate(pid);
+                termination(t, &format!("the data plane refused: {reason}"))
+            }
+        })
     }
 }
 
@@ -542,6 +595,30 @@ fn start_message(t: &Transfer, address: DataAddress) -> Outgoing {
         data_address: Some(address),
     };
     outgoing(t, "start", &msg, Transition::Start)
+}
+
+fn suspension(t: &Transfer) -> Outgoing {
+    let msg = TransferSuspensionMessage {
+        context: Context::default(),
+        kind: TransferSuspensionMessageType,
+        provider_pid: t.provider_pid.clone(),
+        consumer_pid: t.consumer_pid.clone(),
+        code: None,
+        reason: vec![serde_json::Value::String(
+            "suspended by the provider".to_owned(),
+        )],
+    };
+    outgoing(t, "suspension", &msg, Transition::Suspend)
+}
+
+fn completion(t: &Transfer) -> Outgoing {
+    let msg = TransferCompletionMessage {
+        context: Context::default(),
+        kind: TransferCompletionMessageType,
+        provider_pid: t.provider_pid.clone(),
+        consumer_pid: t.consumer_pid.clone(),
+    };
+    outgoing(t, "completion", &msg, Transition::Complete)
 }
 
 fn termination(t: &Transfer, reason: &str) -> Outgoing {

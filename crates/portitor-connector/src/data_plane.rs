@@ -99,6 +99,20 @@ pub trait FlowStore {
         from: DataFlowState,
         to: DataFlowState,
     ) -> Result<bool, FlowStoreError>;
+
+    /// Replaces the token of a flow that is in `state`: the old token stops
+    /// working. Returns `false` if the flow was not in `state`.
+    ///
+    /// # Errors
+    ///
+    /// The store cannot be written.
+    fn set_token(
+        &self,
+        id: &str,
+        state: DataFlowState,
+        token_hash: &str,
+        expires_at: u64,
+    ) -> Result<bool, FlowStoreError>;
 }
 
 /// The flow store chosen at start.
@@ -118,6 +132,15 @@ impl FlowStore for AnyFlowStore {
         to: DataFlowState,
     ) -> Result<bool, FlowStoreError> {
         self.0.set_state(id, from, to)
+    }
+    fn set_token(
+        &self,
+        id: &str,
+        state: DataFlowState,
+        token_hash: &str,
+        expires_at: u64,
+    ) -> Result<bool, FlowStoreError> {
+        self.0.set_token(id, state, token_hash, expires_at)
     }
 }
 
@@ -156,6 +179,24 @@ impl FlowStore for InMemoryFlows {
         match map.get_mut(id) {
             Some(flow) if flow.state == from => {
                 flow.state = to;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    fn set_token(
+        &self,
+        id: &str,
+        state: DataFlowState,
+        token_hash: &str,
+        expires_at: u64,
+    ) -> Result<bool, FlowStoreError> {
+        let mut map = self.map();
+        match map.get_mut(id) {
+            Some(flow) if flow.state == state => {
+                token_hash.clone_into(&mut flow.token_hash);
+                flow.expires_at = expires_at;
                 Ok(true)
             }
             _ => Ok(false),
@@ -290,6 +331,53 @@ impl HttpDataPlane {
         }
     }
 
+    /// Where the consumer fetches flow `id`'s data, with `token`.
+    fn address(&self, id: &str, token: &str) -> DataAddress {
+        DataAddress {
+            kind: DataAddressType,
+            endpoint_type: HTTP_ENDPOINT_TYPE.to_owned(),
+            endpoint: Some(format!("{}{DATA_PATH}/{id}", self.public_url)),
+            endpoint_properties: vec![
+                EndpointProperty::new("authorization", token),
+                EndpointProperty::new("authType", "bearer"),
+            ],
+        }
+    }
+
+    /// Gives flow `id` (SUSPENDED or STARTED) a new token with a full
+    /// lifetime, and returns its new address; the old token stops working.
+    /// Not part of Data Plane Signaling: the provider needs it to start a
+    /// pull transfer again, because only the token's hash is kept (ADR
+    /// 0014).
+    ///
+    /// # Errors
+    ///
+    /// Unknown or ended flow, or the store failed.
+    pub fn new_address(&self, id: &str) -> Result<DataAddress, SignalError> {
+        let flow = self.flow(id)?;
+        if !matches!(
+            flow.state,
+            DataFlowState::Suspended | DataFlowState::Started
+        ) {
+            return Err(SignalError::Invalid(format!(
+                "data flow {id} is {:?}; it has no access to renew",
+                flow.state
+            )));
+        }
+        let token = new_token()?;
+        let expires_at = now_secs().saturating_add(self.token_seconds);
+        let renewed = self
+            .flows
+            .set_token(id, flow.state, &hash(&token), expires_at)
+            .map_err(Self::store_failed)?;
+        if !renewed {
+            return Err(SignalError::Failed(format!(
+                "data flow {id} changed concurrently"
+            )));
+        }
+        Ok(self.address(id, &token))
+    }
+
     /// Checks a request for flow `id` with bearer `token`, and returns the
     /// upstream URL to fetch.
     ///
@@ -353,15 +441,7 @@ impl DataPlane for HttpDataPlane {
         if !self.flows.insert(&flow).map_err(Self::store_failed)? {
             return Err(SignalError::DataFlowExists(flow.id));
         }
-        let address = DataAddress {
-            kind: DataAddressType,
-            endpoint_type: HTTP_ENDPOINT_TYPE.to_owned(),
-            endpoint: Some(format!("{}{DATA_PATH}/{}", self.public_url, flow.id)),
-            endpoint_properties: vec![
-                EndpointProperty::new("authorization", &token),
-                EndpointProperty::new("authType", "bearer"),
-            ],
-        };
+        let address = self.address(&flow.id, &token);
         Ok(Self::status_message(&flow.id, flow.state, Some(address)))
     }
 
@@ -503,6 +583,28 @@ mod tests {
             message_id: "m".to_owned(),
             reason: None,
         }
+    }
+
+    #[test]
+    fn a_new_address_replaces_the_token() {
+        let p = plane();
+        let old = token_of(&p.start(&start("d1", HTTP_PULL)).unwrap());
+        p.suspend("f1", &reason()).unwrap();
+        let address = p.new_address("f1").unwrap();
+        let new = address.property("authorization").unwrap().to_owned();
+        assert_ne!(new, old);
+        let resume = AddressMessage {
+            message_id: "m".to_owned(),
+            data_address: None,
+        };
+        p.resume("f1", &resume).unwrap();
+        let now = now_secs();
+        assert!(p.authorize("f1", &new, now).is_ok());
+        assert_eq!(p.authorize("f1", &old, now), Err(Denied::Unauthorized));
+
+        p.completed("f1").unwrap();
+        assert!(p.new_address("f1").is_err(), "an ended flow gets no token");
+        assert!(p.new_address("unknown").is_err());
     }
 
     #[test]

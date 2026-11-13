@@ -150,12 +150,17 @@ start with an error.
   not blocked yet. Put the connector in a network zone where it cannot
   reach internal services it should not call (egress firewall or network
   policy).
-- **Management API.** It can start negotiations in your name, so treat its
+- **Management API.** It can start negotiations and transfers in your
+  name, and it shows the data access tokens of your transfers, so treat its
   key like a password: a file readable only by the connector, mounted from
   your secret store, at least 32 characters. Only an HMAC of the key is
   kept in memory, and keys are compared in constant time. The port speaks
   plain HTTP: keep it on a private network or behind TLS, and never on the
   public proxy. To change the key, replace the file and restart.
+- **The database file holds access tokens.** As consumer, the connector
+  keeps the data address of each usable transfer, token included, in
+  `/data/portitor.db` until the transfer ends (ADR 0014). Protect the volume
+  and its backups like the management key.
 - Do not set `PORTITOR_ALLOW_HTTP_CALLBACKS=true` outside development and tests.
 - Report vulnerabilities as described in [SECURITY.md](../SECURITY.md).
 
@@ -192,8 +197,8 @@ The database is `/data/portitor.db` plus, while the connector runs,
 - **Restore:** stop the container, replace the `portitor.db*` files with the
   backup (delete any old `-wal` and `-shm` files), start it.
 
-Negotiations that were in progress at backup time continue from their
-saved state.
+Negotiations and transfers that were in progress at backup time continue
+from their saved state.
 
 ### Upgrade and rollback
 
@@ -226,3 +231,7 @@ In this version (see also [SECURITY-ASSURANCE.md](SECURITY-ASSURANCE.md)):
   after the transfer starts and is not renewed; the consumer then asks for
   a new transfer. Only `GET` of the whole source; no credentials are sent
   to it.
+- Transfers as consumer: your own system fetches the data with the data
+  address from the management API; the connector does not download it.
+  The management API completes or terminates a transfer; suspend and start
+  again are not offered yet.

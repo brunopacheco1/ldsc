@@ -18,6 +18,7 @@ use portitor_dsp::negotiation::provider::{self, Negotiation, NegotiationStore, S
 use portitor_dsp::negotiation::{NegotiationState, Transition};
 use rusqlite::{Connection, Row, params};
 
+mod consumer_transfers;
 mod data_flows;
 mod transfers;
 use serde::{Deserialize, Serialize};
@@ -75,6 +76,21 @@ const MIGRATIONS: &[&str] = &[
         dataset_id TEXT NOT NULL,
         token_hash TEXT NOT NULL,
         expires_at INTEGER NOT NULL
+    )",
+    // 0.4: transfers as consumer (ADR 0014); `data_address` holds the
+    // provider's data address with its access token, only while the
+    // transfer can still be used
+    "CREATE TABLE consumer_transfer (
+        consumer_pid     TEXT PRIMARY KEY,
+        provider_pid     TEXT,
+        state            TEXT NOT NULL,
+        provider_address TEXT NOT NULL,
+        provider_id      TEXT NOT NULL,
+        agreement_id     TEXT NOT NULL,
+        format           TEXT NOT NULL,
+        data_address     TEXT,
+        pending          TEXT,
+        version          INTEGER NOT NULL DEFAULT 0
     )",
 ];
 

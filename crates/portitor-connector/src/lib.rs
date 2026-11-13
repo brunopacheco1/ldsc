@@ -21,6 +21,8 @@ use portitor_dsp::catalog::{
     CatalogService, DatasetDefinitionError, DatasetStore, Outcome, prepare_datasets,
 };
 use portitor_dsp::negotiation::provider::Failure;
+use portitor_dsp::transfer::consumer::{ConsumerTransfer, ConsumerTransferDecision};
+use portitor_dsp::transfer::provider::Failure as TransferFailure;
 use portitor_dsp::{
     Binding, CatalogError, CatalogRequestMessage, Dataset, ProtocolVersion, VERSION,
     VersionResponse,
@@ -28,6 +30,7 @@ use portitor_dsp::{
 use serde::Serialize;
 
 pub mod consumer;
+pub mod consumer_transfer;
 pub mod data_flows;
 pub mod data_plane;
 pub mod management;
@@ -232,14 +235,15 @@ struct AppState {
     versions: VersionResponse,
 }
 
-/// Starts contract negotiations as consumer, and resends messages saved
-/// before a restart. Must be used inside the Tokio runtime: the messages
+/// Starts and follows contract negotiations and transfers as consumer (the
+/// management API's handle), and resends messages saved before a restart. Must be used inside the Tokio runtime: the messages
 /// are sent in the background.
 #[derive(Clone)]
 pub struct Negotiator {
     consumer: Arc<consumer::Consumer>,
     provider: Arc<negotiation::Provider>,
     transfers: Arc<transfer::TransferProvider>,
+    transfer_consumer: Arc<consumer_transfer::TransferConsumer>,
 }
 
 impl std::fmt::Debug for Negotiator {
@@ -294,22 +298,79 @@ impl Negotiator {
         self.consumer.list(after, limit)
     }
 
+    /// Requests a transfer as consumer under `agreement_id`, an agreement
+    /// of one of our finalized negotiations, in `format` (for example
+    /// `HttpData-PULL`), from the provider that granted it. Returns the new
+    /// transfer in state `REQUESTED`; the request is sent in the
+    /// background.
+    ///
+    /// # Errors
+    ///
+    /// We hold no such agreement, the format is empty, or the store failed.
+    pub fn request_transfer(
+        &self,
+        agreement_id: &str,
+        format: &str,
+    ) -> Result<ConsumerTransfer, Box<TransferFailure>> {
+        self.transfer_consumer.request(agreement_id, format)
+    }
+
+    /// The transfer, as consumer, with this consumer pid.
+    ///
+    /// # Errors
+    ///
+    /// Unknown transfer, or the store failed.
+    pub fn transfer(&self, consumer_pid: &str) -> Result<ConsumerTransfer, Box<TransferFailure>> {
+        self.transfer_consumer.transfer(consumer_pid)
+    }
+
+    /// Up to `limit` transfers as consumer (at most 100) after the
+    /// consumer pid `after`, in consumer pid order.
+    ///
+    /// # Errors
+    ///
+    /// The store failed.
+    pub fn transfers(
+        &self,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<ConsumerTransfer>, Box<TransferFailure>> {
+        self.transfer_consumer.list(after, limit)
+    }
+
+    /// Takes our own step on a transfer as consumer: suspend, start again,
+    /// complete or terminate. The message is sent in the background.
+    ///
+    /// # Errors
+    ///
+    /// Unknown transfer, a step its state does not allow, a message still
+    /// on its way, or the store failed.
+    pub fn act_on_transfer(
+        &self,
+        consumer_pid: &str,
+        decision: ConsumerTransferDecision,
+    ) -> Result<ConsumerTransfer, Box<TransferFailure>> {
+        self.transfer_consumer.act(consumer_pid, decision)
+    }
+
     /// Sends again, in the background, every message that was saved but
-    /// not acknowledged (negotiations as provider and as consumer,
-    /// transfers as provider), for example after a restart. Call it once
-    /// at start. Returns how many.
+    /// not acknowledged (negotiations and transfers, as provider and as
+    /// consumer), for example after a restart. Call it once at start.
+    /// Returns how many.
     ///
     /// # Errors
     ///
     /// The store failed.
     pub fn resume(&self) -> Result<usize, Box<Failure>> {
-        let transfers = self.transfers.resume().map_err(|f| {
-            // reported like a negotiation store failure: both are the same file
+        // reported like a negotiation store failure: all are the same file
+        let as_store_failure = |f: Box<TransferFailure>| {
             Box::new(Failure::Store(
                 portitor_dsp::negotiation::provider::StoreError(format!("{f:?}")),
             ))
-        })?;
-        Ok(self.provider.resume()? + self.consumer.resume()? + transfers)
+        };
+        let transfers = self.transfers.resume().map_err(as_store_failure)?;
+        let consumer_transfers = self.transfer_consumer.resume().map_err(as_store_failure)?;
+        Ok(self.provider.resume()? + self.consumer.resume()? + transfers + consumer_transfers)
     }
 }
 
@@ -327,7 +388,7 @@ pub fn router(config: &Config, ports: Ports) -> Result<Router, DatasetDefinition
 }
 
 /// Like [`router`], and also returns the handle that starts negotiations
-/// as consumer.
+/// and transfers as consumer.
 ///
 /// # Errors
 ///
@@ -340,12 +401,23 @@ pub fn build(
     let service_id = endpoint_url.clone();
     let datasets = prepare_datasets(config.datasets.clone(), &service_id)?;
     let datasets = InMemoryDatasets::new(datasets);
+    let callback_address = format!("{}{CALLBACK_PATH}", config.public_url.trim_end_matches('/'));
     let consumer = Arc::new(consumer::Consumer::new(
         &ports,
-        format!("{}{CALLBACK_PATH}", config.public_url.trim_end_matches('/')),
+        callback_address.clone(),
+        config.allow_http_callbacks,
+    ));
+    let transfer_consumer = Arc::new(consumer_transfer::TransferConsumer::new(
+        &ports,
+        callback_address,
         config.allow_http_callbacks,
     ));
     let mut ports = ports;
+    #[cfg(feature = "tck")]
+    {
+        let stored = ports.transfers.agreements.clone();
+        ports.transfers.agreements = transfer::Shared(Arc::new(tck::TckAgreements(stored)));
+    }
     let data_plane = start_data_plane(config, &mut ports);
     let transfers = Arc::new(transfer::TransferProvider::new(
         &ports,
@@ -379,6 +451,7 @@ pub fn build(
         consumer: Arc::clone(&consumer),
         provider: Arc::clone(&provider),
         transfers: Arc::clone(&transfers),
+        transfer_consumer: Arc::clone(&transfer_consumer),
     };
     let router = Router::new()
         .route("/.well-known/dspace-version", get(version))
@@ -392,7 +465,8 @@ pub fn build(
         .merge(negotiation_routes(provider))
         .merge(transfer_routes(transfers))
         .merge(data_routes(data_plane))
-        .merge(callback_routes(consumer));
+        .merge(callback_routes(consumer))
+        .merge(transfer_callback_routes(transfer_consumer));
     Ok((router, negotiator))
 }
 
@@ -409,6 +483,31 @@ fn callback_routes(consumer: Arc<consumer::Consumer>) -> Router {
         );
     #[cfg(feature = "tck")]
     let router = router.route("/tck/negotiations", post(tck::initiate));
+    router.with_state(consumer)
+}
+
+fn transfer_callback_routes(consumer: Arc<consumer_transfer::TransferConsumer>) -> Router {
+    let t = format!("{CALLBACK_PATH}/transfers");
+    let router = Router::new()
+        .route(&format!("{t}/{{pid}}"), get(consumer_transfer::get))
+        .route(
+            &format!("{t}/{{pid}}/start"),
+            post(consumer_transfer::start),
+        )
+        .route(
+            &format!("{t}/{{pid}}/suspension"),
+            post(consumer_transfer::suspension),
+        )
+        .route(
+            &format!("{t}/{{pid}}/completion"),
+            post(consumer_transfer::completion),
+        )
+        .route(
+            &format!("{t}/{{pid}}/termination"),
+            post(consumer_transfer::termination),
+        );
+    #[cfg(feature = "tck")]
+    let router = router.route("/tck/transfers", post(tck::initiate_transfer));
     router.with_state(consumer)
 }
 

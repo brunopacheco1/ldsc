@@ -83,6 +83,25 @@ impl FlowStore for SqliteNegotiations {
             .map_err(failed)?;
         Ok(changed == 1)
     }
+
+    fn set_token(
+        &self,
+        id: &str,
+        state: DataFlowState,
+        token_hash: &str,
+        expires_at: u64,
+    ) -> Result<bool, FlowStoreError> {
+        let expires_at = i64::try_from(expires_at).unwrap_or(i64::MAX);
+        let changed = self
+            .conn()
+            .execute(
+                "UPDATE data_flow SET token_hash = ?3, expires_at = ?4
+                 WHERE id = ?1 AND state = ?2",
+                params![id, state_text(state)?, token_hash, expires_at],
+            )
+            .map_err(failed)?;
+        Ok(changed == 1)
+    }
 }
 
 #[cfg(test)]
@@ -109,5 +128,14 @@ mod tests {
         assert!(store.set_state("f1", started, suspended).unwrap());
         assert!(!store.set_state("f1", started, suspended).unwrap());
         assert_eq!(store.get("f1").unwrap().unwrap().state, suspended);
+
+        let new_hash = "cd".repeat(32);
+        assert!(
+            !store.set_token("f1", started, &new_hash, 9).unwrap(),
+            "not started"
+        );
+        assert!(store.set_token("f1", suspended, &new_hash, 9).unwrap());
+        let renewed = store.get("f1").unwrap().unwrap();
+        assert_eq!((renewed.token_hash, renewed.expires_at), (new_hash, 9));
     }
 }
