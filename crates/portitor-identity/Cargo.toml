@@ -26,7 +26,7 @@ utoipa.workspace = true
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "fs"] }
 # For the test-only demo authority (examples/test-issuer, ADR 0015): the
 # HTTP calls that deliver its credentials (hyper, http-body-util, as
 # portitor-runtime uses them).

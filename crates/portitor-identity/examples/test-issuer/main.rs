@@ -145,7 +145,9 @@ async fn deliver(flags: &Flags) -> Result<(), String> {
     let authority = load_authority(flags)?;
     let credential = issue(&authority, flags)?;
     let api_key_file = flags.required("api-key-file")?;
-    let api_key = std::fs::read_to_string(api_key_file)
+    // async read: this runs inside the tokio runtime
+    let api_key = tokio::fs::read_to_string(api_key_file)
+        .await
         .map_err(|e| format!("cannot read {api_key_file}: {e}"))?;
     let holder = deliver::Holder {
         management_url: flags
