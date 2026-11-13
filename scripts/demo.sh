@@ -3,17 +3,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-# Two Portitor connectors on this machine agree a contract.
-#
-# The provider offers examples/datasets.json. The consumer reads the
-# provider's catalog, copies the air-quality offer unchanged and starts a
-# negotiation through its management API; the negotiation must end
-# FINALIZED with an agreement. Then it asks for the same offer id without
-# its constraint; the provider must terminate that one (ADR 0009).
+# Two Portitor connectors on this machine agree a contract and transfer a
+# file. The provider offers examples/datasets.json, with the air-quality
+# data (examples/data/air-quality.csv) served by a local web server as its
+# source. The checks are in scripts/demo-steps.sh; scripts/demo-compose.sh
+# runs the same checks in Docker Compose.
 #
 # Usage: scripts/demo.sh [path to portitor-connector]
-# Needs curl, jq and openssl. Without a path it builds the debug binary.
-# Exits non-zero if a step fails, so CI runs it as the 0.3 exit check.
+# Needs curl, jq, openssl and python3. Without a path it builds the debug
+# binary. Exits non-zero if a step fails, so CI runs it.
 
 set -euo pipefail
 
@@ -26,7 +24,7 @@ fi
 PROVIDER=127.0.0.1:18080
 CONSUMER=127.0.0.1:18090
 MANAGEMENT=127.0.0.1:18091
-DSP=dsp/2025-1
+DATA=127.0.0.1:18070
 
 WORK=$(mktemp -d)
 PIDS=()
@@ -52,11 +50,20 @@ wait_for() { # url
   fail "$1 did not answer"
 }
 
+step "Serve the demo data on $DATA"
+python3 -m http.server --bind 127.0.0.1 --directory examples/data 18070 \
+  >"$WORK/data.log" 2>&1 &
+PIDS+=($!)
+# the example datasets, with the air-quality data at that server
+jq --arg src "http://$DATA/air-quality.csv" \
+  'map(if .["@id"] == "air-quality" then . + {"portitor:source": $src} else . end)' \
+  examples/datasets.json >"$WORK/datasets.json"
+
 step "Start the provider on $PROVIDER and the consumer on $CONSUMER"
 PORTITOR_BIND=$PROVIDER \
 PORTITOR_PUBLIC_URL=http://$PROVIDER \
 PORTITOR_PARTICIPANT_ID="did:web:127.0.0.1%3A18080" \
-PORTITOR_DATASETS_FILE=examples/datasets.json \
+PORTITOR_DATASETS_FILE="$WORK/datasets.json" \
 PORTITOR_DB_FILE="$WORK/provider.db" \
 PORTITOR_ALLOW_HTTP_CALLBACKS=true \
   "$BIN" >"$WORK/provider.log" 2>&1 &
@@ -73,52 +80,11 @@ PORTITOR_ALLOW_HTTP_CALLBACKS=true \
   "$BIN" >"$WORK/consumer.log" 2>&1 &
 PIDS+=($!)
 
+wait_for "http://$DATA/air-quality.csv"
 wait_for "http://$PROVIDER/health"
 wait_for "http://$CONSUMER/health"
-wait_for "http://$MANAGEMENT/v1/openapi.json"
 
-step "Read the provider's catalog"
-CATALOG=$(curl -sf -X POST "http://$PROVIDER/$DSP/catalog/request" \
-  -H 'content-type: application/json' -d '{
-    "@context": ["https://w3id.org/dspace/2025/1/context.jsonld"],
-    "@type": "CatalogRequestMessage"}') || fail "catalog request"
-PROVIDER_ID=$(jq -r '.participantId' <<<"$CATALOG")
-OFFER=$(jq -c '.dataset[] | select(.["@id"] == "air-quality") | .hasPolicy[0]' <<<"$CATALOG")
-[[ -n $OFFER ]] || fail "no air-quality offer in the catalog"
-echo "provider $PROVIDER_ID offers: $OFFER"
+PROVIDER=http://$PROVIDER MANAGEMENT=http://$MANAGEMENT KEY_FILE="$WORK/key" \
+  EXPECTED=examples/data/air-quality.csv TMPDIR="$WORK" scripts/demo-steps.sh ||
+  fail "the demo steps"
 
-negotiate() { # offer -> prints the final negotiation
-  local body pid view state
-  body=$(jq -nc --arg addr "http://$PROVIDER/$DSP" --arg id "$PROVIDER_ID" \
-    --argjson offer "$1" \
-    '{providerAddress: $addr, providerId: $id, datasetId: "air-quality", offer: $offer}')
-  pid=$(curl -sf -X POST "http://$MANAGEMENT/v1/negotiations" \
-    -H "authorization: Bearer $(cat "$WORK/key")" \
-    -H 'content-type: application/json' -d "$body" | jq -r '.consumerPid') \
-    || fail "start negotiation"
-  for _ in $(seq 1 100); do
-    view=$(curl -sf "http://$MANAGEMENT/v1/negotiations/$pid" \
-      -H "authorization: Bearer $(cat "$WORK/key")") || fail "read negotiation $pid"
-    state=$(jq -r '.state' <<<"$view")
-    if [[ $state == FINALIZED || $state == TERMINATED ]]; then
-      echo "$view"
-      return 0
-    fi
-    sleep 0.2
-  done
-  fail "negotiation $pid still $state"
-}
-
-step "Negotiate the catalog offer unchanged: the provider agrees"
-VIEW=$(negotiate "$OFFER")
-jq '{consumerPid, providerPid, state, agreement}' <<<"$VIEW"
-[[ $(jq -r '.state' <<<"$VIEW") == FINALIZED ]] || fail "expected FINALIZED"
-[[ $(jq -r '.agreement["@type"]' <<<"$VIEW") == Agreement ]] || fail "no agreement"
-
-step "Negotiate the same offer id without its constraint: the provider refuses"
-CHANGED=$(jq -c 'del(.permission[0].constraint)' <<<"$OFFER")
-VIEW=$(negotiate "$CHANGED")
-jq '{consumerPid, providerPid, state}' <<<"$VIEW"
-[[ $(jq -r '.state' <<<"$VIEW") == TERMINATED ]] || fail "expected TERMINATED"
-
-step "Done: two Portitor connectors agreed a contract and refused changed terms"

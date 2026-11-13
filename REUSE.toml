@@ -14,6 +14,9 @@ path = [
     "crates/*/tests/fixtures/**",
     # JSON has no comments
     "examples/*.json",
+    "examples/compose/*.json",
+    # made-up demo data (CSV has no comments)
+    "examples/data/*",
     "tck/*.json",
     "docs/api/*.json",
     # Bruno API client collection (.bru and bruno.json have no comment syntax we rely on)

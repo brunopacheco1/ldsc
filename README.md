@@ -208,10 +208,22 @@ DSP context defines the `dct`, `dcat` and `odrl` prefixes); Portitor does not
 validate them yet. See
 [examples/datasets.json](examples/datasets.json).
 
-To see two connectors agree a contract on your machine, run
-`scripts/demo.sh` (needs Rust, `curl`, `jq` and `openssl`).
+To see two connectors agree a contract and transfer a file, run the demo
+in Docker Compose (needs Docker, `curl`, `jq` and `openssl`):
 
-Run the image with the example datasets:
+```sh
+scripts/demo-compose.sh
+```
+
+It starts a provider, a consumer and a small web server that holds the
+provider's data ([examples/compose](examples/compose)). Then it reads the
+provider's catalog, agrees a contract, checks that changed terms are
+refused, transfers [examples/data/air-quality.csv](examples/data/air-quality.csv),
+fetches it with the token and completes the transfer. It stops everything
+at the end. `scripts/demo.sh` does the same without Docker (needs Rust and
+Python 3 as well).
+
+Run one connector with the example datasets:
 
 ```sh
 docker run --rm -p 8080:8080 \

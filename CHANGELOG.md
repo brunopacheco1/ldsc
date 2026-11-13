@@ -13,6 +13,11 @@ versions may change behaviour and configuration.
 ## [Unreleased]
 
 ### Added
+- Demo in Docker Compose (`examples/compose`, `scripts/demo-compose.sh`):
+  a provider, a consumer and a web server for the provider's data. Two
+  connectors agree a contract, transfer a file, fetch it and complete the
+  transfer. CI runs it with the image it builds. `scripts/demo.sh` now
+  does the same transfer without Docker.
 - Transfer process as consumer (DSP 2025-1, ADR 0014): the callback
   endpoints `/dsp/2025-1/callback/transfers/...`, and in the management
   API `POST /v1/transfers` (under the agreement of one of our finalized
