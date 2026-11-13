@@ -362,6 +362,7 @@ mod tests {
             transition: Transition::Agree,
             to: NegotiationState::Agreed,
             status_url: "https://c.example/negotiations/c".into(),
+            counter_party: UNAUTHENTICATED.into(),
         });
         assert!(store.replace_if(&offered, 1).unwrap());
         assert_eq!(store.pending().unwrap(), vec![offered]);

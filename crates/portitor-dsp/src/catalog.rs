@@ -29,6 +29,53 @@ pub enum Outcome<T> {
     NotFound(CatalogError),
 }
 
+/// The DSP 2025-1 namespace: in expanded JSON-LD, every DSP term is this
+/// IRI plus the term (for example `CatalogRequestMessage`).
+pub const DSPACE_NAMESPACE: &str = "https://w3id.org/dspace/2025/1/";
+
+/// Reads a `CatalogRequestMessage` in compacted form (what DSP 2025-1
+/// sends), or in the one expanded form the DCP TCK v1.2.1 sends to start
+/// its verifier tests: `@type` is the full IRI and the filter, if present,
+/// is empty (README, "Testing the verifier"; the TCK's own trigger
+/// message). Both mean the same JSON-LD message. Any other expanded
+/// content is refused, as Portitor does not process JSON-LD.
+///
+/// # Errors
+///
+/// Not a catalog request in either form; the text says why.
+pub fn read_catalog_request(value: serde_json::Value) -> Result<CatalogRequestMessage, String> {
+    let expanded_type = format!("{DSPACE_NAMESPACE}CatalogRequestMessage");
+    let expanded_filter = format!("{DSPACE_NAMESPACE}filter");
+    let is_expanded = value.get("@context").is_none()
+        && value.get("@type").and_then(serde_json::Value::as_str) == Some(&expanded_type);
+    if !is_expanded {
+        return serde_json::from_value(value).map_err(|e| e.to_string());
+    }
+    let Some(fields) = value.as_object() else {
+        return Err("not a JSON object".to_owned());
+    };
+    for (key, field) in fields {
+        let empty_filter = *key == expanded_filter && is_empty_json(field);
+        if key != "@type" && !empty_filter {
+            return Err(format!("expanded field {key} is not supported"));
+        }
+    }
+    Ok(CatalogRequestMessage {
+        context: Context::default(),
+        kind: crate::CatalogRequestMessageType,
+        filter: None,
+    })
+}
+
+/// `{}` or `[]`.
+fn is_empty_json(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Object(map) => map.is_empty(),
+        serde_json::Value::Array(list) => list.is_empty(),
+        _ => false,
+    }
+}
+
 /// Why a set of dataset definitions cannot be offered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DatasetDefinitionError {
@@ -309,5 +356,29 @@ mod tests {
         let mut d = dataset("a");
         d.distribution[0].access_service = "svc".to_owned();
         assert!(prepare_datasets(vec![d], "svc").is_ok());
+    }
+
+    #[test]
+    fn reads_compacted_and_the_tck_expanded_catalog_request() {
+        let compact = serde_json::json!({"@context": [crate::CONTEXT],
+            "@type": "CatalogRequestMessage"});
+        assert!(read_catalog_request(compact).is_ok());
+        // the DCP TCK v1.2.1 trigger message
+        let expanded = serde_json::json!({
+            "@type": "https://w3id.org/dspace/2025/1/CatalogRequestMessage",
+            "https://w3id.org/dspace/2025/1/filter": {}
+        });
+        let msg = read_catalog_request(expanded).unwrap();
+        assert_eq!(msg.filter, None);
+        for refused in [
+            serde_json::json!({"@type": "https://w3id.org/dspace/2025/1/CatalogRequestMessage",
+                "https://w3id.org/dspace/2025/1/filter": {"x": 1}}),
+            serde_json::json!({"@type": "https://w3id.org/dspace/2025/1/CatalogRequestMessage",
+                "other": []}),
+            serde_json::json!({"@type": "https://w3id.org/dspace/2025/1/Other"}),
+            serde_json::json!({"@type": "CatalogRequestMessage"}),
+        ] {
+            assert!(read_catalog_request(refused.clone()).is_err(), "{refused}");
+        }
     }
 }

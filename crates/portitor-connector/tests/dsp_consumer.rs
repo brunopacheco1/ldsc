@@ -280,7 +280,7 @@ fn termination_msg(cpid: &str) -> Value {
 async fn started(c: &Connector, dataset: &str) -> String {
     let n = c
         .negotiator
-        .start(PROVIDER, "did:web:p", offer(dataset))
+        .start(PROVIDER, "did:web:provider.example", offer(dataset))
         .unwrap();
     assert_eq!(
         n.state,
@@ -428,7 +428,7 @@ fn leave_pending(path: &std::path::Path) {
             provider_pid: Some(PPID.into()),
             state: NegotiationState::Offered,
             provider_address: PROVIDER.into(),
-            provider_id: "did:web:p".into(),
+            provider_id: "did:web:provider.example".into(),
             offer: offer("d1"),
             agreement: None,
             pending: Some(consumer::Outgoing {
@@ -439,6 +439,7 @@ fn leave_pending(path: &std::path::Path) {
                 to: NegotiationState::Accepted,
                 status_url: format!("{PROVIDER}/negotiations/{PPID}"),
                 initial: false,
+                counter_party: "did:web:provider.example".into(),
             }),
             version: 3,
         },
@@ -463,6 +464,7 @@ fn leave_pending(path: &std::path::Path) {
                 transition: Transition::Agree,
                 to: NegotiationState::Agreed,
                 status_url: format!("{callback}/negotiations/c-9"),
+                counter_party: "x".into(),
             }),
             version: 1,
         },
@@ -628,7 +630,7 @@ async fn unreachable_provider_ends_the_negotiation() {
     *c.provider.fail.lock().unwrap() = Some("/negotiations/request");
     let n = c
         .negotiator
-        .start(PROVIDER, "did:web:p", offer("d1"))
+        .start(PROVIDER, "did:web:provider.example", offer("d1"))
         .unwrap();
     c.provider.sent(2).await; // two attempts
     for _ in 0..500 {
@@ -679,14 +681,18 @@ async fn refuses_bad_starts() {
     for address in ["http://provider.example/dsp", "provider.example", ""] {
         assert!(
             c.negotiator
-                .start(address, "did:web:p", offer("d1"))
+                .start(address, "did:web:provider.example", offer("d1"))
                 .is_err(),
             "{address}"
         );
     }
     let mut no_rules = offer("d1");
     no_rules.permission.clear();
-    assert!(c.negotiator.start(PROVIDER, "did:web:p", no_rules).is_err());
+    assert!(
+        c.negotiator
+            .start(PROVIDER, "did:web:provider.example", no_rules)
+            .is_err()
+    );
     assert_eq!(c.provider.count(), 0);
     assert_eq!(format!("{:?}", c.negotiator), "Negotiator");
 }

@@ -516,3 +516,30 @@ fn checks_offers_and_agreements() {
     let why = next.body["reason"][0].as_str().unwrap();
     assert!(why.contains("differ"), "{why}");
 }
+
+#[test]
+fn only_the_provider_it_was_started_with_may_answer() {
+    // ADR 0016: the caller's proven DID must be the negotiation's provider
+    let store = Store::default();
+    let svc = ConsumerService::new(&store, AcceptAndVerify, Env::default(), CB.to_owned());
+    let (n, req) = svc.start(PROVIDER, "did:web:p", offer()).unwrap();
+    let cpid = n.consumer_pid.clone();
+    assert_eq!(req.counter_party, "did:web:p");
+    assert!(svc.from_provider(&cpid, "did:web:p").is_ok());
+    assert_eq!(
+        status(svc.from_provider(&cpid, "did:web:eve").unwrap_err()),
+        "404"
+    );
+    assert_eq!(
+        status(svc.from_provider("unknown", "did:web:p").unwrap_err()),
+        "404"
+    );
+
+    // an agreement whose assigner is another participant is refused
+    svc.delivered(&req, Some(&ack("p1", &cpid))).unwrap();
+    let mut msg = agreement_msg("p1", &cpid);
+    msg.agreement.assigner = "did:web:eve".to_owned();
+    assert_eq!(status(svc.agreement(&cpid, &msg).unwrap_err()), "400");
+    assert_eq!(state(&store, &cpid), NegotiationState::Requested);
+    assert!(svc.agreement(&cpid, &agreement_msg("p1", &cpid)).is_ok());
+}
