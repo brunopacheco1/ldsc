@@ -115,6 +115,11 @@ versions may change behaviour and configuration.
 - The DSP TCK job sends a fixed `Authorization` header, which the `tck`
   build (`PORTITOR_TCK_AUTHORIZATION`) maps to the TCK participant.
 
+### Fixed
+- EDC can read Portitor's catalog: a catalog request whose `filter`
+  selects nothing (EDC always sends a `QuerySpec` with only paging) gets
+  the whole catalog instead of 400. Paging is ignored.
+
 ### Security
 - Status lists are GZIP data from other parties: decompression is capped
   at 16 MiB, and uses `miniz_oxide` without its unsafe SIMD feature

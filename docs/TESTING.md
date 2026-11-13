@@ -208,12 +208,9 @@ demo authority. It checks, in this order:
 5. revocation both ways: once the authority revokes one participant's
    credential, the other refuses it with 401.
 
-Known failure: step 4 stops at the catalog. EDC always sends a `filter`
-in its `CatalogRequestMessage` (an EDC `QuerySpec` with no filter
-expressions, offset 0, limit 50), and Portitor answers any non-empty
-`filter` with 400 ("filter expressions are not supported"). Everything
-after it (negotiation, transfer, revocation) passes when the offer is
-taken from `config/portitor-datasets.json` instead.
+EDC always sends a `filter` in its `CatalogRequestMessage`: an EDC
+`QuerySpec` with no filter expressions (offset 0, limit 50). Portitor
+treats such a filter as "no filter" and answers with the whole catalog.
 
 ```sh
 # builds the Portitor images as CI does, then runs the test; the EDC

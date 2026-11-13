@@ -67,6 +67,35 @@ pub fn read_catalog_request(value: serde_json::Value) -> Result<CatalogRequestMe
     })
 }
 
+/// Whether a `filter` entry asks for no filtering at all.
+///
+/// EDC (checked in v1.0.0-RC7, `JsonObjectFromCatalogRequestMessageTransformer`)
+/// always sends its own `QuerySpec` as the filter, even when it wants the
+/// whole catalog: no filter expressions, only paging (`offset`, `limit`)
+/// and sorting. Such a filter, or an empty `{}`, selects nothing, so
+/// Portitor answers with the whole catalog. Paging and sorting are
+/// ignored. Anything else, for example a `QuerySpec` with filter
+/// expressions or an unknown field, is not supported.
+fn filters_nothing(entry: &serde_json::Value) -> bool {
+    /// The `QuerySpec` fields that do not select datasets.
+    const PAGING: [&str; 4] = ["offset", "limit", "sortOrder", "sortField"];
+    let Some(fields) = entry.as_object() else {
+        return false;
+    };
+    fields.iter().all(|(key, value)| match local_name(key) {
+        "@context" => true,
+        "@type" => value.as_str().map(local_name) == Some("QuerySpec"),
+        "filterExpression" => is_empty_json(value),
+        name => PAGING.contains(&name),
+    })
+}
+
+/// The term at the end of an IRI or a prefixed name
+/// (`https://w3id.org/edc/v0.0.1/ns/limit` and `edc:limit` both give `limit`).
+fn local_name(key: &str) -> &str {
+    key.rsplit(['/', '#', ':']).next().unwrap_or(key)
+}
+
 /// `{}` or `[]`.
 fn is_empty_json(value: &serde_json::Value) -> bool {
     match value {
@@ -220,9 +249,12 @@ impl<S: DatasetStore> CatalogService<S> {
     }
 
     /// Answers a `CatalogRequestMessage`. Filters are not supported, so a
-    /// non-empty filter is a bad request, as DSP 2025-1 requires.
+    /// filter that would select something is a bad request, as DSP 2025-1
+    /// requires. A filter that selects nothing is ignored (see
+    /// [`filters_nothing`]).
     pub fn request(&self, msg: &CatalogRequestMessage) -> Outcome<Catalog> {
-        if msg.filter.as_ref().is_some_and(|f| !f.is_empty()) {
+        let filter = msg.filter.as_deref().unwrap_or_default();
+        if !filter.iter().all(filters_nothing) {
             return Outcome::BadRequest(CatalogError::new(
                 "400",
                 "filter expressions are not supported",
@@ -356,6 +388,31 @@ mod tests {
         let mut d = dataset("a");
         d.distribution[0].access_service = "svc".to_owned();
         assert!(prepare_datasets(vec![d], "svc").is_ok());
+    }
+
+    #[test]
+    fn a_filter_that_selects_nothing_is_ignored() {
+        // what EDC v1.0.0-RC7 sends when it asks for the whole catalog
+        let edc = serde_json::json!({
+            "@type": "https://w3id.org/edc/v0.0.1/ns/QuerySpec",
+            "https://w3id.org/edc/v0.0.1/ns/offset": 0,
+            "https://w3id.org/edc/v0.0.1/ns/limit": 50,
+            "https://w3id.org/edc/v0.0.1/ns/sortOrder": "ASC",
+            "https://w3id.org/edc/v0.0.1/ns/filterExpression": []
+        });
+        let compacted = serde_json::json!({"@type": "QuerySpec", "offset": 0, "limit": 50});
+        for nothing in [edc, compacted, serde_json::json!({})] {
+            assert!(filters_nothing(&nothing), "{nothing}");
+        }
+        for something in [
+            serde_json::json!({"@type": "QuerySpec", "filterExpression": [
+                {"operandLeft": "id", "operator": "=", "operandRight": "a"}]}),
+            serde_json::json!({"@type": "Other"}),
+            serde_json::json!({"keyword": "x"}),
+            serde_json::json!("id = a"),
+        ] {
+            assert!(!filters_nothing(&something), "{something}");
+        }
     }
 
     #[test]
