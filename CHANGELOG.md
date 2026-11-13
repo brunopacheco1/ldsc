@@ -34,7 +34,31 @@ versions may change behaviour and configuration.
   component share (outbound HTTP client, API key check, logging,
   shutdown) move out of the connector, with a new `did:web` resolver
   that caches documents for 5 minutes (ADR 0016).
-- `portitor-identity`: the new identity component's crate (ADR 0015).
+- `portitor-identity`, the identity component (ADR 0015): its `did:web`
+  document (one P-256 key from a PEM file), a Secure Token Service
+  (`POST /sts/token`, DCP's `identity-trust-sts-api.yaml`: self-issued ID
+  tokens, with an access token for `bearer_access_scope`), the
+  presentation API (scopes only, one presentation per profile), the
+  Storage API (trusted issuers, recorded requests only, proofs checked)
+  and credential offers (sparse ones completed from the issuer's
+  metadata). Management API on its own port: credential requests,
+  credentials, offers (`docs/api/identity-management-openapi.json`).
+  Credentials in SQLite. Settings in `DEPLOYING.md`, section 6.
+- The DCP TCK 1.2.1 credential service tests (presentation and holder
+  side of issuance, 54 tests) run in CI against `portitor-identity`.
+- `portitor-dcp`: presentations and access tokens a holder signs, PEM
+  keys, JWK thumbprints, issuer metadata. Fuzz target `dcp_access_token`.
+- `portitor-runtime`: opening and migrating SQLite files.
+
+### Changed
+- Self-issued ID tokens with an `iat` in the future are refused, and used
+  token ids are forgotten once their token expires.
+- A presentation query with both `scope` and `presentationDefinition` is
+  an error (DCP 5.4.1); one with only a definition gets 501.
+- A VC 1.1 credential whose `jti` differs from its `id` is accepted (the
+  DCP TCK writes both); the `id` counts.
+- The `DSP TCK` workflow is now called `TCK` and has a second job for the
+  DCP TCK.
 
 ### Security
 - Status lists are GZIP data from other parties: decompression is capped

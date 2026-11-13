@@ -7,8 +7,9 @@ SPDX-License-Identifier: Apache-2.0
 # Deploying and operating Portitor
 
 A runbook for the team that deploys and runs Portitor. It covers
-`portitor-connector`, the only component released so far; `portitor-identity`
-and `portitor-issuer` will be added here when they ship (ADR 0003).
+`portitor-connector` and, from 0.5, the identity component
+`portitor-identity` ([section 6](#6-identity-component-portitor-identity));
+`portitor-issuer` will be added when it ships (ADR 0003).
 
 Portitor is a prototype (0.x). Read [Known limits](#known-limits) before you
 expose it to partners.
@@ -216,6 +217,115 @@ the backup from step 2, then start the older image.
 Messages the connector was sending when it stopped are saved and sent
 again at start (ADR 0007), so an upgrade does not leave negotiations
 waiting. A partner may receive such a message twice; that is handled.
+
+## 6. Identity component (`portitor-identity`)
+
+The identity component holds the participant's key and credentials and
+answers for it in the Decentralized Claims Protocol v1.0.1 (ADR 0015):
+its DID document, a Secure Token Service (STS) for the own connector, and
+the credential service that other participants query. One process per
+participant.
+
+### Before the first deployment
+
+- [ ] **DID.** A `did:web` DID whose document this component serves, for
+  example `did:web:identity.example.com`. did:web maps it to
+  `https://identity.example.com/.well-known/did.json` (or
+  `/<path>/did.json` for a DID with a path), so your proxy must route that
+  path to the component. The connector's `PORTITOR_PARTICIPANT_ID` is the
+  same DID.
+- [ ] **Key.** One P-256 private key, unencrypted PKCS#8 PEM, never
+  leaving this component:
+  `openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out identity-key.pem`.
+  Mount it read-only. A SEC1 key (`BEGIN EC PRIVATE KEY`) is refused; convert it
+  with `openssl pkcs8 -topk8 -nocrypt`. The key id in the DID document is
+  the key's JWK thumbprint (RFC 7638), shown in the start log.
+- [ ] **STS client secret.** `openssl rand -hex 32`, mounted as a file into
+  both the identity component and the connector
+  (`PORTITOR_STS_CLIENT_SECRET_FILE` in both).
+- [ ] **Trusted issuers.** The DIDs whose credentials you accept
+  (`PORTITOR_TRUSTED_ISSUERS`). Only these may deliver credentials
+  (Storage API) or offers.
+- [ ] **Management API key.** As for the connector, if you record
+  credential requests or manage credentials.
+- [ ] **Storage.** A persistent volume for `/data` (credentials, SQLite).
+- [ ] **Network.** Inbound from other participants, through your proxy:
+  the DID document and the credential service. Inbound from your own
+  connector only: the STS (`/sts/token`). Outbound: other participants'
+  DID documents (`https://`), and trusted issuers' metadata.
+
+### Configuration
+
+| Variable | Default | Production value |
+|---|---|---|
+| `PORTITOR_PARTICIPANT_ID` | required | your `did:web` DID |
+| `PORTITOR_IDENTITY_KEY_FILE` | required | path of the mounted PEM key |
+| `PORTITOR_CREDENTIAL_SERVICE_URL` | required | public `https://` base URL of the credential service, written into the DID document; its path is where the component serves it (for example `https://identity.example.com/cs` serves `/cs/presentations/query`, `/cs/credentials`, `/cs/offers`) |
+| `PORTITOR_STS_CLIENT_SECRET_FILE` | required | path of the mounted STS secret (at least 32 characters) |
+| `PORTITOR_STS_CLIENT_ID` | the participant DID | leave the default, or the client id your connector sends |
+| `PORTITOR_TRUSTED_ISSUERS` | required | comma-separated issuer DIDs |
+| `PORTITOR_BIND` | `0.0.0.0:8090` | leave the default |
+| `PORTITOR_DB_FILE` | `/data/portitor-identity.db` | leave the default |
+| `PORTITOR_MANAGEMENT_API_KEY_FILE` | unset (management API off) | path of the mounted key file |
+| `PORTITOR_MANAGEMENT_BIND` | `127.0.0.1:8091` | `0.0.0.0:8091` in a container, published only on an internal interface |
+| `PORTITOR_SCOPE_TYPE_ALIASES` | `org.eclipse.edc.vc.type` | comma-separated scope aliases that mean "credentials of this type", besides DCP's `org.eclipse.dspace.dcp.vc.type` |
+| `PORTITOR_ALLOW_HTTP_CALLBACKS` | unset | **unset** (`true` allows plain-HTTP DIDs and URLs, tests only) |
+
+### Endpoints
+
+| Port | Path | Who calls it |
+|---|---|---|
+| public | `GET /.well-known/did.json` (or the DID's path) | anyone |
+| public | `POST /sts/token` | your connector only (client id and secret); keep it off the public proxy if you can |
+| public | `POST <credential service>/presentations/query` | verifiers, with a self-issued ID token and an access token from your STS (DCP 5.4) |
+| public | `POST <credential service>/credentials`, `/offers` | trusted issuers (DCP 6.5, 6.6) |
+| public | `GET /health` | probes |
+| management | `POST /v1/credential-requests`, `GET /v1/credentials`, `DELETE /v1/credentials/{id}`, `GET /v1/offers`, `GET /v1/openapi.json` | operators ([OpenAPI](api/identity-management-openapi.json)) |
+
+### Getting a credential
+
+Until the issuer arrives (0.6), an issuer delivers credentials for a
+request recorded through the management API:
+
+```sh
+curl -X POST localhost:8091/v1/credential-requests \
+  -H "Authorization: Bearer $(cat /srv/portitor/identity-management-key)" \
+  -H 'Content-Type: application/json' \
+  -d '{"issuerDid": "did:web:issuer.example", "holderPid": "membership-2026"}'
+```
+
+The issuer then sends its `CredentialMessage` with that `holderPid` to
+`<credential service>/credentials`. The component checks the issuer's
+token, that the issuer is trusted and matches the request, and each
+credential's signature, dates, type and subject (your DID). A request
+stays open, so the issuer can deliver again (for example a renewed
+credential). Credentials are stored as received (JWT); `GET
+/v1/credentials` lists them and `DELETE /v1/credentials/{id}` removes one,
+after which it is no longer presented.
+
+### Logs and operation
+
+| Log message (level) | Meaning |
+|---|---|
+| `portitor-identity listening` (INFO) | Started; shows the DID, the key id and the database |
+| `STS token issued` (INFO) | Your connector got a token for the named audience |
+| `STS client refused` (INFO) | A wrong client id or secret at the STS |
+| `request refused` (INFO) | A caller's token was refused; `reason` says why (expired, replayed, wrong audience, untrusted issuer, ...). The caller only gets HTTP 401 |
+| `presentation sent` (INFO) | A verifier got a presentation; `credentials` is how many it held |
+| `issuance message refused` (INFO) | A `CredentialMessage` or offer was refused (HTTP 400); `reason` says why |
+| `identity store failed` (ERROR) | The SQLite file could not be read or written |
+
+Backup, restore, upgrade and rollback work as for the connector, with
+`/data/portitor-identity.db*`. Used token ids (`jti`) are kept in memory
+until their token expires (ADR 0016), so one replica per database file.
+
+**Key rotation** is manual in 0.5: there is one key at a time, and its
+id is its thumbprint, so a new key file gives a new key id. Tokens and
+presentations signed with the old key stop verifying once verifiers
+reload the DID document (they cache it, Portitor for 5 minutes). Change
+the key when the connector is idle, and ask issuers to reissue
+credentials only if they bound them to the key (DCP binds them to the
+DID, so usually not).
 
 ## Known limits
 
