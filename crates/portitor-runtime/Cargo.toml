@@ -31,6 +31,9 @@ utoipa.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# drives a router in memory in the serve.rs tests; already in the tree
+# (axum, and the connector's and identity's tests)
+tower = { version = "0.5", features = ["util"] }
 
 [lints]
 workspace = true

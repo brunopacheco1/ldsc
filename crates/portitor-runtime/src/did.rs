@@ -23,12 +23,17 @@ use crate::http::{HttpSender, Sender as _};
 /// How long a resolved DID document is reused by default.
 pub const DEFAULT_TTL: Duration = Duration::from_secs(300);
 
+/// The most DID documents kept at once. Callers choose the DIDs, so
+/// without a limit the cache could grow with every new caller.
+pub const MAX_CACHED: usize = 1_000;
+
 /// Resolves `did:web` DIDs and keeps each document for a while.
 #[derive(Debug)]
 pub struct DidWebResolver {
     http: HttpSender,
     allow_http: bool,
     ttl: Duration,
+    max_cached: usize,
     cache: Mutex<HashMap<String, (Instant, Arc<DidDocument>)>>,
 }
 
@@ -43,6 +48,7 @@ impl DidWebResolver {
             http: HttpSender::new(allow_http)?,
             allow_http,
             ttl,
+            max_cached: MAX_CACHED,
             cache: Mutex::new(HashMap::new()),
         })
     }
@@ -64,10 +70,31 @@ impl DidWebResolver {
             return Err(format!("the DID document at {url} is for {}", doc.id));
         }
         let doc = Arc::new(doc);
-        if let Ok(mut cache) = self.cache.lock() {
-            cache.insert(did.to_owned(), (Instant::now(), Arc::clone(&doc)));
-        }
+        self.keep(did, &doc);
         Ok(doc)
+    }
+
+    /// Puts `doc` in the cache. When the cache is full, the expired
+    /// documents go first, then the oldest one. Both look at every entry,
+    /// but only when the cache is full.
+    fn keep(&self, did: &str, doc: &Arc<DidDocument>) {
+        let Ok(mut cache) = self.cache.lock() else {
+            // a poisoned lock: resolve without the cache from now on
+            return;
+        };
+        if cache.len() >= self.max_cached && !cache.contains_key(did) {
+            cache.retain(|_, (at, _)| at.elapsed() < self.ttl);
+        }
+        if cache.len() >= self.max_cached && !cache.contains_key(did) {
+            let oldest = cache
+                .iter()
+                .min_by_key(|(_, (at, _))| *at)
+                .map(|(oldest, _)| oldest.clone());
+            if let Some(oldest) = oldest {
+                cache.remove(&oldest);
+            }
+        }
+        cache.insert(did.to_owned(), (Instant::now(), Arc::clone(doc)));
     }
 
     fn cached(&self, did: &str) -> Option<Arc<DidDocument>> {
@@ -133,6 +160,47 @@ mod tests {
             1,
             "the second resolve uses the cache"
         );
+    }
+
+    #[tokio::test]
+    async fn the_cache_is_bounded_and_drops_the_oldest_first() {
+        let (first, first_hits) = serve(serde_json::json!({"verificationMethod": []})).await;
+        let (second, _) = serve(serde_json::json!({"verificationMethod": []})).await;
+        let (third, _) = serve(serde_json::json!({"verificationMethod": []})).await;
+        let mut resolver = DidWebResolver::new(true, DEFAULT_TTL).unwrap();
+        resolver.max_cached = 2;
+        resolver.resolve(&first).await.unwrap();
+        resolver.resolve(&second).await.unwrap();
+        resolver.resolve(&third).await.unwrap();
+        let cached: Vec<String> = resolver.cache.lock().unwrap().keys().cloned().collect();
+        assert_eq!(cached.len(), 2);
+        assert!(!cached.contains(&first), "the oldest went: {cached:?}");
+        resolver.resolve(&first).await.unwrap();
+        assert_eq!(first_hits.load(Ordering::SeqCst), 2, "fetched again");
+    }
+
+    #[tokio::test]
+    async fn a_full_cache_drops_every_expired_document() {
+        let mut dids = Vec::new();
+        for _ in 0..4 {
+            dids.push(serve(serde_json::json!({"verificationMethod": []})).await.0);
+        }
+        let mut resolver = DidWebResolver::new(true, Duration::from_secs(60)).unwrap();
+        resolver.max_cached = 3;
+        for did in &dids[..3] {
+            resolver.resolve(did).await.unwrap();
+        }
+        // the first two have expired
+        for did in &dids[..2] {
+            resolver.cache.lock().unwrap().get_mut(did).unwrap().0 =
+                Instant::now() - Duration::from_secs(120);
+        }
+        resolver.resolve(&dids[3]).await.unwrap();
+        let mut cached: Vec<String> = resolver.cache.lock().unwrap().keys().cloned().collect();
+        cached.sort();
+        let mut expected = vec![dids[2].clone(), dids[3].clone()];
+        expected.sort();
+        assert_eq!(cached, expected, "both expired documents went");
     }
 
     #[tokio::test]

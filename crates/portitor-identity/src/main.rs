@@ -13,7 +13,9 @@ use portitor_identity::directory::WebDirectory;
 use portitor_identity::store::SqliteStore;
 use portitor_identity::{Identity, Ports};
 use portitor_runtime::api_key::ApiKey;
-use portitor_runtime::serve::{bind_management, init_logging, serve};
+use portitor_runtime::serve::{
+    MAX_CONCURRENT_REQUESTS, REQUEST_TIMEOUT, bind_management, init_logging, serve, with_limits,
+};
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -61,7 +63,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         db = %config.db_file.display(),
         "portitor-identity listening"
     );
-    let app = portitor_identity::router(identity);
+    // the public routes: anyone can call them
+    let app = with_limits(
+        portitor_identity::router(identity),
+        REQUEST_TIMEOUT,
+        MAX_CONCURRENT_REQUESTS,
+    );
     serve((listener, app), management).await?;
     Ok(())
 }
