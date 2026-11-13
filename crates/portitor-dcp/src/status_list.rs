@@ -180,14 +180,26 @@ pub fn decode_list(encoded: &str) -> Result<Vec<u8>, StatusError> {
     })
 }
 
-/// Whether bit `index` is set; index 0 is the highest bit of byte 0.
-fn bit_is_set(bits: &[u8], index: u64) -> Result<bool, StatusError> {
+/// Where bit `index` is: the byte (`index / 8`) and the one-bit mask
+/// inside it. Index 0 is the highest bit of byte 0, so the bits of a
+/// byte count from left to right: mask `0b1000_0000` for the first,
+/// `0b0000_0001` for the eighth.
+///
+/// # Errors
+/// The byte is past the end of a list of `len` bytes.
+fn bit_position(index: u64, len: usize) -> Result<(usize, u8), StatusError> {
     let byte = usize::try_from(index / 8)
         .ok()
-        .and_then(|at| bits.get(at))
+        .filter(|byte| *byte < len)
         .ok_or(StatusError::OutOfRange(index))?;
     let shift = 7 - (index % 8);
-    Ok(byte & (1 << shift) != 0)
+    Ok((byte, 1 << shift))
+}
+
+/// Whether bit `index` is set; index 0 is the highest bit of byte 0.
+fn bit_is_set(bits: &[u8], index: u64) -> Result<bool, StatusError> {
+    let (byte, mask) = bit_position(index, bits.len())?;
+    Ok(bits[byte] & mask != 0)
 }
 
 /// Encodes a bitstring as a Bitstring Status List `encodedList`: GZIP,
@@ -208,12 +220,8 @@ pub fn encode_list(bits: &[u8]) -> String {
 /// # Errors
 /// The index is past the end of the list.
 pub fn set_bit(bits: &mut [u8], index: u64) -> Result<(), StatusError> {
-    let byte = usize::try_from(index / 8)
-        .ok()
-        .and_then(|at| bits.get_mut(at))
-        .ok_or(StatusError::OutOfRange(index))?;
-    let shift = 7 - (index % 8);
-    *byte |= 1 << shift;
+    let (byte, mask) = bit_position(index, bits.len())?;
+    bits[byte] |= mask;
     Ok(())
 }
 
@@ -258,7 +266,7 @@ mod tests {
     fn encoded(len: usize, set: &[u64]) -> String {
         let mut bits = vec![0u8; len];
         for &i in set {
-            bits[usize::try_from(i / 8).unwrap()] |= 1 << (7 - i % 8);
+            set_bit(&mut bits, i).unwrap();
         }
         let b64 =
             base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(crate::gzip::compress(&bits));

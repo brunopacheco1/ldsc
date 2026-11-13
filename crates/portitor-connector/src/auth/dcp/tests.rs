@@ -423,7 +423,8 @@ impl Dataspace {
 fn encoded_bits(set: &[usize]) -> String {
     let mut bits = vec![0u8; 2048];
     for &index in set {
-        bits[index / 8] |= 1 << (7 - index % 8);
+        let index = u64::try_from(index).unwrap();
+        portitor_dcp::status_list::set_bit(&mut bits, index).unwrap();
     }
     portitor_dcp::status_list::encode_list(&bits)
 }
