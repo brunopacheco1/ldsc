@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! The management API: API key, starting and reading negotiations as
-//! consumer, and the generated `OpenAPI` description.
+//! The management API: API key, starting and reading negotiations and
+//! transfers as consumer, and the generated `OpenAPI` description.
 #![allow(clippy::unwrap_used, missing_docs)]
 
 use std::ffi::OsString;
@@ -214,6 +214,44 @@ async fn bad_requests_are_problems() {
     assert_eq!(s, StatusCode::BAD_REQUEST);
 }
 
+#[tokio::test]
+async fn transfers_need_a_held_agreement() {
+    // the full flow, agreement to data, is in tests/end_to_end.rs
+    let app = app();
+    let request = |body: Value| {
+        authed(Request::post("/v1/transfers"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    let (s, ct, p) = call(&app, request(json!({"agreementId": "urn:uuid:a"}))).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert_eq!(ct.as_deref(), Some("application/problem+json"));
+    assert!(p["detail"].as_str().unwrap().contains("agreement"), "{p}");
+    for body in [json!({}), json!({"agreementId": "a", "unknown": 1})] {
+        let (s, _, _) = call(&app, request(body)).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+    }
+
+    let (s, _, page) = call(&app, get("/v1/transfers")).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(page, json!({"transfers": []}));
+    let (s, _, _) = call(&app, get("/v1/transfers?limit=many")).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, _, p) = call(&app, get("/v1/transfers/unknown")).await;
+    assert_eq!(
+        (s, p["detail"].as_str()),
+        (StatusCode::NOT_FOUND, Some("no such transfer"))
+    );
+    for step in ["completion", "termination"] {
+        let req = authed(Request::post(format!("/v1/transfers/unknown/{step}")))
+            .body(Body::empty())
+            .unwrap();
+        let (s, _, _) = call(&app, req).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{step}");
+    }
+}
+
 #[test]
 fn keys_and_configuration() {
     assert!(ApiKey::new("short").is_err());
@@ -270,7 +308,14 @@ fn published_description_is_current() {
         spec["components"]["securitySchemes"]["api_key"]["scheme"],
         "bearer"
     );
-    for path in ["/v1/negotiations", "/v1/negotiations/{consumerPid}"] {
+    for path in [
+        "/v1/negotiations",
+        "/v1/negotiations/{consumerPid}",
+        "/v1/transfers",
+        "/v1/transfers/{consumerPid}",
+        "/v1/transfers/{consumerPid}/completion",
+        "/v1/transfers/{consumerPid}/termination",
+    ] {
         assert!(spec["paths"][path].is_object(), "{path}");
     }
 }

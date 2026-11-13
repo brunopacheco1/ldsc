@@ -101,6 +101,10 @@ impl DataFlows for FakeFlows {
             ],
         })
     }
+    fn restart(&self, _: &str) -> Result<DataAddress, String> {
+        self.record("restart".to_owned());
+        Err("the fake provider never starts a transfer again".to_owned())
+    }
     fn suspend(&self, _: &str) -> Result<(), String> {
         self.record("suspend".to_owned());
         Ok(())

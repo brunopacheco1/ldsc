@@ -4,8 +4,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """Fail unless the DSP TCK log shows the implemented test groups passing.
 
-Implemented: metadata (MET), catalog (CAT) and contract negotiation as
-provider (CN) and as consumer (CN_C).
+Implemented: metadata (MET), catalog (CAT), contract negotiation as
+provider (CN) and as consumer (CN_C), and the transfer process as provider
+(TP) and as consumer (TP_C). TP:02-04 and TP_C:02-04 are disabled in the
+TCK v1.0.2 itself (@Disabled), so they never run.
 
 The TCK prints one line per test with its display name, for example
 "CAT:01-01: Verify catalog request". A line that names a required test and
@@ -20,6 +22,13 @@ REQUIRED = (
     ["MET:01-01", "CAT:01-01", "CAT:01-02", "CAT:01-03"]
     + [f"CN:0{group}-0{test}" for group, count in ((1, 4), (2, 7), (3, 4)) for test in range(1, count + 1)]
     + [f"CN_C:0{group}-0{test}" for group, count in ((1, 4), (2, 6), (3, 6)) for test in range(1, count + 1)]
+    + [
+        f"{prefix}:0{group}-0{test}"
+        for prefix in ("TP", "TP_C")
+        for group, count in ((1, 5), (2, 5), (3, 6))
+        for test in range(1, count + 1)
+        if (group, test) != (2, 4)
+    ]
 )
 FAILURE = re.compile(r"fail|error|exception", re.IGNORECASE)
 

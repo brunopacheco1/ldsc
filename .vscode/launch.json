@@ -277,6 +277,25 @@
       "cargo": {
         "args": ["test", "-p", "portitor-connector", "--test", "dsp_transfer"]
       },
+      "args": [],
+      "presentation": {
+        "group": "2-test",
+        "order": 14
+      }
+    },
+    {
+      "name": "Tests: portitor-connector end_to_end",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": ["test", "-p", "portitor-connector", "--test", "end_to_end"]
+      },
+      "args": [],
+      "presentation": {
+        "group": "2-test",
+        "order": 15
+      }
+    },
     {
       "name": "Tests: portitor-connector management_api",
       "type": "lldb",
@@ -287,7 +306,7 @@
       "args": [],
       "presentation": {
         "group": "2-test",
-        "order": 14
+        "order": 16
       }
     }
   ],

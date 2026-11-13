@@ -13,6 +13,22 @@ versions may change behaviour and configuration.
 ## [Unreleased]
 
 ### Added
+- Transfer process as consumer (DSP 2025-1, ADR 0014): the callback
+  endpoints `/dsp/2025-1/callback/transfers/...`, and in the management
+  API `POST /v1/transfers` (under the agreement of one of our finalized
+  negotiations), `GET /v1/transfers`, `GET /v1/transfers/{consumerPid}`
+  (with the data address once started), and `.../completion` and
+  `.../termination`. Your own system fetches the data with that address.
+  The address and its token are kept in the SQLite file while the transfer
+  can be used, and removed when it ends (new migration).
+- The provider's policy may now also suspend, start again, complete or
+  terminate a transfer. When the provider starts a pull transfer again,
+  its data plane gives a new token, since DSP requires a data address in
+  that start message.
+- DSP TCK: the transfer tests as provider (TP) and as consumer (TP_C) are
+  now required in CI (65 tests in all).
+- `tests/end_to_end.rs`: two connectors negotiate, transfer, fetch the
+  data and complete, in one process.
 - Transfer process as provider (DSP 2025-1, ADR 0013): the
   `/transfers/...` endpoints. A request is accepted only under a finalized
   agreement held by the caller, whose permissions still hold, in a format
@@ -35,8 +51,7 @@ versions may change behaviour and configuration.
 - Transfer process (DSP 2025-1) in `portitor-dsp`: the five message types,
   `DataAddress`, the acknowledgement and error types, and the state
   machine as a pure function. Checked against every transfer example and
-  JSON Schema of the specification, and fuzzed (`dsp_transfer`). Not yet
-  served by the connector.
+  JSON Schema of the specification, and fuzzed (`dsp_transfer`).
 - Data Plane Signaling v1.0-RC4 in the new domain crate `portitor-dps`: the
   data flow messages, the data flow state machine, and the two ports
   (`DataPlane`, called by the control plane; `ControlPlane`, called back by
@@ -45,6 +60,10 @@ versions may change behaviour and configuration.
 - VS Code debugging: shared `.vscode/launch.json` (CodeLLDB) for the connector
   and every test target, tasks, and recommended extensions. See
   [TESTING.md](docs/TESTING.md#debugging-in-vs-code).
+
+### Fixed
+- `.vscode/launch.json` was not valid JSON (a test configuration was cut
+  short).
 
 ## [0.3.0] - 2026-11-12
 

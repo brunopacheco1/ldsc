@@ -32,6 +32,24 @@ fn profile_of(format: &str) -> Option<&'static str> {
         .map(|(_, profile)| *profile)
 }
 
+/// What a data plane needs besides Data Plane Signaling v1.0-RC4 so the
+/// provider can start a pull transfer again: a new token, and the address
+/// that carries it (ADR 0014).
+pub trait NewAddress {
+    /// A new token for data flow `id`; the old one stops working.
+    ///
+    /// # Errors
+    ///
+    /// Unknown or ended flow, or the data plane failed.
+    fn new_address(&self, id: &str) -> Result<DataAddress, SignalError>;
+}
+
+impl NewAddress for crate::data_plane::HttpDataPlane {
+    fn new_address(&self, id: &str) -> Result<DataAddress, SignalError> {
+        crate::data_plane::HttpDataPlane::new_address(self, id)
+    }
+}
+
 /// Adapter: [`DataFlows`] over a Data Plane Signaling [`DataPlane`].
 #[derive(Debug, Clone)]
 pub struct SignalingDataFlows<P> {
@@ -88,7 +106,7 @@ impl<P: DataPlane> SignalingDataFlows<P> {
     }
 }
 
-impl<P: DataPlane> DataFlows for SignalingDataFlows<P> {
+impl<P: DataPlane + NewAddress> DataFlows for SignalingDataFlows<P> {
     fn supports(&self, dataset_id: &str, format: &str) -> bool {
         profile_of(format).is_some() && self.datasets.contains(dataset_id)
     }
@@ -135,6 +153,13 @@ impl<P: DataPlane> DataFlows for SignalingDataFlows<P> {
         };
         let answer = self.plane.resume(pid, &message).map(|_| ());
         self.settle(pid, DataFlowState::Started, answer)
+    }
+
+    fn restart(&self, pid: &str) -> Result<DataAddress, String> {
+        // the new token first, so the old one never works again
+        let address = self.plane.new_address(pid).map_err(|e| e.to_string())?;
+        self.resume(pid)?;
+        Ok(address)
     }
 
     fn complete(&self, pid: &str) -> Result<(), String> {
@@ -262,6 +287,20 @@ mod tests {
         SignalingDataFlows::new(plane, "did:web:p", "default", ["d".to_owned()])
     }
 
+    impl NewAddress for &Plane {
+        fn new_address(&self, id: &str) -> Result<DataAddress, SignalError> {
+            match self.status(id)?.state {
+                DataFlowState::Suspended | DataFlowState::Started => Ok(DataAddress {
+                    kind: DataAddressType,
+                    endpoint_type: HTTP_PULL.to_owned(),
+                    endpoint: Some("https://p.example/data".to_owned()),
+                    endpoint_properties: vec![],
+                }),
+                other => Err(SignalError::Invalid(format!("{other:?}"))),
+            }
+        }
+    }
+
     fn transfer(format: &str) -> Transfer {
         Transfer {
             provider_pid: "p".to_owned(),
@@ -297,11 +336,15 @@ mod tests {
         flows.suspend("p").unwrap(); // already suspended: done
         flows.resume("p").unwrap();
         flows.resume("p").unwrap(); // already started: done
+        flows.suspend("p").unwrap();
+        assert!(flows.restart("p").is_ok(), "a new address, then resumed");
+        assert_eq!((&plane).status("p").unwrap().state, DataFlowState::Started);
         flows.complete("p").unwrap();
         flows.complete("p").unwrap();
         // completed is final: terminating it is refused, not hidden
         assert!(flows.terminate("p").unwrap_err().contains("final"));
         assert!(flows.suspend("p").is_err());
+        assert!(flows.restart("p").is_err(), "nothing to start again");
     }
 
     #[test]

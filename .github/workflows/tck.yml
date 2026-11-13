@@ -3,11 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Runs the Eclipse DSP TCK (built from source at a pinned tag) against Portitor.
-# Must pass: metadata (MET), catalog (CAT) and contract negotiation as
-# provider (CN) and as consumer (CN_C). Transfer (TP) is expected to fail
-# until 0.4. The connector is built with the test-only `tck` feature, which
-# scripts decisions per dataset and adds the endpoint that starts consumer
-# tests.
+# Must pass: metadata (MET), catalog (CAT), contract negotiation (CN, CN_C)
+# and transfer process (TP, TP_C), as provider and as consumer. The
+# connector is built with the test-only `tck` feature, which scripts
+# decisions per dataset or agreement and adds the endpoints that start
+# consumer tests.
 name: DSP TCK
 on:
   push:

@@ -24,6 +24,7 @@
 
 use crate::catalog::DatasetStore;
 use crate::{Context, Offer};
+use crate::{WRITE_ATTEMPTS, Write};
 
 use super::{
     Agreement, AgreementType, ContractAgreementMessage, ContractAgreementMessageType,
@@ -405,7 +406,7 @@ impl<S: NegotiationStore, D: Decider, C: DatasetStore, E: Environment> ProviderS
     /// unchanged; otherwise reads it again and repeats, a few times.
     /// `caller` (consumer pid, participant) limits it to that consumer's
     /// negotiation. Returns what was written, or `None` for
-    /// [`Write::Skip`].
+    /// `Write::Skip`.
     fn update(
         &self,
         pid: &str,
@@ -413,7 +414,7 @@ impl<S: NegotiationStore, D: Decider, C: DatasetStore, E: Environment> ProviderS
         change: impl Fn(&mut Negotiation) -> Result<Write, Failure>,
     ) -> Result<Option<Negotiation>, Failure> {
         let cpid = caller.map_or("", |(c, _)| c);
-        for _ in 0..ATTEMPTS {
+        for _ in 0..WRITE_ATTEMPTS {
             let mut n = match self.store.get(pid).map_err(Failure::Store)? {
                 // another consumer's negotiation looks like a missing one
                 // (DSP: "if the client is not authorized ... MUST return 404")
@@ -555,19 +556,6 @@ impl<S: NegotiationStore, D: Decider, C: DatasetStore, E: Environment> ProviderS
             _ => Err(not_found(provider_pid, cpid)),
         }
     }
-}
-
-/// How many times a write is tried when other writes keep coming first.
-const ATTEMPTS: usize = 3;
-
-/// What [`ProviderService::update`] writes after a change.
-enum Write {
-    /// Nothing changed; write nothing.
-    Skip,
-    /// Decide the next message, then write.
-    Settle,
-    /// Write as changed.
-    AsIs,
 }
 
 fn ack(n: &Negotiation) -> ContractNegotiation {

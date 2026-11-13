@@ -30,13 +30,14 @@ use portitor_dsp::negotiation::provider::{
 use portitor_dsp::negotiation::{
     ContractAgreementVerificationMessage, ContractNegotiation, ContractNegotiationError,
     ContractNegotiationEventMessage, ContractNegotiationTerminationMessage, ContractRequestMessage,
-    NegotiationState, Transition,
+    Transition,
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::InMemoryDatasets;
 pub use crate::consumer::{AnyConsumerDecider, AnyConsumerStore, InMemoryConsumerNegotiations};
+use crate::outbox::{self, Link, Message, Outbox};
 
 /// The identity of every caller until DSP requests are authenticated with
 /// DCP (release 0.5). It is the `assignee` of agreements until then.
@@ -413,6 +414,8 @@ pub struct Ports {
     pub consumer_decider: AnyConsumerDecider,
     /// The adapters for transfers as provider.
     pub transfers: crate::transfer::TransferPorts,
+    /// The adapters for transfers as consumer.
+    pub consumer_transfers: crate::consumer_transfer::ConsumerTransferPorts,
     /// Where the built-in data plane keeps its flows. With a store (and
     /// the `data-plane` feature) the connector runs its HTTP pull data
     /// plane and uses it for transfers; `None` keeps `transfers.flows`.
@@ -436,6 +439,8 @@ impl Ports {
     pub fn new(sender: Arc<dyn Sender>) -> Self {
         // one store for negotiations and the agreements transfers need
         let negotiations = InMemoryNegotiations::default();
+        // likewise for the consumer side
+        let consumer_negotiations = InMemoryConsumerNegotiations::default();
         Self {
             store: AnyStore(Arc::new(negotiations.clone())),
             transfers: crate::transfer::TransferPorts::in_memory(negotiations),
@@ -446,20 +451,25 @@ impl Ports {
             sender,
             guard: Arc::new(AllowAll),
             retry: Retry::default(),
-            consumer_store: AnyConsumerStore(Arc::new(InMemoryConsumerNegotiations::default())),
+            consumer_transfers: crate::consumer_transfer::ConsumerTransferPorts::in_memory(
+                consumer_negotiations.clone(),
+            ),
+            consumer_store: AnyConsumerStore(Arc::new(consumer_negotiations)),
             consumer_decider: default_consumer_decider(),
         }
     }
 }
 
 impl Ports {
-    /// Keeps negotiations (as provider and as consumer), transfers and
+    /// Keeps negotiations and transfers (as provider and as consumer) and
     /// the agreements transfers are checked against in one `SQLite` file.
     pub fn use_sqlite(&mut self, store: &Arc<crate::store::SqliteNegotiations>) {
         self.store = AnyStore(Arc::clone(store) as _);
         self.consumer_store = AnyConsumerStore(Arc::clone(store) as _);
         self.transfers.store = crate::transfer::Shared(Arc::clone(store) as _);
         self.transfers.agreements = crate::transfer::Shared(Arc::clone(store) as _);
+        self.consumer_transfers.store = crate::transfer::Shared(Arc::clone(store) as _);
+        self.consumer_transfers.held = crate::transfer::Shared(Arc::clone(store) as _);
         if self.flow_store.is_some() {
             self.flow_store = Some(crate::transfer::Shared(Arc::clone(store) as _));
         }
@@ -495,9 +505,7 @@ type Service = ProviderService<AnyStore, AnyDecider, InMemoryDatasets, SystemEnv
 /// The provider side of negotiation, as used by the HTTP handlers.
 pub(crate) struct Provider {
     service: Service,
-    sender: Arc<dyn Sender>,
-    guard: Arc<dyn MessageGuard + Send + Sync>,
-    retry: Retry,
+    link: Link,
     allow_http: bool,
 }
 
@@ -509,6 +517,7 @@ impl Provider {
         allow_http: bool,
     ) -> Self {
         Self {
+            link: Link::new(&ports),
             service: ProviderService::new(
                 ports.store,
                 ports.decider,
@@ -516,9 +525,6 @@ impl Provider {
                 SystemEnvironment,
                 participant_id,
             ),
-            sender: ports.sender,
-            guard: ports.guard,
-            retry: ports.retry,
             allow_http,
         }
     }
@@ -536,7 +542,8 @@ impl Provider {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
-        self.guard
+        self.link
+            .guard
             .check(Direction::Inbound, message_type, &value)
             .map_err(|r| Box::new(invalid(provider_pid, &consumer_pid, &r.to_string())))?;
         serde_json::from_value(value)
@@ -551,93 +558,34 @@ impl Provider {
     /// The store failed.
     pub(crate) fn resume(self: &Arc<Self>) -> Result<usize, Box<Failure>> {
         let pending = self.service.pending().map_err(Box::new)?;
-        let count = pending.len();
-        for out in pending {
-            tokio::spawn(Arc::clone(self).deliver(out));
-        }
-        Ok(count)
-    }
-
-    /// Sends `out` and whatever follows from it, until the provider waits
-    /// for the consumer or the negotiation ends.
-    async fn deliver(self: Arc<Self>, mut out: Outgoing) {
-        loop {
-            let next = match self.send(&out).await {
-                Ok(_) => self.service.delivered(&out),
-                // the consumer refused or did not answer, but may have
-                // received it before (a lost answer, or a resend after a
-                // restart): its state says
-                Err(error) if arrived(&*self.sender, &out.status_url, out.to).await => {
-                    tracing::info!(pid = %out.provider_pid, %error, "message had arrived before");
-                    self.service.delivered(&out)
-                }
-                // DSP: errors answering a termination may be ignored
-                Err(error) if out.transition == Transition::Terminate => {
-                    tracing::warn!(pid = %out.provider_pid, %error, "termination not acknowledged");
-                    self.service.delivered(&out)
-                }
-                Err(error) => {
-                    tracing::warn!(pid = %out.provider_pid, %error, "consumer not reachable; terminating");
-                    self.service
-                        .abort(&out, "the consumer could not be reached")
-                }
-            };
-            match next {
-                Ok(Some(n)) => out = n,
-                Ok(None) => return,
-                Err(failure) => {
-                    tracing::warn!(pid = %out.provider_pid, ?failure, "outgoing message not recorded");
-                    return;
-                }
-            }
-        }
-    }
-
-    async fn send(&self, out: &Outgoing) -> Result<Value, String> {
-        send(&*self.sender, &*self.guard, self.retry, &out.url, &out.body).await
+        Ok(outbox::resume(self, pending))
     }
 }
 
-/// Whether the counter-party reports state `to` at `status_url`, that is,
-/// a message that leads there has arrived. `false` when it cannot tell.
-pub(crate) async fn arrived(sender: &dyn Sender, status_url: &str, to: NegotiationState) -> bool {
-    if status_url.is_empty() {
-        return false;
-    }
-    sender.get(status_url).await.is_ok_and(|answer| {
-        serde_json::from_value::<ContractNegotiation>(answer).is_ok_and(|n| n.state == to)
-    })
-}
+impl Outbox for Provider {
+    type Out = Outgoing;
+    type Failure = Failure;
 
-/// Checks `body` with the guard, then POSTs it to `url`, retrying as
-/// `retry` says. Returns the counter-party's answer.
-pub(crate) async fn send(
-    sender: &dyn Sender,
-    guard: &(dyn MessageGuard + Send + Sync),
-    retry: Retry,
-    url: &str,
-    body: &Value,
-) -> Result<Value, String> {
-    let message_type = body
-        .get("@type")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    guard
-        .check(Direction::Outbound, message_type, body)
-        .map_err(|r| r.to_string())?;
-    let mut delay = retry.first_delay;
-    let mut last = String::from("not sent");
-    for attempt in 0..retry.attempts.max(1) {
-        if attempt > 0 {
-            tokio::time::sleep(delay).await;
-            delay = delay.saturating_mul(2);
-        }
-        match sender.post(url, body).await {
-            Ok(answer) => return Ok(answer),
-            Err(e) => last = e,
-        }
+    fn link(&self) -> &Link {
+        &self.link
     }
-    Err(last)
+
+    fn message(out: &Outgoing) -> Message<'_> {
+        Message::new(&out.provider_pid, &out.url, &out.body, &out.status_url)
+            .terminating(out.transition == Transition::Terminate)
+    }
+
+    fn reached(out: &Outgoing, state: Value) -> bool {
+        serde_json::from_value::<ContractNegotiation>(state).is_ok_and(|n| n.state == out.to)
+    }
+
+    fn delivered(&self, out: &Outgoing, _: Option<&Value>) -> Result<Option<Outgoing>, Failure> {
+        self.service.delivered(out)
+    }
+
+    fn abort(&self, out: &Outgoing) -> Result<Option<Outgoing>, Failure> {
+        self.service.abort(out, "the consumer could not be reached")
+    }
 }
 
 pub(crate) fn invalid(
@@ -662,7 +610,7 @@ fn finish(
     match handled {
         Ok((ack, next)) => {
             if let Some(out) = next {
-                tokio::spawn(Arc::clone(p).deliver(out));
+                tokio::spawn(outbox::deliver(Arc::clone(p), out));
             }
             (ok, Json(ack)).into_response()
         }
@@ -775,6 +723,7 @@ pub(crate) async fn terminate(
 mod tests {
     use super::*;
     use portitor_dsp::Offer;
+    use portitor_dsp::negotiation::NegotiationState;
 
     #[test]
     fn callback_urls() {
@@ -904,6 +853,14 @@ mod tests {
         fn post<'a>(&'a self, _: &'a str, _: &'a Value) -> SendFuture<'a> {
             Box::pin(async { Ok(Value::Null) })
         }
+    }
+
+    /// Whether `sender` reads state `to` at `url`.
+    async fn arrived(sender: &dyn Sender, url: &str, to: NegotiationState) -> bool {
+        let reached = |state: Value| {
+            serde_json::from_value::<ContractNegotiation>(state).is_ok_and(|n| n.state == to)
+        };
+        outbox::arrived(sender, url, reached).await
     }
 
     #[tokio::test]

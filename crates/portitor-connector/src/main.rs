@@ -36,6 +36,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         portitor_connector::store::SqliteNegotiations::open(&config.db_file)
             .map_err(|e| format!("cannot open {}: {e}", config.db_file.display()))?,
     );
+    #[cfg(feature = "tck")]
+    let sender = portitor_connector::tck::LateStart(sender);
     let mut ports = portitor_connector::Ports::new(Arc::new(sender));
     ports.use_sqlite(&store);
     let (app, negotiator) = portitor_connector::build(&config, ports)?;

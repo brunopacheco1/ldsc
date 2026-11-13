@@ -161,3 +161,21 @@ project, and to settle in ADR 0013 where it affects us):
   requires HTTPS endpoints; DSP examples and the TCK use
   `https://w3id.org/idsa/v4.1/HTTP` and the format `HTTP-PULL`. Which value
   Portitor sends over DSP is decided in ADR 0013 (0.4 PR 3).
+- Starting a suspended pull transfer again from the provider side: DSP
+  requires a data address in the provider's start message, but Signaling
+  has no way to ask the data plane for a new one. Portitor's built-in data
+  plane gives the flow a new token (ADR 0014).
+- The diagram "Consumer Pull – Consumer Suspend/Start" shows the provider
+  sending a `TransferStartMessage` with a data address back after the
+  consumer started the transfer again. The DSP TCK refuses that message
+  (its consumer is already STARTED), and Portitor does not send it
+  (ADR 0013).
+
+What the transfer work showed about the DSP TCK v1.0.2 (to report to the
+TCK project):
+
+- Its consumer registers a transfer only after it reads the provider's
+  answer to the request, and its start handler is used up by the first
+  start message. A provider that sends its start message at once can hit
+  the gap; every retry then gets 404. Portitor's TCK build waits 300 ms
+  before a start message (ADR 0014).

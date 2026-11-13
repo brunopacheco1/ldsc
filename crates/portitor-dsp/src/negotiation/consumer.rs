@@ -20,6 +20,7 @@
 //! a compare-and-update on `version`.
 
 use crate::{Context, Offer};
+use crate::{WRITE_ATTEMPTS, Write};
 
 use super::provider::{Environment, Failure, StoreError};
 use super::{
@@ -479,13 +480,13 @@ impl<S: ConsumerStore, D: ConsumerDecider, E: Environment> ConsumerService<S, D,
 
     /// Reads a negotiation, changes it and writes it if its version is
     /// unchanged; otherwise reads it again and repeats, a few times.
-    /// Returns what was written, or `None` for [`Write::Skip`].
+    /// Returns what was written, or `None` for `Write::Skip`.
     fn update(
         &self,
         consumer_pid: &str,
         change: impl Fn(&mut ConsumerNegotiation) -> Result<Write, Failure>,
     ) -> Result<Option<ConsumerNegotiation>, Failure> {
-        for _ in 0..ATTEMPTS {
+        for _ in 0..WRITE_ATTEMPTS {
             let mut n = self.load(consumer_pid)?;
             match change(&mut n)? {
                 Write::Skip => return Ok(None),
@@ -594,19 +595,6 @@ impl<S: ConsumerStore, D: ConsumerDecider, E: Environment> ConsumerService<S, D,
             .map_err(Failure::Store)?
             .ok_or_else(|| not_found(consumer_pid))
     }
-}
-
-/// How many times a write is tried when other writes keep coming first.
-const ATTEMPTS: usize = 3;
-
-/// What [`ConsumerService::update`] writes after a change.
-enum Write {
-    /// Nothing changed; write nothing.
-    Skip,
-    /// Decide the next message, then write.
-    Settle,
-    /// Write as changed.
-    AsIs,
 }
 
 fn outgoing<T: serde::Serialize>(

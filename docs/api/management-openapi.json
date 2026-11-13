@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Portitor management API",
-    "description": "Starts and follows contract negotiations in which this connector is the consumer. Served on its own port (PORTITOR_MANAGEMENT_BIND), never on the DSP port. Every call except this description needs the API key.",
+    "description": "Starts and follows contract negotiations and transfers in which this connector is the consumer. Served on its own port (PORTITOR_MANAGEMENT_BIND), never on the DSP port. Every call except this description needs the API key.",
     "license": {
       "name": "Apache-2.0",
       "identifier": "Apache-2.0"
@@ -21,7 +21,7 @@
           {
             "name": "after",
             "in": "query",
-            "description": "Return negotiations whose consumer pid sorts after this one.",
+            "description": "Return items whose consumer pid sorts after this one.",
             "required": false,
             "schema": {
               "type": "string"
@@ -187,6 +187,318 @@
           }
         ]
       }
+    },
+    "/v1/transfers": {
+      "get": {
+        "tags": [
+          "Transfers"
+        ],
+        "summary": "The transfers this connector runs as consumer, a page at a time.",
+        "operationId": "list_transfers",
+        "parameters": [
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Return items whose consumer pid sorts after this one.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "How many to return, 1 to 100 (default 100).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong API key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Transfers"
+        ],
+        "summary": "Request a transfer as consumer, under an agreement from one of our\nnegotiations. The request is sent in the background; follow the\ntransfer with `GET /v1/transfers/{consumerPid}` until it is `STARTED`\nand has a `dataAddress`.",
+        "operationId": "start_transfer",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartTransfer"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Requested (state REQUESTED)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request, or no finalized negotiation holds the agreement",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong API key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/v1/transfers/{consumerPid}": {
+      "get": {
+        "tags": [
+          "Transfers"
+        ],
+        "summary": "One transfer, with its data address once the provider started it.",
+        "operationId": "one_transfer",
+        "parameters": [
+          {
+            "name": "consumerPid",
+            "in": "path",
+            "description": "Our process id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The transfer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong API key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown transfer",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/v1/transfers/{consumerPid}/completion": {
+      "post": {
+        "tags": [
+          "Transfers"
+        ],
+        "summary": "Complete a `STARTED` transfer: we have the data and need no more. The\ncompletion is sent in the background.",
+        "operationId": "complete_transfer",
+        "parameters": [
+          {
+            "name": "consumerPid",
+            "in": "path",
+            "description": "Our process id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Completion on its way; the state changes once the provider acknowledges it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The transfer is not STARTED, or a message is still on its way",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong API key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown transfer",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/v1/transfers/{consumerPid}/termination": {
+      "post": {
+        "tags": [
+          "Transfers"
+        ],
+        "summary": "End a transfer that has not ended yet. The termination is sent in the\nbackground.",
+        "operationId": "terminate_transfer",
+        "parameters": [
+          {
+            "name": "consumerPid",
+            "in": "path",
+            "description": "Our process id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Termination on its way; the state changes once the provider acknowledges it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The transfer has ended, or a message is still on its way",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong API key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown transfer",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -320,6 +632,102 @@
           }
         },
         "additionalProperties": false
+      },
+      "StartTransfer": {
+        "type": "object",
+        "description": "Request a transfer as consumer.",
+        "required": [
+          "agreementId"
+        ],
+        "properties": {
+          "agreementId": {
+            "type": "string",
+            "description": "The `@id` of the agreement of one of our `FINALIZED` negotiations.\nThe transfer is requested from the provider of that negotiation.",
+            "example": "urn:uuid:agreement-1"
+          },
+          "format": {
+            "type": "string",
+            "description": "A format of one of the dataset's distributions (default\n`HttpData-PULL`, the only one this connector's data plane serves).",
+            "example": "HttpData-PULL"
+          }
+        },
+        "additionalProperties": false
+      },
+      "TransferPage": {
+        "type": "object",
+        "description": "One page of transfers.",
+        "required": [
+          "transfers"
+        ],
+        "properties": {
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass as `after` to get the next page; absent on the last page."
+          },
+          "transfers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TransferView"
+            },
+            "description": "The transfers, in consumer pid order."
+          }
+        }
+      },
+      "TransferView": {
+        "type": "object",
+        "description": "A transfer this connector runs as consumer.",
+        "required": [
+          "consumerPid",
+          "state",
+          "providerAddress",
+          "providerId",
+          "agreementId",
+          "format"
+        ],
+        "properties": {
+          "agreementId": {
+            "type": "string",
+            "description": "The agreement the transfer is made under."
+          },
+          "consumerPid": {
+            "type": "string",
+            "description": "Our process id."
+          },
+          "dataAddress": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Where to fetch the data, with the access token (DSP 2025-1\n`DataAddress`): send `GET <endpoint>` with `Authorization: <the\nauthorization property>`. Present while the transfer is `STARTED`\nor `SUSPENDED`; the token works only while it is `STARTED`."
+          },
+          "format": {
+            "type": "string",
+            "description": "The format asked for."
+          },
+          "providerAddress": {
+            "type": "string",
+            "description": "The provider's DSP endpoint."
+          },
+          "providerId": {
+            "type": "string",
+            "description": "The provider's participant id."
+          },
+          "providerPid": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The provider's process id, once it has answered."
+          },
+          "state": {
+            "type": "string",
+            "description": "The DSP state, for example `REQUESTED` or `STARTED`.",
+            "example": "STARTED"
+          }
+        }
       }
     },
     "securitySchemes": {
@@ -334,6 +742,10 @@
     {
       "name": "Negotiations",
       "description": "Contract negotiations as consumer (DSP 2025-1)"
+    },
+    {
+      "name": "Transfers",
+      "description": "Transfer processes as consumer (DSP 2025-1), pull only"
     }
   ]
 }

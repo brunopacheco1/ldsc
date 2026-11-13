@@ -410,5 +410,5 @@ async fn openapi_paths_are_served() {
             count += 1;
         }
     }
-    assert_eq!(count, 21);
+    assert_eq!(count, 26);
 }

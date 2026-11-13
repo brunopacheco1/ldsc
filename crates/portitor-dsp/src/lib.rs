@@ -197,6 +197,23 @@ pub mod negotiation;
 pub mod policy;
 pub mod transfer;
 
+#[cfg(test)]
+mod test_support;
+
+/// How many times a service writes a process record when other writes
+/// keep coming first (compare-and-update on its version, ADR 0007).
+pub(crate) const WRITE_ATTEMPTS: usize = 3;
+
+/// What a service's `update` writes after it changed a process record.
+pub(crate) enum Write {
+    /// Nothing changed; write nothing.
+    Skip,
+    /// Ask the decider for the next message, then write.
+    Settle,
+    /// Write the change as it is.
+    AsIs,
+}
+
 type_tag!(
     /// `@type: CatalogRequestMessage`
     CatalogRequestMessageType,

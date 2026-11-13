@@ -140,7 +140,10 @@ all checks green, Scorecard published.
   implementing v1.0-RC4 shows (listed in ARCHITECTURE, "Data plane"):
   examples that fail the specification's own schemas, a pull `start`
   example that breaks a MUST, who may resume, and the HTTP profile's
-  `endpointType` (maintainer, 2026-11-13).
+  `endpointType` (maintainer, 2026-11-13), plus what the consumer side
+  showed: no Signaling message for a new token when the provider starts a
+  transfer again, and the "Consumer Suspend/Start" diagram. Report the
+  DSP TCK race (ADR 0014) to the TCK project.
 - Code quality and readability review of the whole code base before the
   release, so a maintainer who is not a Rust expert can follow it (asked
   by the maintainer, 2026-11-13): simpler code where it is hard to read,

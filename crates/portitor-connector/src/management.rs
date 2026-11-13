@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! The management API: what the operator's own systems use to start and
-//! follow negotiations as consumer. It is not part of DSP, so it is served
+//! follow negotiations and transfers as consumer. It is not part of DSP, so it is served
 //! on its own port (`PORTITOR_MANAGEMENT_BIND`), never on the DSP port, and
 //! every call needs the API key (`Authorization: Bearer <key>`).
 //!
@@ -19,11 +19,13 @@ use axum::extract::{Path, Query, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use portitor_dsp::Offer;
 use portitor_dsp::negotiation::consumer::{ConsumerNegotiation, MAX_PAGE};
 use portitor_dsp::negotiation::provider::Failure;
+use portitor_dsp::transfer::consumer::{ConsumerTransfer, ConsumerTransferDecision};
+use portitor_dsp::transfer::provider::Failure as TransferFailure;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
@@ -138,17 +140,31 @@ fn problem(status: StatusCode, detail: &str) -> Response {
     res
 }
 
+/// 400 with the DSP error's reasons as the detail.
+fn refused(reason: &[Value]) -> Response {
+    let reasons: Vec<&str> = reason.iter().filter_map(Value::as_str).collect();
+    problem(StatusCode::BAD_REQUEST, &reasons.join("; "))
+}
+
+fn internal(what: &str, error: &dyn std::fmt::Display) -> Response {
+    tracing::error!(%error, "{what} failed");
+    problem(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+}
+
 fn failed(failure: &Failure) -> Response {
     match failure {
-        Failure::BadRequest(e) => {
-            let reasons: Vec<&str> = e.reason.iter().filter_map(Value::as_str).collect();
-            problem(StatusCode::BAD_REQUEST, &reasons.join("; "))
-        }
+        Failure::BadRequest(e) => refused(&e.reason),
         Failure::NotFound(_) => problem(StatusCode::NOT_FOUND, "no such negotiation"),
-        Failure::Store(e) => {
-            tracing::error!(error = %e, "negotiation store failed");
-            problem(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
-        }
+        Failure::Store(e) => internal("negotiation store", e),
+    }
+}
+
+fn transfer_failed(failure: &TransferFailure) -> Response {
+    match failure {
+        TransferFailure::BadRequest(e) => refused(&e.reason),
+        TransferFailure::NotFound(_) => problem(StatusCode::NOT_FOUND, "no such transfer"),
+        TransferFailure::Store(e) => internal("transfer store", e),
+        TransferFailure::DataPlane(e) => internal("data plane", e),
     }
 }
 
@@ -205,10 +221,7 @@ pub struct NegotiationView {
 impl From<ConsumerNegotiation> for NegotiationView {
     fn from(n: ConsumerNegotiation) -> Self {
         Self {
-            state: serde_json::to_value(n.state)
-                .ok()
-                .and_then(|v| v.as_str().map(str::to_owned))
-                .unwrap_or_default(),
+            state: state_name(n.state),
             offer: serde_json::to_value(&n.offer).unwrap_or_default(),
             agreement: n
                 .agreement
@@ -233,11 +246,11 @@ pub struct NegotiationPage {
     next: Option<String>,
 }
 
-/// Paging for [`list`].
+/// Paging for the lists.
 #[derive(Debug, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct PageQuery {
-    /// Return negotiations whose consumer pid sorts after this one.
+    /// Return items whose consumer pid sorts after this one.
     after: Option<String>,
     /// How many to return, 1 to 100 (default 100).
     limit: Option<usize>,
@@ -325,9 +338,7 @@ async fn list(
     let limit = q.limit.unwrap_or(MAX_PAGE).clamp(1, MAX_PAGE);
     match n.list(q.after.as_deref(), limit) {
         Ok(found) => {
-            let next = (found.len() == limit)
-                .then(|| found.last().map(|l| l.consumer_pid.clone()))
-                .flatten();
+            let next = next_after(&found, limit, |n| &n.consumer_pid);
             Json(NegotiationPage {
                 negotiations: found.into_iter().map(NegotiationView::from).collect(),
                 next,
@@ -336,6 +347,231 @@ async fn list(
         }
         Err(f) => failed(&f),
     }
+}
+
+/// The format of a pull transfer over HTTP, the only kind in 0.4.
+const PULL_FORMAT: &str = "HttpData-PULL";
+
+fn pull_format() -> String {
+    PULL_FORMAT.to_owned()
+}
+
+/// Request a transfer as consumer.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StartTransfer {
+    /// The `@id` of the agreement of one of our `FINALIZED` negotiations.
+    /// The transfer is requested from the provider of that negotiation.
+    #[schema(example = "urn:uuid:agreement-1")]
+    agreement_id: String,
+    /// A format of one of the dataset's distributions (default
+    /// `HttpData-PULL`, the only one this connector's data plane serves).
+    #[serde(default = "pull_format")]
+    #[schema(example = "HttpData-PULL")]
+    format: String,
+}
+
+/// A transfer this connector runs as consumer.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferView {
+    /// Our process id.
+    consumer_pid: String,
+    /// The provider's process id, once it has answered.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider_pid: Option<String>,
+    /// The DSP state, for example `REQUESTED` or `STARTED`.
+    #[schema(example = "STARTED")]
+    state: String,
+    /// The provider's DSP endpoint.
+    provider_address: String,
+    /// The provider's participant id.
+    provider_id: String,
+    /// The agreement the transfer is made under.
+    agreement_id: String,
+    /// The format asked for.
+    format: String,
+    /// Where to fetch the data, with the access token (DSP 2025-1
+    /// `DataAddress`): send `GET <endpoint>` with `Authorization: <the
+    /// authorization property>`. Present while the transfer is `STARTED`
+    /// or `SUSPENDED`; the token works only while it is `STARTED`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
+    data_address: Option<Value>,
+}
+
+impl From<ConsumerTransfer> for TransferView {
+    fn from(t: ConsumerTransfer) -> Self {
+        Self {
+            state: state_name(t.state),
+            data_address: t
+                .data_address
+                .as_ref()
+                .and_then(|a| serde_json::to_value(a).ok()),
+            consumer_pid: t.consumer_pid,
+            provider_pid: t.provider_pid,
+            provider_address: t.provider_address,
+            provider_id: t.provider_id,
+            agreement_id: t.agreement_id,
+            format: t.format,
+        }
+    }
+}
+
+/// A DSP state's name, for example `STARTED`.
+fn state_name<S: Serialize>(state: S) -> String {
+    serde_json::to_value(state)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+/// One page of transfers.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferPage {
+    /// The transfers, in consumer pid order.
+    transfers: Vec<TransferView>,
+    /// Pass as `after` to get the next page; absent on the last page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next: Option<String>,
+}
+
+/// Request a transfer as consumer, under an agreement from one of our
+/// negotiations. The request is sent in the background; follow the
+/// transfer with `GET /v1/transfers/{consumerPid}` until it is `STARTED`
+/// and has a `dataAddress`.
+#[utoipa::path(
+    post,
+    path = "/v1/transfers",
+    request_body = StartTransfer,
+    responses(
+        (status = 201, description = "Requested (state REQUESTED)", body = TransferView),
+        (status = 400, description = "Invalid request, or no finalized negotiation holds the agreement", body = Problem, content_type = "application/problem+json"),
+        (status = 401, description = "Missing or wrong API key", body = Problem, content_type = "application/problem+json"),
+    ),
+    security(("api_key" = [])),
+    tag = "Transfers"
+)]
+async fn start_transfer(
+    State(n): State<Negotiator>,
+    body: Result<Json<StartTransfer>, JsonRejection>,
+) -> Response {
+    let req = match body {
+        Ok(Json(r)) => r,
+        Err(e) => return problem(StatusCode::BAD_REQUEST, &e.body_text()),
+    };
+    match n.request_transfer(&req.agreement_id, &req.format) {
+        Ok(t) => (StatusCode::CREATED, Json(TransferView::from(t))).into_response(),
+        Err(f) => transfer_failed(&f),
+    }
+}
+
+/// One transfer, with its data address once the provider started it.
+#[utoipa::path(
+    get,
+    path = "/v1/transfers/{consumerPid}",
+    params(("consumerPid" = String, Path, description = "Our process id")),
+    responses(
+        (status = 200, description = "The transfer", body = TransferView),
+        (status = 401, description = "Missing or wrong API key", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "Unknown transfer", body = Problem, content_type = "application/problem+json"),
+    ),
+    security(("api_key" = [])),
+    tag = "Transfers"
+)]
+async fn one_transfer(State(n): State<Negotiator>, Path(cpid): Path<String>) -> Response {
+    match n.transfer(&cpid) {
+        Ok(t) => Json(TransferView::from(t)).into_response(),
+        Err(f) => transfer_failed(&f),
+    }
+}
+
+/// The transfers this connector runs as consumer, a page at a time.
+#[utoipa::path(
+    get,
+    path = "/v1/transfers",
+    params(PageQuery),
+    responses(
+        (status = 200, description = "One page", body = TransferPage),
+        (status = 400, description = "Invalid query", body = Problem, content_type = "application/problem+json"),
+        (status = 401, description = "Missing or wrong API key", body = Problem, content_type = "application/problem+json"),
+    ),
+    security(("api_key" = [])),
+    tag = "Transfers"
+)]
+async fn list_transfers(
+    State(n): State<Negotiator>,
+    query: Result<Query<PageQuery>, axum::extract::rejection::QueryRejection>,
+) -> Response {
+    let Query(q) = match query {
+        Ok(q) => q,
+        Err(e) => return problem(StatusCode::BAD_REQUEST, &e.body_text()),
+    };
+    let limit = q.limit.unwrap_or(MAX_PAGE).clamp(1, MAX_PAGE);
+    match n.transfers(q.after.as_deref(), limit) {
+        Ok(found) => {
+            let next = next_after(&found, limit, |t| &t.consumer_pid);
+            Json(TransferPage {
+                transfers: found.into_iter().map(TransferView::from).collect(),
+                next,
+            })
+            .into_response()
+        }
+        Err(f) => transfer_failed(&f),
+    }
+}
+
+/// Complete a `STARTED` transfer: we have the data and need no more. The
+/// completion is sent in the background.
+#[utoipa::path(
+    post,
+    path = "/v1/transfers/{consumerPid}/completion",
+    params(("consumerPid" = String, Path, description = "Our process id")),
+    responses(
+        (status = 202, description = "Completion on its way; the state changes once the provider acknowledges it", body = TransferView),
+        (status = 400, description = "The transfer is not STARTED, or a message is still on its way", body = Problem, content_type = "application/problem+json"),
+        (status = 401, description = "Missing or wrong API key", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "Unknown transfer", body = Problem, content_type = "application/problem+json"),
+    ),
+    security(("api_key" = [])),
+    tag = "Transfers"
+)]
+async fn complete_transfer(State(n): State<Negotiator>, Path(cpid): Path<String>) -> Response {
+    act(&n, &cpid, ConsumerTransferDecision::Complete)
+}
+
+/// End a transfer that has not ended yet. The termination is sent in the
+/// background.
+#[utoipa::path(
+    post,
+    path = "/v1/transfers/{consumerPid}/termination",
+    params(("consumerPid" = String, Path, description = "Our process id")),
+    responses(
+        (status = 202, description = "Termination on its way; the state changes once the provider acknowledges it", body = TransferView),
+        (status = 400, description = "The transfer has ended, or a message is still on its way", body = Problem, content_type = "application/problem+json"),
+        (status = 401, description = "Missing or wrong API key", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "Unknown transfer", body = Problem, content_type = "application/problem+json"),
+    ),
+    security(("api_key" = [])),
+    tag = "Transfers"
+)]
+async fn terminate_transfer(State(n): State<Negotiator>, Path(cpid): Path<String>) -> Response {
+    act(&n, &cpid, ConsumerTransferDecision::Terminate)
+}
+
+fn act(n: &Negotiator, consumer_pid: &str, decision: ConsumerTransferDecision) -> Response {
+    match n.act_on_transfer(consumer_pid, decision) {
+        Ok(t) => (StatusCode::ACCEPTED, Json(TransferView::from(t))).into_response(),
+        Err(f) => transfer_failed(&f),
+    }
+}
+
+/// The `after` value for the next page: the last key of a full page.
+fn next_after<T>(found: &[T], limit: usize, key: impl Fn(&T) -> &String) -> Option<String> {
+    (found.len() == limit)
+        .then(|| found.last().map(|l| key(l).clone()))
+        .flatten()
 }
 
 struct BearerKey;
@@ -362,13 +598,33 @@ impl Modify for BearerKey {
 #[openapi(
     info(
         title = "Portitor management API",
-        description = "Starts and follows contract negotiations in which this connector is the consumer. Served on its own port (PORTITOR_MANAGEMENT_BIND), never on the DSP port. Every call except this description needs the API key.",
+        description = "Starts and follows contract negotiations and transfers in which this connector is the consumer. Served on its own port (PORTITOR_MANAGEMENT_BIND), never on the DSP port. Every call except this description needs the API key.",
         license(name = "Apache-2.0", identifier = "Apache-2.0"),
     ),
-    paths(start, one, list),
-    components(schemas(StartNegotiation, NegotiationView, NegotiationPage, Problem)),
+    paths(
+        start,
+        one,
+        list,
+        start_transfer,
+        one_transfer,
+        list_transfers,
+        complete_transfer,
+        terminate_transfer
+    ),
+    components(schemas(
+        StartNegotiation,
+        NegotiationView,
+        NegotiationPage,
+        StartTransfer,
+        TransferView,
+        TransferPage,
+        Problem
+    )),
     modifiers(&BearerKey),
-    tags((name = "Negotiations", description = "Contract negotiations as consumer (DSP 2025-1)"))
+    tags(
+        (name = "Negotiations", description = "Contract negotiations as consumer (DSP 2025-1)"),
+        (name = "Transfers", description = "Transfer processes as consumer (DSP 2025-1), pull only")
+    )
 )]
 pub struct ManagementApi;
 
@@ -406,6 +662,16 @@ pub fn router(negotiator: Negotiator, key: ApiKey) -> Router {
     let protected = Router::new()
         .route("/v1/negotiations", get(list).post(start))
         .route("/v1/negotiations/{consumerPid}", get(one))
+        .route("/v1/transfers", get(list_transfers).post(start_transfer))
+        .route("/v1/transfers/{consumerPid}", get(one_transfer))
+        .route(
+            "/v1/transfers/{consumerPid}/completion",
+            post(complete_transfer),
+        )
+        .route(
+            "/v1/transfers/{consumerPid}/termination",
+            post(terminate_transfer),
+        )
         .route_layer(middleware::from_fn_with_state(key, require_key))
         .with_state(negotiator);
     let spec = openapi_json();

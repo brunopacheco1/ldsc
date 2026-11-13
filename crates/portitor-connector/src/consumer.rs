@@ -19,7 +19,7 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
 use portitor_dsp::Offer;
-use portitor_dsp::guard::{Direction, MessageGuard};
+use portitor_dsp::guard::Direction;
 use portitor_dsp::negotiation::consumer::{
     ConsumerDecider, ConsumerDecision, ConsumerNegotiation, ConsumerService, ConsumerStore,
     Outgoing,
@@ -33,16 +33,15 @@ use portitor_dsp::negotiation::{
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::negotiation::{
-    Ports, Retry, Sender, SystemEnvironment, arrived, bad_request, callback_allowed, failed, send,
-};
+use crate::negotiation::{Ports, SystemEnvironment, bad_request, callback_allowed, failed};
+use crate::outbox::{self, Link, Message, Outbox};
 
 /// Adapter: consumer negotiations kept in memory (lost on restart).
 #[derive(Debug, Clone, Default)]
 pub struct InMemoryConsumerNegotiations(Arc<Mutex<BTreeMap<String, ConsumerNegotiation>>>);
 
 impl InMemoryConsumerNegotiations {
-    fn map(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, ConsumerNegotiation>> {
+    pub(crate) fn map(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, ConsumerNegotiation>> {
         // every write is a single insert, so a panic cannot leave half an entry
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -78,14 +77,7 @@ impl ConsumerStore for InMemoryConsumerNegotiations {
         after: Option<&str>,
         limit: usize,
     ) -> Result<Vec<ConsumerNegotiation>, StoreError> {
-        let map = self.map();
-        let range = match after {
-            Some(a) => {
-                map.range::<str, _>((std::ops::Bound::Excluded(a), std::ops::Bound::Unbounded))
-            }
-            None => map.range::<str, _>(..),
-        };
-        Ok(range.take(limit).map(|(_, n)| n.clone()).collect())
+        Ok(page(&self.map(), after, limit))
     }
 
     fn pending(&self) -> Result<Vec<ConsumerNegotiation>, StoreError> {
@@ -96,6 +88,20 @@ impl ConsumerStore for InMemoryConsumerNegotiations {
             .cloned()
             .collect())
     }
+}
+
+/// Up to `limit` values of `map` whose keys sort after `after`, in key
+/// order: one page for the in-memory stores.
+pub(crate) fn page<V: Clone>(
+    map: &BTreeMap<String, V>,
+    after: Option<&str>,
+    limit: usize,
+) -> Vec<V> {
+    let range = match after {
+        Some(a) => map.range::<str, _>((std::ops::Bound::Excluded(a), std::ops::Bound::Unbounded)),
+        None => map.range::<str, _>(..),
+    };
+    range.take(limit).map(|(_, v)| v.clone()).collect()
 }
 
 /// Any [`ConsumerStore`], chosen at start.
@@ -154,9 +160,7 @@ type Service = ConsumerService<AnyConsumerStore, AnyConsumerDecider, SystemEnvir
 /// The consumer side of negotiation, as used by the HTTP handlers.
 pub(crate) struct Consumer {
     service: Service,
-    sender: Arc<dyn Sender>,
-    guard: Arc<dyn MessageGuard + Send + Sync>,
-    retry: Retry,
+    link: Link,
     allow_http: bool,
 }
 
@@ -169,9 +173,7 @@ impl Consumer {
                 SystemEnvironment,
                 callback_address,
             ),
-            sender: Arc::clone(&ports.sender),
-            guard: Arc::clone(&ports.guard),
-            retry: ports.retry,
+            link: Link::new(ports),
             allow_http,
         }
     }
@@ -204,7 +206,7 @@ impl Consumer {
             .service
             .start(provider_address, provider_id, offer)
             .map_err(Box::new)?;
-        tokio::spawn(Arc::clone(self).deliver(out));
+        tokio::spawn(outbox::deliver(Arc::clone(self), out));
         Ok(n)
     }
 
@@ -216,11 +218,7 @@ impl Consumer {
     /// The store failed.
     pub(crate) fn resume(self: &Arc<Self>) -> Result<usize, Box<Failure>> {
         let pending = self.service.pending().map_err(Box::new)?;
-        let count = pending.len();
-        for out in pending {
-            tokio::spawn(Arc::clone(self).deliver(out));
-        }
-        Ok(count)
+        Ok(outbox::resume(self, pending))
     }
 
     pub(crate) fn negotiation(
@@ -259,7 +257,8 @@ impl Consumer {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
-        self.guard
+        self.link
+            .guard
             .check(Direction::Inbound, message_type, &value)
             .map_err(|r| invalid(&provider_pid, &r.to_string()))?;
         serde_json::from_value(value).map_err(|e| invalid(&provider_pid, &e.to_string()))
@@ -273,60 +272,47 @@ impl Consumer {
         match handled {
             Ok((ack, next)) => {
                 if let Some(out) = next {
-                    tokio::spawn(Arc::clone(self).deliver(out));
+                    tokio::spawn(outbox::deliver(Arc::clone(self), out));
                 }
                 Json(ack).into_response()
             }
             Err(failure) => failed(failure),
         }
     }
+}
 
-    /// Sends `out` and whatever follows from it, until the consumer waits
-    /// for the provider or the negotiation ends.
-    async fn deliver(self: Arc<Self>, mut out: Outgoing) {
-        while let Some(next) = self.step(&out).await {
-            out = next;
-        }
+impl Outbox for Consumer {
+    type Out = Outgoing;
+    type Failure = Failure;
+
+    fn link(&self) -> &Link {
+        &self.link
     }
 
-    /// Sends one message and records the outcome; returns the next one.
-    async fn step(&self, out: &Outgoing) -> Option<Outgoing> {
-        let pid = &out.consumer_pid;
-        let sent = send(&*self.sender, &*self.guard, self.retry, &out.url, &out.body).await;
-        let next = match sent {
-            Ok(answer) => self.service.delivered(out, Some(&answer)),
-            // the provider refused or did not answer, but may have received
-            // it before (a lost answer, or a resend after a restart): its
-            // state says
-            Err(error) if arrived(&*self.sender, &out.status_url, out.to).await => {
-                tracing::info!(%pid, %error, "message had arrived before");
-                self.service.delivered(out, None)
-            }
-            Err(error) if out.initial => {
-                tracing::warn!(%pid, %error, "provider not reachable; negotiation not started");
-                self.service.not_started(pid).map(|()| None)
-            }
-            // DSP: errors answering a termination may be ignored
-            Err(error) if out.transition == Transition::Terminate => {
-                tracing::warn!(%pid, %error, "termination not acknowledged");
-                self.service.delivered(out, None)
-            }
-            Err(error) => {
-                tracing::warn!(%pid, %error, "provider not reachable; terminating");
-                self.service.abort(out, "the provider could not be reached")
-            }
-        };
-        match next {
-            Ok(n) => n,
-            Err(failure) => {
-                tracing::warn!(%pid, ?failure, "outgoing message not recorded");
-                if out.initial {
-                    // without the provider's pid the negotiation cannot go on
-                    let _ = self.service.not_started(pid);
-                }
-                None
-            }
-        }
+    fn message(out: &Outgoing) -> Message<'_> {
+        Message::new(&out.consumer_pid, &out.url, &out.body, &out.status_url)
+            .first(out.initial)
+            .terminating(out.transition == Transition::Terminate)
+    }
+
+    fn reached(out: &Outgoing, state: Value) -> bool {
+        serde_json::from_value::<ContractNegotiation>(state).is_ok_and(|n| n.state == out.to)
+    }
+
+    fn delivered(
+        &self,
+        out: &Outgoing,
+        answer: Option<&Value>,
+    ) -> Result<Option<Outgoing>, Failure> {
+        self.service.delivered(out, answer)
+    }
+
+    fn not_started(&self, out: &Outgoing) -> Result<(), Failure> {
+        self.service.not_started(&out.consumer_pid)
+    }
+
+    fn abort(&self, out: &Outgoing) -> Result<Option<Outgoing>, Failure> {
+        self.service.abort(out, "the provider could not be reached")
     }
 }
 

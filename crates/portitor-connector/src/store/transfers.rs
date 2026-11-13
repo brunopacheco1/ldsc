@@ -20,14 +20,14 @@ const TRANSFER_COLUMNS: &str = "provider_pid, consumer_pid, state, callback_addr
      counter_party, agreement_id, dataset_id, format, pending, version";
 
 /// A transfer state as stored: its DSP name, for example `STARTED`.
-fn transfer_state_text(s: TransferState) -> Result<String, StoreError> {
+pub(super) fn transfer_state_text(s: TransferState) -> Result<String, StoreError> {
     match serde_json::to_value(s) {
         Ok(serde_json::Value::String(t)) => Ok(t),
         _ => Err(StoreError(format!("cannot store state {s:?}"))),
     }
 }
 
-fn parsed_transfer_state(text: String) -> Result<TransferState, StoreError> {
+pub(super) fn parsed_transfer_state(text: String) -> Result<TransferState, StoreError> {
     serde_json::from_value(serde_json::Value::String(text))
         .map_err(|e| StoreError(format!("stored state: {e}")))
 }
