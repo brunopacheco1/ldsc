@@ -35,8 +35,9 @@ pub trait Sender: Send + Sync {
     /// POSTs `body` as JSON to `url`.
     fn post<'a>(&'a self, url: &'a str, body: &'a Value) -> SendFuture<'a>;
 
-    /// GETs `url` (a counter-party's negotiation state). The default
-    /// cannot, so a message that failed is never taken as delivered.
+    /// GETs `url`, for example a counter-party's negotiation state. The
+    /// default implementation always fails: a sender that cannot read
+    /// (a test fake) then never makes a failed message look delivered.
     fn get<'a>(&'a self, url: &'a str) -> SendFuture<'a> {
         Box::pin(async move { Err(format!("cannot read {url}")) })
     }
@@ -64,7 +65,9 @@ pub trait Sender: Send + Sync {
     }
 }
 
-/// How long one POST to a counter-party may take, answer included.
+/// How long one request of [`HttpSender`] may take, from sending until
+/// the whole answer is read: a POST or GET to a counter-party, a token
+/// request to the STS, a DID document or status list fetch.
 const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The largest answer read from a counter-party. A `ContractNegotiation`
@@ -262,7 +265,9 @@ impl HttpSender {
         request: hyper::Request<Full<Bytes>>,
         max_bytes: usize,
     ) -> Result<Bytes, String> {
-        if !callback_allowed(url, self.allow_http) {
+        // the text names callbacks, the first use of this rule; it now
+        // covers every outbound URL, and tests look for this text
+        if !outbound_url_allowed(url, self.allow_http) {
             return Err(format!("refused callback URL {url}"));
         }
         if !self.has_ca_certificates && url.to_ascii_lowercase().starts_with("https://") {
@@ -271,9 +276,14 @@ impl HttpSender {
                     .to_owned(),
             );
         }
-        tokio::time::timeout(SEND_TIMEOUT, self.exchange(request, max_bytes))
-            .await
-            .map_err(|_| format!("no answer within {}s", SEND_TIMEOUT.as_secs()))?
+        let exchange = self.exchange(request, max_bytes);
+        // `timeout` gives an error only when the time is up; when the
+        // exchange finished in time, `answer` is its own result, which may
+        // be an error too, and is returned as it is
+        let Ok(answer) = tokio::time::timeout(SEND_TIMEOUT, exchange).await else {
+            return Err(format!("no answer within {}s", SEND_TIMEOUT.as_secs()));
+        };
+        answer
     }
 
     async fn exchange(
@@ -301,11 +311,12 @@ impl HttpSender {
     }
 }
 
-/// Whether the connector may send to `url`. The consumer chooses the
-/// callback address, so only `https://` URLs with a host are allowed,
-/// plus `http://` when `allow_http` is set.
+/// Whether a Portitor process may send to `url`. Other participants
+/// choose many of the URLs called (callback addresses, DID documents,
+/// Credential Services, status lists), so only `https://` URLs with a
+/// host are allowed, plus `http://` when `allow_http` is set.
 #[must_use]
-pub fn callback_allowed(url: &str, allow_http: bool) -> bool {
+pub fn outbound_url_allowed(url: &str, allow_http: bool) -> bool {
     let lower = url.to_ascii_lowercase();
     let after_scheme = if let Some(rest) = lower.strip_prefix("https://") {
         rest
@@ -329,11 +340,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn callback_urls() {
-        assert!(callback_allowed("https://c.example/cb", false));
-        assert!(callback_allowed("HTTPS://c.example", false));
-        assert!(!callback_allowed("http://c.example/cb", false));
-        assert!(callback_allowed("http://c.example/cb", true));
+    fn outbound_urls() {
+        assert!(outbound_url_allowed("https://c.example/cb", false));
+        assert!(outbound_url_allowed("HTTPS://c.example", false));
+        assert!(!outbound_url_allowed("http://c.example/cb", false));
+        assert!(outbound_url_allowed("http://c.example/cb", true));
         for bad in [
             "",
             "https://",
@@ -342,7 +353,7 @@ mod tests {
             "file:///etc",
             "c.example",
         ] {
-            assert!(!callback_allowed(bad, true), "{bad}");
+            assert!(!outbound_url_allowed(bad, true), "{bad}");
         }
     }
 

@@ -28,7 +28,7 @@ use serde_json::Value;
 
 use crate::InMemoryDatasets;
 use crate::auth::Caller;
-use crate::http_client::callback_allowed;
+use crate::http_client::outbound_url_allowed;
 use crate::outbox::{self, Link, Message, Outbox};
 use crate::ports::{AnyDecider, AnyStore, Ports};
 use crate::system::SystemEnvironment;
@@ -241,7 +241,7 @@ pub(crate) async fn request_new(
         Err(e) => return bad_request(*e),
     };
     let callback = msg.callback_address.as_deref().unwrap_or_default();
-    if !callback.is_empty() && !callback_allowed(callback, provider.allow_http) {
+    if !callback.is_empty() && !outbound_url_allowed(callback, provider.allow_http) {
         return bad_request(invalid(
             "",
             &msg.consumer_pid,
