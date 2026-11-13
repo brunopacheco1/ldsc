@@ -48,6 +48,7 @@ use portitor_dsp::{
 };
 use serde::Serialize;
 
+pub mod auth;
 pub mod consumer;
 pub mod consumer_transfer;
 pub mod data_flows;

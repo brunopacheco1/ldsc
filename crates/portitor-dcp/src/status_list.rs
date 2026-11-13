@@ -185,6 +185,18 @@ fn bit_is_set(bits: &[u8], index: u64) -> Result<bool, StatusError> {
     Ok(byte & (1 << shift) != 0)
 }
 
+/// Encodes a bitstring as a Bitstring Status List `encodedList`: GZIP,
+/// then multibase base64url (`u` and base64url without padding). The
+/// reverse of [`decode_list`]. For issuers and test tools.
+#[must_use]
+pub fn encode_list(bits: &[u8]) -> String {
+    let compressed = crate::gzip::compress(bits);
+    format!(
+        "u{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(compressed)
+    )
+}
+
 /// The list kept in `credential`, the status list credential that
 /// `entry` points to. The kinds must match: a `BitstringStatusListEntry`
 /// needs a `BitstringStatusListCredential` (Bitstring Status List v1.0,
@@ -249,6 +261,14 @@ mod tests {
             status_purpose: "revocation".to_owned(),
             encoded_list,
         }
+    }
+
+    #[test]
+    fn encodes_lists() {
+        let bits = [0b0100_0000, 0];
+        let text = encode_list(&bits);
+        assert_eq!(decode_list(&text).unwrap(), bits);
+        assert_eq!(text, encoded(2, &[1]));
     }
 
     #[test]

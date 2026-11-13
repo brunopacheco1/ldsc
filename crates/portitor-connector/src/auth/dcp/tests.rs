@@ -1,0 +1,599 @@
+// SPDX-FileCopyrightText: Portitor contributors
+//
+// SPDX-License-Identifier: Apache-2.0
+
+//! The DCP verifier against a small dataspace on a local port: a holder
+//! (the caller) with its Credential Service, an issuer with a status list,
+//! a third party, and our own identity, all `did:web` DIDs served over
+//! plain HTTP.
+
+#![allow(clippy::unwrap_used)]
+
+use std::collections::BTreeMap;
+
+use axum::extract::State;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::IntoResponse as _;
+use portitor_dcp::credential::{VC1_CONTEXT, VC2_CONTEXT};
+use portitor_dcp::{Relationship, Service, SigningKey, VerificationMethod};
+use serde_json::json;
+
+use super::*;
+
+/// One participant: its DID and key, and its DID document as served.
+struct Party {
+    did: String,
+    key: SigningKey,
+}
+
+impl Party {
+    fn new(base: &str, name: &str) -> Self {
+        let host = base.trim_start_matches("http://").replace(':', "%3A");
+        Self {
+            did: format!("did:web:{host}:{name}"),
+            key: SigningKey::generate().unwrap(),
+        }
+    }
+
+    fn kid(&self) -> String {
+        format!("{}#key-1", self.did)
+    }
+
+    /// Its DID document: one key for every purpose, unless
+    /// `capability_invocation` is false; the Credential Service at `base`.
+    fn document(&self, base: &str, capability_invocation: bool) -> Value {
+        let vm = VerificationMethod {
+            id: self.kid(),
+            kind: "JsonWebKey2020".into(),
+            controller: self.did.clone(),
+            public_key_jwk: self.key.public_jwk(),
+        };
+        let all = vec![Relationship::Reference(self.kid())];
+        let doc = DidDocument {
+            id: self.did.clone(),
+            verification_method: vec![vm],
+            capability_invocation: if capability_invocation {
+                all.clone()
+            } else {
+                Vec::new()
+            },
+            authentication: all.clone(),
+            assertion_method: all,
+            service: vec![Service {
+                id: format!("{}#cs", self.did),
+                kind: "CredentialService".into(),
+                service_endpoint: Value::from(base),
+            }],
+        };
+        serde_json::to_value(doc).unwrap()
+    }
+
+    fn sign(&self, payload: &Value) -> String {
+        self.key.sign_json(&self.kid(), "JWT", payload).unwrap()
+    }
+
+    /// A self-issued ID token for `audience`, with `access` as its `token`
+    /// claim.
+    fn id_token(&self, audience: &str, access: Option<&str>, jti: &str) -> String {
+        let now = now_secs();
+        let claims = Claims {
+            iss: self.did.clone(),
+            sub: self.did.clone(),
+            aud: audience.to_owned(),
+            jti: jti.to_owned(),
+            exp: now + 300,
+            iat: now,
+            nbf: None,
+            token: access.map(str::to_owned),
+        };
+        self.key.sign(&self.kid(), &claims).unwrap()
+    }
+}
+
+/// What the local server serves.
+#[derive(Default)]
+struct World {
+    /// DID documents by path, for example `holder/did.json`.
+    documents: BTreeMap<String, Value>,
+    /// The Credential Service's answer.
+    answer: Value,
+    /// The status list credential (a JWT, or anything for tests).
+    status_list: String,
+    /// The `Authorization` headers the Credential Service got.
+    queries: Vec<String>,
+}
+
+type Shared = Arc<Mutex<World>>;
+
+async fn did_document(
+    State(world): State<Shared>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> axum::response::Response {
+    let world = world.lock().unwrap();
+    match world.documents.get(&name) {
+        Some(doc) => axum::Json(doc.clone()).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+async fn presentation_query(
+    State(world): State<Shared>,
+    headers: HeaderMap,
+) -> axum::response::Response {
+    let mut world = world.lock().unwrap();
+    let auth = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    world.queries.push(auth);
+    axum::Json(world.answer.clone()).into_response()
+}
+
+async fn status_list(State(world): State<Shared>) -> String {
+    world.lock().unwrap().status_list.clone()
+}
+
+/// Our STS: signs as `me`.
+struct LocalSts(Party);
+
+impl SecureTokenService for LocalSts {
+    fn token<'a>(&'a self, request: TokenRequest<'a>) -> AuthFuture<'a, Result<String, String>> {
+        let jti = portitor_runtime::system::new_uuid();
+        let token = self
+            .0
+            .id_token(request.audience, request.access_token, &jti);
+        Box::pin(async move { Ok(token) })
+    }
+}
+
+/// The dataspace: parties, the server, and our verifier.
+struct Dataspace {
+    base: String,
+    world: Shared,
+    holder: Party,
+    issuer: Party,
+    third: Party,
+    me_did: String,
+    verifier: DcpVerifier,
+}
+
+async fn dataspace() -> Dataspace {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let world: Shared = Arc::default();
+    let app = axum::Router::new()
+        .route("/{name}/did.json", axum::routing::get(did_document))
+        .route(
+            "/presentations/query",
+            axum::routing::post(presentation_query),
+        )
+        .route("/status/1", axum::routing::get(status_list))
+        .with_state(Arc::clone(&world));
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    let (holder, issuer, third, me) = (
+        Party::new(&base, "holder"),
+        Party::new(&base, "issuer"),
+        Party::new(&base, "third"),
+        Party::new(&base, "me"),
+    );
+    {
+        let mut w = world.lock().unwrap();
+        for (name, party) in [
+            ("holder", &holder),
+            ("issuer", &issuer),
+            ("third", &third),
+            ("me", &me),
+        ] {
+            w.documents.insert(name.into(), party.document(&base, true));
+        }
+    }
+    let settings = AuthSettings {
+        participant_id: me.did.clone(),
+        sts_url: String::new(),
+        sts_client_id: String::new(),
+        sts_client_secret: String::new(),
+        trusted_issuers: vec![issuer.did.clone()],
+        scopes: vec![super::super::DEFAULT_SCOPE.to_owned()],
+        allow_http: true,
+    };
+    let me_did = me.did.clone();
+    let mut verifier = DcpVerifier::new(&settings, Arc::new(LocalSts(me))).unwrap();
+    verifier.start_tries = 1;
+    Dataspace {
+        base,
+        world,
+        holder,
+        issuer,
+        third,
+        me_did,
+        verifier,
+    }
+}
+
+impl Dataspace {
+    /// A VC 1.1 credential JWT (the DCP TCK's shape) by `issuer`, about
+    /// `subject`, with `extra` fields in the `vc` claim.
+    fn credential(issuer: &Party, kind: &str, subject: &str, extra: &Value) -> String {
+        let now = now_secs();
+        let mut vc = json!({
+            "@context": [VC1_CONTEXT],
+            "id": "urn:uuid:c-1",
+            "type": ["VerifiableCredential", kind],
+            "issuer": issuer.did,
+            "issuanceDate": "2026-01-01T00:00:00Z",
+            "credentialSubject": {"id": subject}
+        });
+        for (key, value) in extra.as_object().into_iter().flatten() {
+            vc[key] = value.clone();
+        }
+        issuer.sign(
+            &json!({"iss": issuer.did, "sub": subject, "jti": "j", "nbf": now - 10,
+            "exp": now + 300, "vc": vc}),
+        )
+    }
+
+    /// A VC 1.1 presentation JWT by `holder` for us, with `credentials`.
+    fn presentation(&self, holder: &Party, credentials: &[String]) -> String {
+        let now = now_secs();
+        holder.sign(
+            &json!({"iss": holder.did, "sub": holder.did, "aud": self.me_did,
+            "nbf": now - 10, "exp": now + 300,
+            "vp": {"@context": [VC1_CONTEXT], "type": "VerifiablePresentation",
+                "verifiableCredential": credentials}}),
+        )
+    }
+
+    /// The Credential Service answers with `presentations`.
+    fn answer(&self, presentations: &[String]) {
+        self.world.lock().unwrap().answer = json!({
+            "@context": ["https://w3id.org/dspace-dcp/v1.0/dcp.jsonld"],
+            "type": "PresentationResponseMessage",
+            "presentation": presentations
+        });
+    }
+
+    /// The usual answer: one presentation with a trusted membership
+    /// credential, optionally with `extra` credential fields.
+    fn answer_member(&self, extra: &Value) {
+        let credential = Self::credential(&self.issuer, MEMBERSHIP, &self.holder.did, extra);
+        self.answer(&[self.presentation(&self.holder, &[credential])]);
+    }
+
+    /// A status list credential by the issuer, with `revoked` bits set.
+    fn publish_status_list(&self, issuer: &Party, revoked: &[usize]) {
+        let mut bits = vec![0u8; 2048];
+        for &index in revoked {
+            bits[index / 8] |= 1 << (7 - index % 8);
+        }
+        let jwt = issuer.sign(&json!({
+            "@context": [VC2_CONTEXT],
+            "type": ["VerifiableCredential", "BitstringStatusListCredential"],
+            "issuer": issuer.did,
+            "credentialSubject": {"id": "urn:uuid:list", "type": "BitstringStatusList",
+                "statusPurpose": "revocation",
+                "encodedList": portitor_dcp::status_list::encode_list(&bits)}
+        }));
+        self.world.lock().unwrap().status_list = jwt;
+    }
+
+    fn status_entry(&self, index: &str) -> Value {
+        json!({"credentialStatus": {"id": "urn:uuid:s", "type": "BitstringStatusListEntry",
+            "statusPurpose": "revocation", "statusListIndex": index,
+            "statusListCredential": format!("{}/status/1", self.base)}})
+    }
+
+    /// The caller's `Authorization` header: the holder's token for us.
+    fn header(&self) -> String {
+        format!(
+            "Bearer {}",
+            self.holder.id_token(
+                &self.me_did,
+                Some("access-1"),
+                &portitor_runtime::system::new_uuid()
+            )
+        )
+    }
+
+    async fn verify(&self, header: &str) -> Result<Caller, String> {
+        self.verifier.verify(Some(header)).await
+    }
+}
+
+#[tokio::test]
+async fn a_member_is_let_in_and_its_credential_service_gets_our_token() {
+    let ds = dataspace().await;
+    ds.answer_member(&json!({}));
+    let caller = ds.verify(&ds.header()).await.unwrap();
+    assert_eq!(caller, Caller(ds.holder.did.clone()));
+    // our query carried our token for the holder, with its access token
+    let query = ds.world.lock().unwrap().queries.pop().unwrap();
+    let token = query.strip_prefix("Bearer ").unwrap();
+    let claims = unverified_claims(token).unwrap();
+    assert_eq!(
+        (claims.iss.as_str(), claims.aud.as_str()),
+        (ds.me_did.as_str(), ds.holder.did.as_str())
+    );
+    assert_eq!(claims.token.as_deref(), Some("access-1"));
+    // our own identity check passes too
+    ds.verifier.check_own_identity().await.unwrap();
+}
+
+#[tokio::test]
+async fn tokens_are_checked() {
+    let ds = dataspace().await;
+    ds.answer_member(&json!({}));
+    let header = ds.header();
+    let token = header.strip_prefix("Bearer ").unwrap();
+    let now = now_secs();
+    let claims = |iss: &str, sub: &str, aud: &str, exp: u64, access: Option<&str>| Claims {
+        iss: iss.to_owned(),
+        sub: sub.to_owned(),
+        aud: aud.to_owned(),
+        jti: portitor_runtime::system::new_uuid(),
+        exp,
+        iat: now,
+        nbf: None,
+        token: access.map(str::to_owned),
+    };
+    let holder = &ds.holder;
+    let me = ds.me_did.as_str();
+    let signed = |by: &Party, claims: Claims| {
+        format!("Bearer {}", by.key.sign(&holder.kid(), &claims).unwrap())
+    };
+    let refused = [
+        // no Bearer prefix, an empty token, another scheme
+        token.to_owned(),
+        "Bearer ".to_owned(),
+        "Basic abc".to_owned(),
+        // iss and sub differ
+        signed(
+            holder,
+            claims(&holder.did, &ds.third.did, me, now + 300, Some("a")),
+        ),
+        // another audience
+        signed(
+            holder,
+            claims(
+                &holder.did,
+                &holder.did,
+                &ds.third.did,
+                now + 300,
+                Some("a"),
+            ),
+        ),
+        // expired
+        signed(
+            holder,
+            claims(&holder.did, &holder.did, me, now - 3_600, Some("a")),
+        ),
+        // valid for too long
+        signed(
+            holder,
+            claims(&holder.did, &holder.did, me, now + 7_200, Some("a")),
+        ),
+        // no access token
+        signed(
+            holder,
+            claims(&holder.did, &holder.did, me, now + 300, None),
+        ),
+        // signed by another key than the issuer's
+        signed(
+            &ds.third,
+            claims(&holder.did, &holder.did, me, now + 300, Some("a")),
+        ),
+    ];
+    assert!(ds.verifier.verify(None).await.is_err());
+    for header in refused {
+        assert!(ds.verify(&header).await.is_err(), "{header}");
+    }
+    // a token is good once
+    assert!(ds.verify(&header).await.is_ok());
+    assert!(ds.verify(&header).await.unwrap_err().contains("jti"));
+}
+
+#[tokio::test]
+async fn a_key_without_capability_invocation_is_refused() {
+    let ds = dataspace().await;
+    ds.answer_member(&json!({}));
+    ds.world
+        .lock()
+        .unwrap()
+        .documents
+        .insert("holder".into(), ds.holder.document(&ds.base, false));
+    let err = ds.verify(&ds.header()).await.unwrap_err();
+    assert!(err.contains("capabilityInvocation"), "{err}");
+}
+
+#[tokio::test]
+async fn presentations_and_credentials_are_checked() {
+    let ds = dataspace().await;
+    let header = || ds.header();
+    let member = |issuer: &Party, subject: &str| {
+        Dataspace::credential(issuer, MEMBERSHIP, subject, &json!({}))
+    };
+    let holder = ds.holder.did.as_str();
+    let cases: Vec<(&str, Vec<String>)> = vec![
+        ("empty presentation array", vec![]),
+        ("no credentials", vec![ds.presentation(&ds.holder, &[])]),
+        (
+            "another credential type",
+            vec![ds.presentation(
+                &ds.holder,
+                &[Dataspace::credential(
+                    &ds.issuer,
+                    "SensitiveDataCredential",
+                    holder,
+                    &json!({}),
+                )],
+            )],
+        ),
+        (
+            "untrusted issuer",
+            vec![ds.presentation(&ds.holder, &[member(&ds.third, holder)])],
+        ),
+        (
+            "subject is someone else",
+            vec![ds.presentation(&ds.holder, &[member(&ds.issuer, &ds.third.did)])],
+        ),
+        (
+            "holder is someone else",
+            vec![ds.presentation(&ds.third, &[member(&ds.issuer, holder)])],
+        ),
+        (
+            "expired",
+            vec![ds.presentation(
+                &ds.holder,
+                &[Dataspace::credential(
+                    &ds.issuer,
+                    MEMBERSHIP,
+                    holder,
+                    &json!({"expirationDate": "2026-01-02T00:00:00Z"}),
+                )],
+            )],
+        ),
+        (
+            "not yet valid",
+            vec![ds.presentation(
+                &ds.holder,
+                &[Dataspace::credential(
+                    &ds.issuer,
+                    MEMBERSHIP,
+                    holder,
+                    &json!({"issuanceDate": "2999-01-01T00:00:00Z"}),
+                )],
+            )],
+        ),
+        (
+            "a credential signed by another key",
+            vec![ds.presentation(
+                &ds.holder,
+                &[{
+                    let forged = Party {
+                        did: ds.issuer.did.clone(),
+                        key: SigningKey::generate().unwrap(),
+                    };
+                    member(&forged, holder)
+                }],
+            )],
+        ),
+    ];
+    // the reason each case is refused for
+    let expected = |what: &str| match what {
+        "empty presentation array" => "is empty",
+        "subject is someone else" => "not about the caller",
+        "holder is someone else" => "holder is not the caller",
+        "expired" => "expired",
+        "not yet valid" => "not yet valid",
+        "a credential signed by another key" => "bad signature",
+        _ => "no MembershipCredential from a trusted issuer",
+    };
+    for (what, presentations) in cases {
+        ds.answer(&presentations);
+        let err = ds.verify(&header()).await.unwrap_err();
+        assert!(err.contains(expected(what)), "{what}: {err}");
+    }
+    // a presentation that is not a JWT
+    ds.world.lock().unwrap().answer = json!({"@context": ["https://w3id.org/dspace-dcp/v1.0/dcp.jsonld"],
+        "type": "PresentationResponseMessage", "presentation": [{"a": 1}]});
+    assert!(ds.verify(&header()).await.is_err());
+    // not a presentation response
+    ds.world.lock().unwrap().answer = json!({"presentation": []});
+    assert!(ds.verify(&header()).await.is_err());
+    // more credentials than asked for are fine
+    ds.answer(&[ds.presentation(
+        &ds.holder,
+        &[
+            member(&ds.issuer, holder),
+            Dataspace::credential(&ds.issuer, "SensitiveDataCredential", holder, &json!({})),
+        ],
+    )]);
+    assert!(ds.verify(&header()).await.is_ok());
+}
+
+#[tokio::test]
+async fn revoked_credentials_and_unsigned_status_lists_are_refused() {
+    let ds = dataspace().await;
+    ds.answer_member(&ds.status_entry("5"));
+    ds.publish_status_list(&ds.issuer, &[3]);
+    assert!(ds.verify(&ds.header()).await.is_ok(), "bit 5 is clear");
+    ds.publish_status_list(&ds.issuer, &[5]);
+    let err = ds.verify(&ds.header()).await.unwrap_err();
+    assert!(err.contains("revoked"), "{err}");
+    // a list by another issuer, an unsigned list, a list too short
+    ds.publish_status_list(&ds.third, &[]);
+    assert!(ds.verify(&ds.header()).await.is_err());
+    ds.world.lock().unwrap().status_list = json!({"credentialSubject": {}}).to_string();
+    assert!(ds.verify(&ds.header()).await.is_err());
+    ds.answer_member(&ds.status_entry("999999"));
+    ds.publish_status_list(&ds.issuer, &[]);
+    assert!(ds.verify(&ds.header()).await.is_err());
+}
+
+#[tokio::test]
+async fn our_identity_must_match_the_sts() {
+    let ds = dataspace().await;
+    // the STS signs as someone else
+    let settings = AuthSettings {
+        participant_id: ds.me_did.clone(),
+        sts_url: String::new(),
+        sts_client_id: String::new(),
+        sts_client_secret: String::new(),
+        trusted_issuers: Vec::new(),
+        scopes: Vec::new(),
+        allow_http: true,
+    };
+    let other = Party::new(&ds.base, "third");
+    let mut verifier = DcpVerifier::new(&settings, Arc::new(LocalSts(other))).unwrap();
+    verifier.start_tries = 1;
+    assert!(
+        verifier
+            .check_own_identity()
+            .await
+            .unwrap_err()
+            .contains("not signed as it")
+    );
+    // our DID document cannot be read
+    let mut lost = settings.clone();
+    lost.participant_id = format!("{}x", ds.me_did);
+    let mut verifier =
+        DcpVerifier::new(&lost, Arc::new(LocalSts(Party::new(&ds.base, "mex")))).unwrap();
+    verifier.start_tries = 1;
+    assert!(
+        verifier
+            .check_own_identity()
+            .await
+            .unwrap_err()
+            .contains("cannot read")
+    );
+    // no Credential Service in it
+    let mut doc = ds.world.lock().unwrap().documents["me"].clone();
+    doc["service"] = json!([]);
+    ds.world.lock().unwrap().documents.insert("me".into(), doc);
+    let fresh =
+        DcpVerifier::new(&settings, Arc::new(LocalSts(Party::new(&ds.base, "me")))).unwrap();
+    assert!(
+        fresh
+            .check_own_identity()
+            .await
+            .unwrap_err()
+            .contains("CredentialService")
+    );
+    assert!(format!("{fresh:?}").contains("DcpVerifier"));
+}
+
+#[test]
+fn reads_bearer_headers() {
+    assert_eq!(bearer(Some("Bearer abc")), Ok("abc"));
+    assert_eq!(bearer(Some("bearer  abc ")), Ok("abc"));
+    for bad in [
+        None,
+        Some(""),
+        Some("abc"),
+        Some("Bearer"),
+        Some("Bearer  "),
+        Some("Basic abc"),
+    ] {
+        assert!(bearer(bad).is_err(), "{bad:?}");
+    }
+}
