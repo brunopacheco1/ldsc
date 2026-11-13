@@ -12,6 +12,8 @@ versions may change behaviour and configuration.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-13
+
 ### Added
 - EDC interop test (`scripts/edc-interop.sh`, workflow `EDC interop`):
   Portitor's connector and identity against an EDC v1.0.0-RC7 control

@@ -63,7 +63,9 @@ notices script runs the same build as a dry run: nothing is pushed or signed.
    `## [X.Y.Z] - YYYY-MM-DD`, add a fresh empty `## [Unreleased]` above it,
    set `info.version` in `docs/api/openapi.json`, regenerate
    `docs/api/management-openapi.json`
-   (`PORTITOR_UPDATE_OPENAPI=1 cargo test -p portitor-connector --test management_api`),
+   and `docs/api/identity-management-openapi.json`
+   (`PORTITOR_UPDATE_OPENAPI=1 cargo test -p portitor-connector --test management_api`
+   and the same with `-p portitor-identity`),
    and merge.
 2. Tag the merge commit with your personal key and push the tag:
    ```sh
