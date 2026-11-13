@@ -39,14 +39,15 @@ use std::time::Duration;
 use portitor_dcp::credential::{Credential, Presentation};
 use portitor_dcp::message::{PresentationQueryMessage, PresentationResponseMessage};
 use portitor_dcp::status_list::{self, Status, StatusEntry};
-use portitor_dcp::{DidDocument, JtiCache, unverified_claims, validate_self_issued};
+use portitor_dcp::{Claims, DidDocument, JtiCache, unverified_claims, validate_self_issued};
+use portitor_runtime::BoxFuture;
 use portitor_runtime::did::{DEFAULT_TTL, DidWebResolver};
-use portitor_runtime::http::{HttpSender, Sender as _};
+use portitor_runtime::http::{HttpSender, Sender as _, bearer_token};
 use portitor_runtime::system::now_secs;
 use serde_json::Value;
 
 use super::sts::{SecureTokenService, TokenRequest};
-use super::{AuthFuture, AuthSettings, Caller, CallerVerifier};
+use super::{AuthSettings, Caller, CallerVerifier};
 
 /// Allowed clock difference between participants, in seconds.
 const LEEWAY: u64 = 60;
@@ -74,15 +75,17 @@ pub const MAX_STATUS_ENTRIES: usize = 4;
 /// The longest one caller check may take, all fetches included.
 pub const DEADLINE: Duration = Duration::from_secs(20);
 
-/// How often, and how far apart, [`DcpVerifier::check_own_identity`]
-/// tries to read our DID document: the identity component may still be
-/// starting.
+/// How often [`DcpVerifier::check_own_identity`] tries to read our DID
+/// document: the identity component may still be starting.
 const START_TRIES: u32 = 15;
+
+/// How long [`DcpVerifier::check_own_identity`] waits between two tries:
+/// with [`START_TRIES`], about 30 seconds in all.
 const START_WAIT: Duration = Duration::from_secs(2);
 
 /// The DCP verifier.
 pub struct DcpVerifier {
-    own_did: String,
+    participant_id: String,
     resolver: DidWebResolver,
     http: HttpSender,
     sts: Arc<dyn SecureTokenService>,
@@ -98,7 +101,7 @@ pub struct DcpVerifier {
 impl std::fmt::Debug for DcpVerifier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DcpVerifier")
-            .field("own_did", &self.own_did)
+            .field("participant_id", &self.participant_id)
             .field("trusted_issuers", &self.trusted_issuers)
             .field("scopes", &self.scopes)
             .finish_non_exhaustive()
@@ -121,7 +124,7 @@ impl DcpVerifier {
     /// The HTTP client cannot be built.
     pub fn new(settings: &AuthSettings, sts: Arc<dyn SecureTokenService>) -> Result<Self, String> {
         Ok(Self {
-            own_did: settings.participant_id.clone(),
+            participant_id: settings.participant_id.clone(),
             resolver: DidWebResolver::new(settings.allow_http, DEFAULT_TTL)?,
             http: HttpSender::new(settings.allow_http)?,
             sts,
@@ -143,7 +146,7 @@ impl DcpVerifier {
     /// The DID document cannot be read, has no Credential Service, or the
     /// STS signs for another identity.
     pub async fn check_own_identity(&self) -> Result<(), String> {
-        let own = self.own_did.as_str();
+        let own = self.participant_id.as_str();
         let doc = self.resolve_own_document().await?;
         if doc.credential_service().is_none() {
             return Err(format!(
@@ -168,18 +171,18 @@ impl DcpVerifier {
     async fn resolve_own_document(&self) -> Result<Arc<DidDocument>, String> {
         let mut last = String::new();
         for attempt in 1..=self.start_tries.max(1) {
-            match self.resolver.resolve(&self.own_did).await {
+            match self.resolver.resolve(&self.participant_id).await {
                 Ok(doc) => return Ok(doc),
                 Err(e) => last = e,
             }
             if attempt < self.start_tries {
-                tracing::info!(did = %self.own_did, error = %last, "own DID document not readable yet");
+                tracing::info!(did = %self.participant_id, error = %last, "own DID document not readable yet");
                 tokio::time::sleep(START_WAIT).await;
             }
         }
         Err(format!(
             "cannot read the DID document of {}: {last}",
-            self.own_did
+            self.participant_id
         ))
     }
 
@@ -210,21 +213,31 @@ impl DcpVerifier {
         let unverified = unverified_claims(token).map_err(|e| format!("ID token: {e}"))?;
         let now = now_secs();
         let doc = self.resolver.resolve(&unverified.iss).await?;
-        let claims = {
-            // a panic while holding the lock leaves at most one more token
-            // id in the list
-            let mut used = self
-                .used_token_ids
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            validate_self_issued(token, &doc, &self.own_did, now, LEEWAY, &mut used)
-        }
-        .map_err(|e| format!("ID token: {e}"))?;
+        let claims = self
+            .validate_and_remember(token, &doc, now)
+            .map_err(|e| format!("ID token: {e}"))?;
         let access_token = claims
             .token
             .filter(|t| !t.is_empty())
             .ok_or("the ID token has no access token (token claim)")?;
         Ok(CheckedToken { doc, access_token })
+    }
+
+    /// Checks the token against the caller's DID document and records its
+    /// id as used, under the lock of the used ids.
+    fn validate_and_remember(
+        &self,
+        token: &str,
+        doc: &DidDocument,
+        now: u64,
+    ) -> Result<Claims, portitor_dcp::Error> {
+        // a panic while holding the lock leaves at most one more token id
+        // in the list, so the list is still safe to use
+        let mut used = self
+            .used_token_ids
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        validate_self_issued(token, doc, &self.participant_id, now, LEEWAY, &mut used)
     }
 
     /// Step 3: asks the caller's Credential Service for presentations.
@@ -260,8 +273,7 @@ impl DcpVerifier {
         holder: &DidDocument,
         jwts: &[String],
     ) -> Result<(), String> {
-        let now = i64::try_from(now_secs()).unwrap_or(i64::MAX);
-        let leeway = i64::try_from(LEEWAY).unwrap_or(0);
+        let now = now_secs();
         let mut member = false;
         for jwt in jwts {
             let presentation =
@@ -270,7 +282,7 @@ impl DcpVerifier {
                 return Err("a presentation's holder is not the caller".to_owned());
             }
             presentation
-                .verify(holder, &self.own_did, now, leeway)
+                .verify(holder, &self.participant_id, now, LEEWAY)
                 .map_err(|e| format!("presentation: {e}"))?;
             if presentation.credentials.len() > MAX_CREDENTIALS {
                 return Err(format!(
@@ -303,12 +315,9 @@ impl DcpVerifier {
         &self,
         credential: &Credential,
         caller: &str,
-        now: i64,
+        now: u64,
     ) -> Result<(), String> {
-        let about_caller = !credential.subjects.is_empty()
-            && credential.subjects.len() == credential.subject_ids().count()
-            && credential.subject_ids().all(|id| id == caller);
-        if !about_caller {
+        if !credential.is_only_about(caller) {
             return Err("a credential is not about the caller (credentialSubject.id)".to_owned());
         }
         if credential.status.len() > MAX_STATUS_ENTRIES {
@@ -317,9 +326,8 @@ impl DcpVerifier {
             ));
         }
         let issuer = self.resolver.resolve(&credential.issuer).await?;
-        let leeway = i64::try_from(LEEWAY).unwrap_or(0);
         credential
-            .verify(&issuer, now, leeway)
+            .verify(&issuer, now, LEEWAY)
             .map_err(|e| format!("credential from {}: {e}", credential.issuer))?;
         for entry in &credential.status {
             self.check_status(credential, &issuer, entry, now).await?;
@@ -335,7 +343,7 @@ impl DcpVerifier {
         credential: &Credential,
         issuer: &DidDocument,
         entry: &StatusEntry,
-        now: i64,
+        now: u64,
     ) -> Result<(), String> {
         let url = &entry.status_list_credential;
         let text = self
@@ -348,9 +356,8 @@ impl DcpVerifier {
         if list_credential.issuer != credential.issuer {
             return Err(format!("status list {url} has another issuer"));
         }
-        let leeway = i64::try_from(LEEWAY).unwrap_or(0);
         list_credential
-            .verify(issuer, now, leeway)
+            .verify(issuer, now, LEEWAY)
             .map_err(|e| format!("status list {url}: {e}"))?;
         let list = status_list::list_in(&list_credential, entry)
             .map_err(|e| format!("status list {url}: {e}"))?;
@@ -368,7 +375,7 @@ impl CallerVerifier for DcpVerifier {
     fn verify<'a>(
         &'a self,
         authorization: Option<&'a str>,
-    ) -> AuthFuture<'a, Result<Caller, String>> {
+    ) -> BoxFuture<'a, Result<Caller, String>> {
         Box::pin(self.check(authorization))
     }
 }
@@ -378,14 +385,7 @@ impl CallerVerifier for DcpVerifier {
 /// expects the same.
 fn bearer(authorization: Option<&str>) -> Result<&str, String> {
     let header = authorization.ok_or("no Authorization header")?;
-    match header.split_once(' ') {
-        Some((scheme, token))
-            if scheme.eq_ignore_ascii_case("bearer") && !token.trim().is_empty() =>
-        {
-            Ok(token.trim())
-        }
-        _ => Err("the Authorization header is not a Bearer token".to_owned()),
-    }
+    bearer_token(header).ok_or_else(|| "the Authorization header is not a Bearer token".to_owned())
 }
 
 /// The presentations of a Credential Service's answer, which must be a

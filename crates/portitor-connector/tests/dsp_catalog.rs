@@ -89,7 +89,7 @@ impl portitor_connector::http_client::Sender for NoSender {
         &'a self,
         _: &'a str,
         _: &'a Value,
-    ) -> portitor_connector::http_client::SendFuture<'a> {
+    ) -> portitor_runtime::BoxFuture<'a, Result<serde_json::Value, String>> {
         Box::pin(async { Err("not in this test".to_owned()) })
     }
 }

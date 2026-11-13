@@ -20,7 +20,6 @@
 //! both adapters.
 
 use std::ffi::OsString;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use axum::Json;
@@ -32,14 +31,15 @@ use portitor_dcp::scope::Scope;
 use portitor_dsp::CatalogError;
 use portitor_dsp::negotiation::ContractNegotiationError;
 use portitor_dsp::transfer::TransferError;
+use portitor_runtime::BoxFuture;
+use portitor_runtime::settings::comma_list;
 
 pub mod dcp;
 pub mod sts;
 
-/// What the ports return: a task that finishes later with `T`. Boxed for
-/// the same reason as [`crate::http_client::SendFuture`]: the connector
-/// keeps its adapters as `Arc<dyn Port>`.
-pub type AuthFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+/// The same as [`BoxFuture`], which the ports below return. Kept as a
+/// public name of this crate; new code writes `BoxFuture`.
+pub type AuthFuture<'a, T> = BoxFuture<'a, T>;
 
 /// The proven participant id (DID) of a DSP request's caller. The
 /// handlers take it from the request, where [`require_caller`] put it.
@@ -58,7 +58,7 @@ pub trait CallerVerifier: Send + Sync {
     fn verify<'a>(
         &'a self,
         authorization: Option<&'a str>,
-    ) -> AuthFuture<'a, Result<Caller, String>>;
+    ) -> BoxFuture<'a, Result<Caller, String>>;
 }
 
 /// Port: how we authenticate ourselves on a DSP request.
@@ -69,7 +69,7 @@ pub trait Prover: Send + Sync {
     /// # Errors
     ///
     /// No token could be had; the request is not sent.
-    fn authorization<'a>(&'a self, audience: &'a str) -> AuthFuture<'a, Result<String, String>>;
+    fn authorization<'a>(&'a self, audience: &'a str) -> BoxFuture<'a, Result<String, String>>;
 }
 
 /// Adapter: refuses every caller. What [`crate::Ports::new`] starts with,
@@ -78,7 +78,7 @@ pub trait Prover: Send + Sync {
 pub struct RefuseAll;
 
 impl CallerVerifier for RefuseAll {
-    fn verify<'a>(&'a self, _: Option<&'a str>) -> AuthFuture<'a, Result<Caller, String>> {
+    fn verify<'a>(&'a self, _: Option<&'a str>) -> BoxFuture<'a, Result<Caller, String>> {
         Box::pin(async { Err("no caller verifier configured".to_owned()) })
     }
 }
@@ -89,7 +89,7 @@ impl CallerVerifier for RefuseAll {
 pub struct NoTokens;
 
 impl Prover for NoTokens {
-    fn authorization<'a>(&'a self, _: &'a str) -> AuthFuture<'a, Result<String, String>> {
+    fn authorization<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<String, String>> {
         Box::pin(async { Err("no token source configured".to_owned()) })
     }
 }
@@ -189,7 +189,7 @@ impl std::fmt::Debug for AuthSettings {
 impl AuthSettings {
     /// Reads the settings from the environment. `None` when
     /// `PORTITOR_STS_URL` is not set, which only the `tck` build accepts
-    /// (see [`crate::tck`]).
+    /// (see `tck.rs`).
     ///
     /// # Errors
     ///
@@ -235,12 +235,16 @@ impl AuthSettings {
         if sts_client_secret.is_empty() {
             return Err(format!("the STS client secret file {secret_file} is empty"));
         }
-        let trusted_issuers = list(text("PORTITOR_TRUSTED_ISSUERS").as_deref());
+        let trusted_issuers = comma_list(
+            text("PORTITOR_TRUSTED_ISSUERS")
+                .as_deref()
+                .unwrap_or_default(),
+        );
         if trusted_issuers.is_empty() {
             return Err("PORTITOR_TRUSTED_ISSUERS is required: the DIDs trusted to issue MembershipCredential".to_owned());
         }
         let scopes = match text("PORTITOR_DCP_SCOPES") {
-            Some(scopes) => list(Some(&scopes)),
+            Some(scopes) => comma_list(&scopes),
             None => vec![DEFAULT_SCOPE.to_owned()],
         };
         if scopes.is_empty() {
@@ -266,21 +270,9 @@ impl AuthSettings {
     }
 }
 
-/// The non-empty, trimmed items of a comma-separated list.
-fn list(text: Option<&str>) -> Vec<String> {
-    let mut items = Vec::new();
-    for item in text.unwrap_or_default().split(',') {
-        let item = item.trim();
-        if !item.is_empty() {
-            items.push(item.to_owned());
-        }
-    }
-    items
-}
-
 /// The DCP adapters for `settings`: the verifier and the prover, both
 /// using our STS. Before it returns, it checks that our identity is the
-/// one configured ([`dcp::check_own_identity`]).
+/// one configured ([`dcp::DcpVerifier::check_own_identity`]).
 ///
 /// # Errors
 ///

@@ -19,11 +19,12 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
-use portitor_connector::http_client::{SendFuture, Sender};
+use portitor_connector::http_client::Sender;
 use portitor_connector::{Config, Negotiator, Ports};
 use portitor_dsp::negotiation::NegotiationState;
 use portitor_dsp::transfer::TransferState;
 use portitor_dsp::transfer::consumer::{ConsumerTransfer, ConsumerTransferDecision};
+use portitor_runtime::BoxFuture;
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
 
@@ -76,7 +77,7 @@ impl Network {
 /// Only the connectors' authorized calls are on the network: every DSP
 /// request carries the sender's token.
 impl Sender for Network {
-    fn post<'a>(&'a self, _: &'a str, _: &'a Value) -> SendFuture<'a> {
+    fn post<'a>(&'a self, _: &'a str, _: &'a Value) -> BoxFuture<'a, Result<Value, String>> {
         Box::pin(async { Err("a DSP message without a token".to_owned()) })
     }
 
@@ -85,7 +86,7 @@ impl Sender for Network {
         url: &'a str,
         body: &'a Value,
         authorization: &'a str,
-    ) -> SendFuture<'a> {
+    ) -> BoxFuture<'a, Result<Value, String>> {
         Box::pin(async move {
             let req = Request::post("/")
                 .header(header::CONTENT_TYPE, "application/json")
@@ -94,7 +95,11 @@ impl Sender for Network {
         })
     }
 
-    fn get_authorized<'a>(&'a self, url: &'a str, authorization: &'a str) -> SendFuture<'a> {
+    fn get_authorized<'a>(
+        &'a self,
+        url: &'a str,
+        authorization: &'a str,
+    ) -> BoxFuture<'a, Result<Value, String>> {
         Box::pin(async move {
             let req = Request::get("/").header(header::AUTHORIZATION, authorization);
             self.call(url, req, Body::empty()).await

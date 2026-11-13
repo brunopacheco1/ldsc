@@ -25,7 +25,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::credential::{Profile, VC1_CONTEXT, VC2_CONTEXT};
+use crate::credential::{Profile, VC_JWT_DATA, VC1_CONTEXT, VC2_CONTEXT};
 use crate::{Error, Jwk, Jws, SigningKey};
 
 /// The JWS `typ` of Portitor's access tokens (RFC 9068).
@@ -43,13 +43,15 @@ pub struct Signer<'a> {
     pub did: &'a str,
 }
 
-/// The JWT claims every presentation and token here carries.
+/// The JWT claims every presentation and token here carries: for whom,
+/// its id, and when. (Not to be confused with
+/// [`crate::credential::Validity`], the validity period of a credential.)
 #[derive(Debug, Clone, Copy)]
-pub struct Validity<'a> {
+pub struct TokenFrame<'a> {
     /// Who it is for (`aud`).
     pub audience: &'a str,
     /// A unique id (`jti`).
-    pub id: &'a str,
+    pub jti: &'a str,
     /// When it was made, seconds since 1970 (`iat` and `nbf`).
     pub issued_at: u64,
     /// When it stops being valid, seconds since 1970 (`exp`).
@@ -62,18 +64,18 @@ pub struct Validity<'a> {
 /// Signing fails.
 pub fn sign_presentation(
     signer: Signer<'_>,
-    validity: Validity<'_>,
+    frame: TokenFrame<'_>,
     profile: Profile,
     credentials: &[&str],
 ) -> Result<String, Error> {
     let mut claims = json!({
         "iss": signer.did,
         "sub": signer.did,
-        "aud": validity.audience,
-        "jti": validity.id,
-        "iat": validity.issued_at,
-        "nbf": validity.issued_at,
-        "exp": validity.expires_at,
+        "aud": frame.audience,
+        "jti": frame.jti,
+        "iat": frame.issued_at,
+        "nbf": frame.issued_at,
+        "exp": frame.expires_at,
     });
     match profile {
         Profile::Vc11 => {
@@ -102,7 +104,7 @@ fn envelope(jwt: &str) -> Value {
     json!({
         "@context": [VC2_CONTEXT],
         "type": "EnvelopedVerifiableCredential",
-        "id": format!("data:application/vc+jwt,{jwt}"),
+        "id": format!("{VC_JWT_DATA}{jwt}"),
     })
 }
 
@@ -126,16 +128,16 @@ pub struct AccessToken {
 }
 
 impl AccessToken {
-    /// A token for `validity.audience` that allows `scopes`.
+    /// A token for `frame.audience` that allows `scopes`.
     #[must_use]
-    pub fn new(holder: &str, validity: Validity<'_>, scopes: &[&str]) -> Self {
+    pub fn new(holder: &str, frame: TokenFrame<'_>, scopes: &[&str]) -> Self {
         Self {
             iss: holder.to_owned(),
             sub: holder.to_owned(),
-            aud: validity.audience.to_owned(),
-            jti: validity.id.to_owned(),
-            iat: validity.issued_at,
-            exp: validity.expires_at,
+            aud: frame.audience.to_owned(),
+            jti: frame.jti.to_owned(),
+            iat: frame.issued_at,
+            exp: frame.expires_at,
             scope: scopes.join(" "),
         }
     }
@@ -220,10 +222,10 @@ mod tests {
         (key, doc)
     }
 
-    fn validity() -> Validity<'static> {
-        Validity {
+    fn frame() -> TokenFrame<'static> {
+        TokenFrame {
             audience: VERIFIER,
-            id: "urn:uuid:p-1",
+            jti: "urn:uuid:p-1",
             issued_at: NOW,
             expires_at: NOW + 300,
         }
@@ -269,15 +271,14 @@ mod tests {
         };
         for profile in [Profile::Vc11, Profile::Vc20] {
             let vc = credential(&issuer, profile);
-            let vp = sign_presentation(signer, validity(), profile, &[&vc]).unwrap();
+            let vp = sign_presentation(signer, frame(), profile, &[&vc]).unwrap();
             let presentation = Presentation::parse(&vp).unwrap();
             assert_eq!(presentation.profile, profile);
             assert_eq!(presentation.holder, HOLDER);
             assert_eq!(presentation.audience, [VERIFIER]);
             assert_eq!(presentation.credentials.len(), 1);
             assert_eq!(presentation.credentials[0].jwt(), vc);
-            let now = i64::try_from(NOW).unwrap();
-            presentation.verify(&doc, VERIFIER, now, 0).unwrap();
+            presentation.verify(&doc, VERIFIER, NOW, 0).unwrap();
         }
     }
 
@@ -293,7 +294,7 @@ mod tests {
             "org.eclipse.dspace.dcp.vc.type:A",
             "org.eclipse.dspace.dcp.vc.type:B",
         ];
-        let token = AccessToken::new(HOLDER, validity(), &scopes)
+        let token = AccessToken::new(HOLDER, frame(), &scopes)
             .sign(signer)
             .unwrap();
         let jwk = key.public_jwk();

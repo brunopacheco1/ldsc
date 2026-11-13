@@ -22,7 +22,7 @@ use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use portitor_runtime::api_key::{ApiKey, BearerKey, Problem, problem, require_key};
+use portitor_runtime::api_key::{ApiKey, BearerKey, Problem, internal_error, problem, require_key};
 use portitor_runtime::system::{new_uuid, xsd_date_time};
 use serde::{Deserialize, Serialize};
 use utoipa::{OpenApi, ToSchema};
@@ -120,11 +120,6 @@ impl From<StoredOffer> for OfferView {
     }
 }
 
-fn internal(error: &dyn std::fmt::Display) -> Response {
-    tracing::error!(%error, "identity store failed");
-    problem(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
-}
-
 /// Record a credential request, so that the Storage API accepts the
 /// issuer's `CredentialMessage` for it (DCP 6.5). Asking the issuer
 /// (`CredentialRequestMessage`) comes in 0.6; until then the request is
@@ -162,13 +157,13 @@ async fn create_request(
         .unwrap_or_else(new_uuid);
     let record = CredentialRequest {
         holder_pid: holder_pid.clone(),
-        issuer_did: request.issuer_did,
+        issuer: request.issuer_did,
         status: RequestStatus::Requested,
     };
     match identity.store.add_request(&record) {
         Ok(true) => (StatusCode::CREATED, Json(RequestCreated { holder_pid })).into_response(),
         Ok(false) => problem(StatusCode::CONFLICT, "a request with this holderPid exists"),
-        Err(e) => internal(&e),
+        Err(e) => internal_error("identity store", &e),
     }
 }
 
@@ -190,7 +185,7 @@ async fn list_credentials(State(identity): State<Arc<Identity>>) -> Response {
                 credentials.into_iter().map(CredentialView::from).collect();
             Json(views).into_response()
         }
-        Err(e) => internal(&e),
+        Err(e) => internal_error("identity store", &e),
     }
 }
 
@@ -214,7 +209,7 @@ async fn delete_credential(
     match identity.store.delete_credential(&id) {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => problem(StatusCode::NOT_FOUND, "no such credential"),
-        Err(e) => internal(&e),
+        Err(e) => internal_error("identity store", &e),
     }
 }
 
@@ -235,7 +230,7 @@ async fn list_offers(State(identity): State<Arc<Identity>>) -> Response {
             let views: Vec<OfferView> = offers.into_iter().map(OfferView::from).collect();
             Json(views).into_response()
         }
-        Err(e) => internal(&e),
+        Err(e) => internal_error("identity store", &e),
     }
 }
 

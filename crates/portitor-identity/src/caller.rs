@@ -11,6 +11,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
 use portitor_dcp::{Claims, unverified_claims, validate_self_issued};
 use portitor_runtime::api_key::problem;
+use portitor_runtime::http::bearer_token_in;
 use portitor_runtime::system::now_secs;
 
 use crate::{Identity, LEEWAY};
@@ -33,7 +34,9 @@ pub(crate) async fn authenticate(
     headers: &HeaderMap,
     callers: Callers,
 ) -> Result<Claims, Response> {
-    let Some(token) = bearer(headers) else {
+    // DCP 4.3.1 and the DCP TCK want the `Bearer` prefix: a bare token
+    // is refused
+    let Some(token) = bearer_token_in(headers) else {
         return Err(refused("no bearer token"));
     };
     let claimed = unverified_claims(token).map_err(|e| refused(&e.to_string()))?;
@@ -48,28 +51,16 @@ pub(crate) async fn authenticate(
         .await
         .map_err(|e| refused(&format!("cannot resolve {}: {e}", claimed.sub)))?;
     let now = now_secs();
-    let mut used_tokens = identity.used_tokens();
+    let mut used_token_ids = identity.used_token_ids();
     validate_self_issued(
         token,
         &document,
-        &identity.did,
+        &identity.participant_id,
         now,
         LEEWAY,
-        &mut used_tokens,
+        &mut used_token_ids,
     )
     .map_err(|e| refused(&e.to_string()))
-}
-
-/// The token in `Authorization: Bearer <token>`. DCP 4.3.1 and the DCP
-/// TCK want the `Bearer` prefix: a bare token is refused.
-fn bearer(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get(header::AUTHORIZATION)?
-        .to_str()
-        .ok()?
-        .strip_prefix("Bearer ")
-        .map(str::trim)
-        .filter(|token| !token.is_empty())
 }
 
 /// 401, with the reason in the log only.

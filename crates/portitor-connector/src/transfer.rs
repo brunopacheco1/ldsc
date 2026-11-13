@@ -31,7 +31,7 @@ use serde_json::Value;
 
 use crate::InMemoryDatasets;
 use crate::auth::Caller;
-use crate::http_client::callback_allowed;
+use crate::http_client::outbound_url_allowed;
 use crate::negotiation::InMemoryNegotiations;
 use crate::outbox::{self, Link, Message, Outbox};
 use crate::ports::{AnyAgreements, AnyDataFlows, AnyTransferDecider, AnyTransferStore};
@@ -302,7 +302,7 @@ pub(crate) async fn request(
         Ok(m) => m,
         Err(refused) => return bad_request(*refused),
     };
-    if !callback_allowed(&msg.callback_address, provider.allow_http) {
+    if !outbound_url_allowed(&msg.callback_address, provider.allow_http) {
         let reason = "callbackAddress must be an https URL";
         return bad_request(TransferError::new("", &msg.consumer_pid, "400", reason));
     }

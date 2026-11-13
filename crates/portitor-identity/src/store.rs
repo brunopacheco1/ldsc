@@ -22,6 +22,19 @@ use rusqlite::{Connection, OptionalExtension as _, Row, params};
 #[error("store: {0}")]
 pub struct StoreError(pub String);
 
+/// Lets `?` turn a `SQLite` error into a [`StoreError`] by itself, so the
+/// SQL calls below need no `.map_err(...)`.
+impl From<rusqlite::Error> for StoreError {
+    fn from(e: rusqlite::Error) -> Self {
+        Self(e.to_string())
+    }
+}
+
+/// The columns of a stored credential, in the order of
+/// [`credential_from`]'s reads and of the `INSERT` in
+/// [`SqliteStore::deliver`].
+const CREDENTIAL_COLUMNS: &str = "id, issuer, types, profile, expires_at, holder_pid, jwt";
+
 /// A credential the participant holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredCredential {
@@ -80,7 +93,7 @@ pub struct CredentialRequest {
     /// The holder's id of the request.
     pub holder_pid: String,
     /// The issuer that may answer it.
-    pub issuer_did: String,
+    pub issuer: String,
     /// Where it stands.
     pub status: RequestStatus,
 }
@@ -217,14 +230,11 @@ impl SqliteStore {
 
 impl IdentityStore for SqliteStore {
     fn add_request(&self, request: &CredentialRequest) -> Result<bool, StoreError> {
-        let added = self
-            .conn()
-            .execute(
-                "INSERT INTO credential_request (holder_pid, issuer_did, status) VALUES (?1, ?2, ?3)
+        let added = self.conn().execute(
+            "INSERT INTO credential_request (holder_pid, issuer_did, status) VALUES (?1, ?2, ?3)
                  ON CONFLICT (holder_pid) DO NOTHING",
-                params![request.holder_pid, request.issuer_did, request.status.text()],
-            )
-            .map_err(err)?;
+            params![request.holder_pid, request.issuer, request.status.text()],
+        )?;
         Ok(added == 1)
     }
 
@@ -232,20 +242,23 @@ impl IdentityStore for SqliteStore {
         let found = self
             .conn()
             .query_row(
-                "SELECT holder_pid, issuer_did, status FROM credential_request WHERE holder_pid = ?1",
+                "SELECT issuer_did, status FROM credential_request WHERE holder_pid = ?1",
                 [holder_pid],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get::<_, String>(2)?)),
+                |row| {
+                    let issuer: String = row.get("issuer_did")?;
+                    let status: String = row.get("status")?;
+                    Ok((issuer, status))
+                },
             )
-            .optional()
-            .map_err(err)?;
-        match found {
-            None => Ok(None),
-            Some((holder_pid, issuer_did, status)) => Ok(Some(CredentialRequest {
-                holder_pid,
-                issuer_did,
-                status: RequestStatus::from_text(&status)?,
-            })),
-        }
+            .optional()?;
+        let Some((issuer, status)) = found else {
+            return Ok(None);
+        };
+        Ok(Some(CredentialRequest {
+            holder_pid: holder_pid.to_owned(),
+            issuer,
+            status: RequestStatus::from_text(&status)?,
+        }))
     }
 
     fn deliver(
@@ -255,17 +268,15 @@ impl IdentityStore for SqliteStore {
         credentials: &[StoredCredential],
     ) -> Result<(), StoreError> {
         let mut conn = self.conn();
-        let tx = conn.transaction().map_err(err)?;
+        let tx = conn.transaction()?;
         // only an open request takes an answer, and only one: a second
         // delivery finds it closed (the transaction is dropped, so nothing
         // is written)
-        let closed = tx
-            .execute(
-                "UPDATE credential_request SET status = ?2
+        let closed = tx.execute(
+            "UPDATE credential_request SET status = ?2
                  WHERE holder_pid = ?1 AND status = ?3",
-                params![holder_pid, status.text(), RequestStatus::Requested.text()],
-            )
-            .map_err(err)?;
+            params![holder_pid, status.text(), RequestStatus::Requested.text()],
+        )?;
         if closed == 0 {
             return Err(StoreError(format!(
                 "credential request {holder_pid} is not open"
@@ -275,25 +286,25 @@ impl IdentityStore for SqliteStore {
             let types =
                 serde_json::to_string(&credential.types).map_err(|e| StoreError(e.to_string()))?;
             // a credential id held from another issuer is not replaced
-            let written = tx
-                .execute(
-                    "INSERT INTO credential (id, issuer, types, profile, expires_at, holder_pid, jwt)
+            let written = tx.execute(
+                &format!(
+                    "INSERT INTO credential ({CREDENTIAL_COLUMNS})
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                      ON CONFLICT (id) DO UPDATE SET types = excluded.types,
                          profile = excluded.profile, expires_at = excluded.expires_at,
                          holder_pid = excluded.holder_pid, jwt = excluded.jwt
-                     WHERE credential.issuer = excluded.issuer",
-                    params![
-                        credential.id,
-                        credential.issuer,
-                        types,
-                        credential.profile.alias(),
-                        credential.expires_at,
-                        credential.holder_pid,
-                        credential.jwt
-                    ],
-                )
-                .map_err(err)?;
+                     WHERE credential.issuer = excluded.issuer"
+                ),
+                params![
+                    credential.id,
+                    credential.issuer,
+                    types,
+                    credential.profile.alias(),
+                    credential.expires_at,
+                    credential.holder_pid,
+                    credential.jwt
+                ],
+            )?;
             if written == 0 {
                 return Err(StoreError(format!(
                     "credential {} is held from another issuer",
@@ -301,20 +312,18 @@ impl IdentityStore for SqliteStore {
                 )));
             }
         }
-        tx.commit().map_err(err)
+        tx.commit()?;
+        Ok(())
     }
 
     fn credentials(&self) -> Result<Vec<StoredCredential>, StoreError> {
         let conn = self.conn();
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, issuer, types, profile, expires_at, holder_pid, jwt
-                 FROM credential ORDER BY id",
-            )
-            .map_err(err)?;
-        let mut rows = stmt.query([]).map_err(err)?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {CREDENTIAL_COLUMNS} FROM credential ORDER BY id"
+        ))?;
+        let mut rows = stmt.query([])?;
         let mut found = Vec::new();
-        while let Some(row) = rows.next().map_err(err)? {
+        while let Some(row) = rows.next()? {
             found.push(credential_from(row)?);
         }
         Ok(found)
@@ -323,8 +332,7 @@ impl IdentityStore for SqliteStore {
     fn delete_credential(&self, id: &str) -> Result<bool, StoreError> {
         let deleted = self
             .conn()
-            .execute("DELETE FROM credential WHERE id = ?1", [id])
-            .map_err(err)?;
+            .execute("DELETE FROM credential WHERE id = ?1", [id])?;
         Ok(deleted == 1)
     }
 
@@ -335,7 +343,7 @@ impl IdentityStore for SqliteStore {
         received_at: u64,
     ) -> Result<(), StoreError> {
         let mut conn = self.conn();
-        let tx = conn.transaction().map_err(err)?;
+        let tx = conn.transaction()?;
         let received_at = i64::try_from(received_at).unwrap_or(i64::MAX);
         for credential in offered {
             let json = serde_json::to_string(credential).map_err(|e| StoreError(e.to_string()))?;
@@ -345,27 +353,25 @@ impl IdentityStore for SqliteStore {
                  ON CONFLICT (issuer, credential_id) DO UPDATE
                      SET credential = excluded.credential, received_at = excluded.received_at",
                 params![issuer, credential.id, json, received_at],
-            )
-            .map_err(err)?;
+            )?;
         }
-        tx.commit().map_err(err)
+        tx.commit()?;
+        Ok(())
     }
 
     fn offers(&self) -> Result<Vec<StoredOffer>, StoreError> {
         let conn = self.conn();
-        let mut stmt = conn
-            .prepare(
-                "SELECT issuer, credential, received_at FROM credential_offer
+        let mut stmt = conn.prepare(
+            "SELECT issuer, credential, received_at FROM credential_offer
                  ORDER BY received_at DESC, issuer, credential_id",
-            )
-            .map_err(err)?;
-        let mut rows = stmt.query([]).map_err(err)?;
+        )?;
+        let mut rows = stmt.query([])?;
         let mut found = Vec::new();
-        while let Some(row) = rows.next().map_err(err)? {
-            let json: String = row.get(1).map_err(err)?;
-            let received_at: i64 = row.get(2).map_err(err)?;
+        while let Some(row) = rows.next()? {
+            let json: String = row.get("credential")?;
+            let received_at: i64 = row.get("received_at")?;
             found.push(StoredOffer {
-                issuer: row.get(0).map_err(err)?,
+                issuer: row.get("issuer")?,
                 credential: serde_json::from_str(&json).map_err(|e| StoreError(e.to_string()))?,
                 received_at: u64::try_from(received_at).unwrap_or_default(),
             });
@@ -374,24 +380,21 @@ impl IdentityStore for SqliteStore {
     }
 }
 
+/// A stored credential from a row with the [`CREDENTIAL_COLUMNS`], read
+/// by column name.
 fn credential_from(row: &Row<'_>) -> Result<StoredCredential, StoreError> {
-    let types: String = row.get(2).map_err(err)?;
-    let profile: String = row.get(3).map_err(err)?;
+    let types: String = row.get("types")?;
+    let profile: String = row.get("profile")?;
     Ok(StoredCredential {
-        id: row.get(0).map_err(err)?,
-        issuer: row.get(1).map_err(err)?,
+        id: row.get("id")?,
+        issuer: row.get("issuer")?,
         types: serde_json::from_str(&types).map_err(|e| StoreError(e.to_string()))?,
         profile: Profile::from_alias(&profile)
             .ok_or_else(|| StoreError(format!("unknown profile {profile}")))?,
-        expires_at: row.get(4).map_err(err)?,
-        holder_pid: row.get(5).map_err(err)?,
-        jwt: row.get(6).map_err(err)?,
+        expires_at: row.get("expires_at")?,
+        holder_pid: row.get("holder_pid")?,
+        jwt: row.get("jwt")?,
     })
-}
-
-#[allow(clippy::needless_pass_by_value)] // used as map_err(err)
-fn err(e: rusqlite::Error) -> StoreError {
-    StoreError(e.to_string())
 }
 
 #[cfg(test)]
@@ -402,7 +405,7 @@ mod tests {
     fn request(pid: &str) -> CredentialRequest {
         CredentialRequest {
             holder_pid: pid.to_owned(),
-            issuer_did: "did:web:issuer.example".to_owned(),
+            issuer: "did:web:issuer.example".to_owned(),
             status: RequestStatus::Requested,
         }
     }

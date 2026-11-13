@@ -210,8 +210,9 @@ async fn presents_only_what_query_and_token_both_allow() {
     assert_eq!(presentation.credentials.len(), 1);
     assert_eq!(presentation.credentials[0].jwt(), membership);
     let document = holder_document(&world).await;
-    let now = i64::try_from(now_secs()).unwrap();
-    presentation.verify(&document, VERIFIER, now, 0).unwrap();
+    presentation
+        .verify(&document, VERIFIER, now_secs(), 0)
+        .unwrap();
 
     // asks for nothing it may read: an empty answer
     let (status, answer) = world

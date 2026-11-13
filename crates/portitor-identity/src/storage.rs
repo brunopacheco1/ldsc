@@ -31,7 +31,7 @@ use portitor_dcp::message::{
     CredentialContainer, CredentialMessage, CredentialObject, CredentialOfferMessage,
     IssuanceStatus, IssuerMetadata,
 };
-use portitor_runtime::api_key::problem;
+use portitor_runtime::api_key::{internal_error, problem};
 use portitor_runtime::system::{new_uuid, now_secs};
 
 use crate::caller::{Callers, authenticate};
@@ -75,9 +75,9 @@ async fn store_delivery(
         return Err(bad_request("holderPid is required"));
     };
     let request = match identity.store.request(holder_pid) {
-        Ok(Some(request)) if request.issuer_did == issuer => request,
+        Ok(Some(request)) if request.issuer == issuer => request,
         Ok(_) => return Err(bad_request("no credential request with this holderPid")),
-        Err(e) => return Err(internal(&e)),
+        Err(e) => return Err(internal_error("identity store", &e)),
     };
     // checked again when the answer is stored, in case two deliveries race
     if request.status != RequestStatus::Requested {
@@ -142,17 +142,11 @@ fn check_credential(
     if credential.issuer != issuer_document.id {
         return Err("the credential is from another issuer".to_owned());
     }
-    let now = i64::try_from(now_secs()).unwrap_or(i64::MAX);
-    let leeway = i64::try_from(LEEWAY).unwrap_or_default();
     credential
-        .verify(issuer_document, now, leeway)
+        .verify(issuer_document, now_secs(), LEEWAY)
         .map_err(|e| e.to_string())?;
     // every subject must be this participant, named by its DID
-    let ids: Vec<&str> = credential.subject_ids().collect();
-    let about_us = !ids.is_empty()
-        && ids.len() == credential.subjects.len()
-        && ids.iter().all(|id| *id == identity.did);
-    if !about_us {
+    if !credential.is_only_about(&identity.participant_id) {
         return Err("the credential is not about this participant".to_owned());
     }
     Ok(credential)
@@ -188,7 +182,7 @@ pub(crate) async fn offers(
             tracing::info!(%issuer, count = offered.len(), "credential offer recorded");
             StatusCode::OK.into_response()
         }
-        Err(e) => internal(&e),
+        Err(e) => internal_error("identity store", &e),
     }
 }
 
@@ -256,9 +250,4 @@ async fn issuer_metadata(identity: &Identity, issuer: &str) -> Result<IssuerMeta
 fn bad_request(reason: &str) -> Response {
     tracing::info!(reason, "issuance message refused");
     problem(StatusCode::BAD_REQUEST, reason)
-}
-
-fn internal(error: &dyn std::fmt::Display) -> Response {
-    tracing::error!(%error, "identity store failed");
-    problem(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
 }

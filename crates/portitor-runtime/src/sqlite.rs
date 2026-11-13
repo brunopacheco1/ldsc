@@ -21,15 +21,15 @@ pub fn open(path: Option<&Path>, migrations: &[&str]) -> Result<Connection, Stri
         Some(path) => Connection::open(path),
         None => Connection::open_in_memory(),
     }
-    .map_err(|e| e.to_string())?;
+    .map_err(sql_error)?;
     // WAL: readers do not block the writer; FULL: what was acknowledged to
     // the other party survives a power cut
     conn.pragma_update(None, "journal_mode", "WAL")
-        .map_err(|e| e.to_string())?;
+        .map_err(sql_error)?;
     conn.pragma_update(None, "synchronous", "FULL")
-        .map_err(|e| e.to_string())?;
+        .map_err(sql_error)?;
     conn.busy_timeout(std::time::Duration::from_secs(5))
-        .map_err(|e| e.to_string())?;
+        .map_err(sql_error)?;
     migrate(&mut conn, migrations)?;
     Ok(conn)
 }
@@ -42,10 +42,10 @@ pub fn open(path: Option<&Path>, migrations: &[&str]) -> Result<Connection, Stri
 /// A migration fails, or the file has more migrations than `migrations`
 /// (written by a newer version).
 pub fn migrate(conn: &mut Connection, migrations: &[&str]) -> Result<(), String> {
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(sql_error)?;
     let stored: i64 = tx
         .pragma_query_value(None, "user_version", |row| row.get(0))
-        .map_err(|e| e.to_string())?;
+        .map_err(sql_error)?;
     let known = i64::try_from(migrations.len()).unwrap_or(i64::MAX);
     let Ok(applied) = usize::try_from(stored) else {
         return Err(format!("invalid schema version {stored}"));
@@ -56,11 +56,17 @@ pub fn migrate(conn: &mut Connection, migrations: &[&str]) -> Result<(), String>
         ));
     }
     for sql in &migrations[applied..] {
-        tx.execute_batch(sql).map_err(|e| e.to_string())?;
+        tx.execute_batch(sql).map_err(sql_error)?;
     }
     tx.pragma_update(None, "user_version", known)
-        .map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())
+        .map_err(sql_error)?;
+    tx.commit().map_err(sql_error)
+}
+
+/// A `SQLite` error as the text this module's functions return.
+#[allow(clippy::needless_pass_by_value)] // so it can be written map_err(sql_error)
+fn sql_error(e: rusqlite::Error) -> String {
+    e.to_string()
 }
 
 #[cfg(test)]

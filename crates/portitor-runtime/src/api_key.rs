@@ -98,18 +98,25 @@ pub fn problem(status: StatusCode, detail: &str) -> Response {
     res
 }
 
+/// HTTP 500 with a problem body that says only "internal error"; the
+/// `error` itself goes to the log as "`what` failed", never to the
+/// caller.
+pub fn internal_error(what: &str, error: &dyn std::fmt::Display) -> Response {
+    tracing::error!(%error, "{what} failed");
+    problem(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+}
+
 /// Middleware: lets a request through only with `Authorization: Bearer
-/// <the key>`; otherwise answers 401 with a problem body.
+/// <the key>` (read by [`crate::http::bearer_token_in`]); otherwise
+/// answers 401 with a problem body. The key is compared in constant time
+/// ([`ApiKey::matches`]).
 pub async fn require_key(
     State(key): State<std::sync::Arc<ApiKey>>,
     req: Request,
     next: Next,
 ) -> Response {
-    let presented = req
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.as_bytes().strip_prefix(b"Bearer "));
-    if presented.is_some_and(|p| key.matches(p)) {
+    let presented = crate::http::bearer_token_in(req.headers());
+    if presented.is_some_and(|p| key.matches(p.as_bytes())) {
         next.run(req).await
     } else {
         let mut res = problem(StatusCode::UNAUTHORIZED, "missing or wrong API key");

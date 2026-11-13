@@ -54,6 +54,16 @@ impl<'de> Deserialize<'de> for Context {
 /// Declares a type that stands for one fixed `type` value, such as
 /// `"PresentationQueryMessage"`. Parsing fails for any other value, so a
 /// message struct that holds it can only be built from the right message.
+/// A macro (code that writes code at compile time) saves copying the same
+/// three `impl` blocks for each message type. For example
+///
+/// ```text
+/// type_name!(PresentationQueryType = "PresentationQueryMessage");
+/// ```
+///
+/// writes `pub struct PresentationQueryType;`, which is written to JSON
+/// as `"PresentationQueryMessage"` and read from JSON only if the text is
+/// exactly that. `PresentationQueryType::VALUE` is the text itself.
 macro_rules! type_name {
     ($(#[$doc:meta])* $name:ident = $value:literal) => {
         $(#[$doc])*

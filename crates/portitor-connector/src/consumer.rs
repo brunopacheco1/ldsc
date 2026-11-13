@@ -33,7 +33,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::auth::Caller;
-use crate::http_client::callback_allowed;
+use crate::http_client::outbound_url_allowed;
 use crate::negotiation::{bad_request, failed};
 use crate::outbox::{self, Link, Message, Outbox};
 use crate::ports::{AnyConsumerDecider, AnyConsumerStore, Ports};
@@ -157,7 +157,7 @@ impl Consumer {
         provider_id: &str,
         offer: Offer,
     ) -> Result<ConsumerNegotiation, Box<Failure>> {
-        if !callback_allowed(provider_address, self.allow_http) {
+        if !outbound_url_allowed(provider_address, self.allow_http) {
             return Err(Box::new(Failure::BadRequest(
                 ContractNegotiationError::new(
                     "",

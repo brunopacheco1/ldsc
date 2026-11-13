@@ -14,7 +14,7 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
-use portitor_connector::http_client::{SendFuture, Sender};
+use portitor_connector::http_client::Sender;
 use portitor_connector::ports::Retry;
 use portitor_connector::ports::Shared;
 use portitor_connector::store::SqliteNegotiations;
@@ -22,6 +22,7 @@ use portitor_connector::{Config, Ports};
 use portitor_dsp::negotiation::Agreement;
 use portitor_dsp::transfer::provider::{Agreements, DataFlows, StoreError, Transfer};
 use portitor_dsp::transfer::{DataAddress, DataAddressType, EndpointProperty};
+use portitor_runtime::BoxFuture;
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
 
@@ -40,7 +41,7 @@ struct FakeSender {
 }
 
 impl Sender for FakeSender {
-    fn post<'a>(&'a self, url: &'a str, body: &'a Value) -> SendFuture<'a> {
+    fn post<'a>(&'a self, url: &'a str, body: &'a Value) -> BoxFuture<'a, Result<Value, String>> {
         self.sent
             .lock()
             .unwrap()

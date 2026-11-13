@@ -27,6 +27,13 @@ pub const DEFAULT_TTL: Duration = Duration::from_secs(300);
 /// without a limit the cache could grow with every new caller.
 pub const MAX_CACHED: usize = 1_000;
 
+/// One document in the cache, and when it was fetched.
+#[derive(Debug)]
+struct Cached {
+    fetched_at: Instant,
+    document: Arc<DidDocument>,
+}
+
 /// Resolves `did:web` DIDs and keeps each document for a while.
 #[derive(Debug)]
 pub struct DidWebResolver {
@@ -34,7 +41,10 @@ pub struct DidWebResolver {
     allow_http: bool,
     ttl: Duration,
     max_cached: usize,
-    cache: Mutex<HashMap<String, (Instant, Arc<DidDocument>)>>,
+    /// The documents fetched, by DID. A poisoned lock (a thread panicked
+    /// while holding it) is not used again: resolving then goes without
+    /// the cache, which is slower but still correct.
+    cache: Mutex<HashMap<String, Cached>>,
 }
 
 impl DidWebResolver {
@@ -79,28 +89,37 @@ impl DidWebResolver {
     /// but only when the cache is full.
     fn keep(&self, did: &str, doc: &Arc<DidDocument>) {
         let Ok(mut cache) = self.cache.lock() else {
-            // a poisoned lock: resolve without the cache from now on
+            // a poisoned lock: no cache (see the `cache` field)
             return;
         };
         if cache.len() >= self.max_cached && !cache.contains_key(did) {
-            cache.retain(|_, (at, _)| at.elapsed() < self.ttl);
+            cache.retain(|_, entry| entry.fetched_at.elapsed() < self.ttl);
         }
         if cache.len() >= self.max_cached && !cache.contains_key(did) {
             let oldest = cache
                 .iter()
-                .min_by_key(|(_, (at, _))| *at)
+                .min_by_key(|(_, entry)| entry.fetched_at)
                 .map(|(oldest, _)| oldest.clone());
             if let Some(oldest) = oldest {
                 cache.remove(&oldest);
             }
         }
-        cache.insert(did.to_owned(), (Instant::now(), Arc::clone(doc)));
+        let entry = Cached {
+            fetched_at: Instant::now(),
+            document: Arc::clone(doc),
+        };
+        cache.insert(did.to_owned(), entry);
     }
 
+    /// The cached document of `did`, if it is there and still fresh. A
+    /// stale one is removed.
     fn cached(&self, did: &str) -> Option<Arc<DidDocument>> {
+        // a poisoned lock: no cache (see the `cache` field)
         let mut cache = self.cache.lock().ok()?;
         match cache.get(did) {
-            Some((at, doc)) if at.elapsed() < self.ttl => Some(Arc::clone(doc)),
+            Some(entry) if entry.fetched_at.elapsed() < self.ttl => {
+                Some(Arc::clone(&entry.document))
+            }
             Some(_) => {
                 cache.remove(did);
                 None
@@ -192,7 +211,13 @@ mod tests {
         }
         // the first two have expired
         for did in &dids[..2] {
-            resolver.cache.lock().unwrap().get_mut(did).unwrap().0 = Instant::now()
+            resolver
+                .cache
+                .lock()
+                .unwrap()
+                .get_mut(did)
+                .unwrap()
+                .fetched_at = Instant::now()
                 .checked_sub(Duration::from_secs(120))
                 .unwrap();
         }

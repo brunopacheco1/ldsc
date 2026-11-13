@@ -13,7 +13,9 @@ const ISSUER: &str = "did:web:issuer.example";
 const ALICE: &str = "did:web:alice.example";
 const BOB: &str = "did:web:bob.example";
 /// 2026-11-13T17:00:00Z
-const NOW: i64 = 1_794_589_200;
+const NOW: u64 = 1_794_589_200;
+/// The same time as a credential date ([`Validity`] holds `i64`).
+const NOW_DATE: i64 = 1_794_589_200;
 
 /// A participant: a key and a DID document where the key has every
 /// relationship.
@@ -141,6 +143,20 @@ fn envelope(holder: &Party, audience: &str, vp: &str) -> String {
 }
 
 #[test]
+fn a_credential_is_only_about_its_one_subject() {
+    let issuer = Party::new(ISSUER);
+    let about_alice = |extra: &Value| Credential::parse(&vc20(&issuer, ALICE, extra)).unwrap();
+    assert!(about_alice(&json!({})).is_only_about(ALICE));
+    assert!(!about_alice(&json!({})).is_only_about(BOB));
+    let two = json!({"credentialSubject": [{"id": ALICE}, {"id": BOB}]});
+    assert!(!about_alice(&two).is_only_about(ALICE));
+    let one_without_id = json!({"credentialSubject": [{"id": ALICE}, {"name": "x"}]});
+    assert!(!about_alice(&one_without_id).is_only_about(ALICE));
+    let none = json!({"credentialSubject": []});
+    assert!(!about_alice(&none).is_only_about(ALICE));
+}
+
+#[test]
 fn vc11_credential_from_the_tck_shape() {
     let issuer = Party::new(ISSUER);
     let credential = Credential::parse(&vc11(&issuer, ALICE)).unwrap();
@@ -153,8 +169,8 @@ fn vc11_credential_from_the_tck_shape() {
     assert_eq!(
         credential.validity,
         Validity {
-            from: Some(NOW - 60),
-            until: Some(NOW + 300)
+            from: Some(NOW_DATE - 60),
+            until: Some(NOW_DATE + 300)
         }
     );
     credential.verify(&issuer.doc, NOW, 0).unwrap();
@@ -409,7 +425,7 @@ fn vc20_validity_is_checked() {
     );
     // JWT claims narrower than the fields win, on both ends
     let narrow_end = Credential::parse(&vc20(&issuer, ALICE, &json!({"exp": NOW - 1}))).unwrap();
-    assert_eq!(narrow_end.validity.until, Some(NOW - 1));
+    assert_eq!(narrow_end.validity.until, Some(NOW_DATE - 1));
     assert_eq!(
         narrow_end.verify(&issuer.doc, NOW, 0),
         Err(CredentialError::Invalid("expired"))
@@ -438,7 +454,7 @@ fn envelope_edge_cases() {
     let alice = Party::new(ALICE);
     let bob = Party::new(BOB);
     let vp = vp20(&alice, BOB, &[vc20(&issuer, ALICE, &json!({}))]);
-    let wrap = |by: &Party, id: String, exp: i64| {
+    let wrap = |by: &Party, id: String, exp: u64| {
         by.sign(
             "vp+jwt",
             &json!({"@context": [VC2_CONTEXT], "id": id,

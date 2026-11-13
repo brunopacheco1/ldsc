@@ -25,22 +25,37 @@ const FEXTRA: u8 = 0x04;
 const FNAME: u8 = 0x08;
 const FCOMMENT: u8 = 0x10;
 
+/// The first three header bytes of every GZIP stream: ID1, ID2 and CM,
+/// where CM 8 is DEFLATE, the only method (RFC 1952, section 2.3.1).
+const GZIP_MAGIC: [u8; 3] = [0x1f, 0x8b, 8];
+
+/// Length of the fixed part of the header: ID1 ID2 CM FLG MTIME(4) XFL OS.
+const FIXED_HEADER_LEN: usize = 10;
+
+/// The header [`compress`] writes: the magic bytes, no flags, no time
+/// (MTIME 0), no extra flags, and OS 255 ("unknown").
+const MINIMAL_HEADER: [u8; FIXED_HEADER_LEN] = [0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff];
+
+/// Length of the trailer: CRC-32 (4 bytes), then ISIZE (4 bytes).
+const TRAILER_LEN: usize = 8;
+
+/// DEFLATE level for [`compress`]: 6 is zlib's and gzip's default, a
+/// balance of size and speed.
+const COMPRESSION_LEVEL: u8 = 6;
+
 /// Decompresses one GZIP member. Fails when the data would expand past
 /// `limit` bytes, or when the CRC-32 or length at the end do not match.
 pub(crate) fn decompress(data: &[u8], limit: usize) -> Result<Vec<u8>, GzipError> {
     let body = skip_header(data).ok_or(GzipError::Invalid)?;
-    let (deflate, trailer) = body
-        .split_at_checked(body.len().checked_sub(8).ok_or(GzipError::Invalid)?)
-        .ok_or(GzipError::Invalid)?;
-    let out =
-        miniz_oxide::inflate::decompress_to_vec_with_limit(deflate, limit).map_err(|e| match e
-            .status
-        {
-            miniz_oxide::inflate::TINFLStatus::HasMoreOutput => GzipError::TooLarge,
-            _ => GzipError::Invalid,
-        })?;
-    let crc = u32::from_le_bytes([trailer[0], trailer[1], trailer[2], trailer[3]]);
-    let size = u32::from_le_bytes([trailer[4], trailer[5], trailer[6], trailer[7]]);
+    let Some(deflate_len) = body.len().checked_sub(TRAILER_LEN) else {
+        // shorter than the trailer alone
+        return Err(GzipError::Invalid);
+    };
+    let (deflate, trailer) = body.split_at(deflate_len);
+    let out = miniz_oxide::inflate::decompress_to_vec_with_limit(deflate, limit)
+        .map_err(|failure| inflate_error(failure.status))?;
+    let crc = le_u32(&trailer[0..4]);
+    let size = le_u32(&trailer[4..8]);
     // ISIZE is the length modulo 2^32 (RFC 1952, section 2.3.1)
     #[allow(clippy::cast_possible_truncation)]
     let expected_size = out.len() as u32;
@@ -50,11 +65,25 @@ pub(crate) fn decompress(data: &[u8], limit: usize) -> Result<Vec<u8>, GzipError
     Ok(out)
 }
 
+/// Maps a `miniz_oxide` failure to ours: "more output than the limit
+/// allows" is [`GzipError::TooLarge`], anything else is damaged data.
+fn inflate_error(status: miniz_oxide::inflate::TINFLStatus) -> GzipError {
+    match status {
+        miniz_oxide::inflate::TINFLStatus::HasMoreOutput => GzipError::TooLarge,
+        _ => GzipError::Invalid,
+    }
+}
+
+/// Reads four bytes as a little-endian `u32`, the byte order GZIP uses.
+/// The caller passes exactly four bytes.
+fn le_u32(bytes: &[u8]) -> u32 {
+    u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+
 /// The data after the GZIP header, or `None` if the header is invalid.
 fn skip_header(data: &[u8]) -> Option<&[u8]> {
-    // ID1 ID2 CM FLG MTIME(4) XFL OS; CM 8 is DEFLATE, the only method
-    let (header, mut rest) = data.split_at_checked(10)?;
-    if header[0..3] != [0x1f, 0x8b, 8] {
+    let (header, mut rest) = data.split_at_checked(FIXED_HEADER_LEN)?;
+    if header[0..3] != GZIP_MAGIC {
         return None;
     }
     let flags = header[3];
@@ -79,6 +108,9 @@ fn skip_header(data: &[u8]) -> Option<&[u8]> {
 /// CRC-32 as GZIP uses it (polynomial 0xEDB88320, reflected), one byte at
 /// a time with a 256-entry table.
 fn crc32(data: &[u8]) -> u32 {
+    // The table is computed by the compiler (a `const` block), so it costs
+    // nothing at run time. Code that runs at compile time cannot use `for`
+    // loops yet, hence the `while` loops with counters.
     const TABLE: [u32; 256] = {
         let mut table = [0u32; 256];
         let mut i = 0;
@@ -99,6 +131,8 @@ fn crc32(data: &[u8]) -> u32 {
         }
         table
     };
+    // `!` on an integer flips every bit: CRC-32 starts from all ones
+    // (0xFFFF_FFFF) and flips the bits of the result again at the end
     let mut crc = !0u32;
     for &byte in data {
         let low_byte = crc.to_le_bytes()[0];
@@ -110,8 +144,11 @@ fn crc32(data: &[u8]) -> u32 {
 /// Compresses `data` as one GZIP member (for status lists an issuer
 /// publishes, and for tests).
 pub(crate) fn compress(data: &[u8]) -> Vec<u8> {
-    let mut out = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff];
-    out.extend(miniz_oxide::deflate::compress_to_vec(data, 6));
+    let mut out = MINIMAL_HEADER.to_vec();
+    out.extend(miniz_oxide::deflate::compress_to_vec(
+        data,
+        COMPRESSION_LEVEL,
+    ));
     out.extend(crc32(data).to_le_bytes());
     #[allow(clippy::cast_possible_truncation)]
     out.extend((data.len() as u32).to_le_bytes());

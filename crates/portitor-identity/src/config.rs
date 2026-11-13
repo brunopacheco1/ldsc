@@ -8,9 +8,21 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+use portitor_runtime::settings::comma_list;
+
 /// The default scope aliases that mean "credentials of this type", on top
 /// of DCP's own `org.eclipse.dspace.dcp.vc.type`: EDC's (`portitor_dcp::scope`).
 pub const DEFAULT_TYPE_ALIASES: &str = "org.eclipse.edc.vc.type";
+
+/// Where the public server listens unless `PORTITOR_BIND` says otherwise.
+pub const DEFAULT_BIND: &str = "0.0.0.0:8090";
+
+/// Where the management API listens unless `PORTITOR_MANAGEMENT_BIND`
+/// says otherwise: on this machine only.
+pub const DEFAULT_MANAGEMENT_BIND: &str = "127.0.0.1:8091";
+
+/// The `SQLite` file unless `PORTITOR_DB_FILE` says otherwise.
+pub const DEFAULT_DB_FILE: &str = "/data/portitor-identity.db";
 
 /// Everything the identity component needs to start.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,7 +104,7 @@ impl Config {
                 "not an http(s) URL",
             ));
         }
-        let trusted_issuers = list(&required("PORTITOR_TRUSTED_ISSUERS")?);
+        let trusted_issuers = comma_list(&required("PORTITOR_TRUSTED_ISSUERS")?);
         if trusted_issuers.is_empty() {
             return Err(invalid("PORTITOR_TRUSTED_ISSUERS", "required"));
         }
@@ -104,29 +116,33 @@ impl Config {
             .filter(|v| !v.is_empty())
             .map(|file| ManagementConfig {
                 bind: text("PORTITOR_MANAGEMENT_BIND")
-                    .unwrap_or_else(|| "127.0.0.1:8091".to_owned()),
+                    .unwrap_or_else(|| DEFAULT_MANAGEMENT_BIND.to_owned()),
                 api_key_file: PathBuf::from(file),
             });
+        let key_file = PathBuf::from(required("PORTITOR_IDENTITY_KEY_FILE")?);
+        // the one STS client is the participant's own connector, so it is
+        // named by the participant's DID unless set
+        let sts_client_id = text("PORTITOR_STS_CLIENT_ID")
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| participant_id.clone());
+        let sts_client_secret_file = PathBuf::from(required("PORTITOR_STS_CLIENT_SECRET_FILE")?);
+        let scope_type_aliases =
+            text("PORTITOR_SCOPE_TYPE_ALIASES").unwrap_or_else(|| DEFAULT_TYPE_ALIASES.to_owned());
         Ok(Self {
-            key_file: PathBuf::from(required("PORTITOR_IDENTITY_KEY_FILE")?),
-            bind: text("PORTITOR_BIND").unwrap_or_else(|| "0.0.0.0:8090".to_owned()),
+            participant_id,
+            key_file,
+            bind: text("PORTITOR_BIND").unwrap_or_else(|| DEFAULT_BIND.to_owned()),
             credential_service_url,
             db_file: PathBuf::from(
-                text("PORTITOR_DB_FILE").unwrap_or_else(|| "/data/portitor-identity.db".to_owned()),
+                text("PORTITOR_DB_FILE").unwrap_or_else(|| DEFAULT_DB_FILE.to_owned()),
             ),
             management,
-            sts_client_id: text("PORTITOR_STS_CLIENT_ID")
-                .filter(|v| !v.is_empty())
-                .unwrap_or_else(|| participant_id.clone()),
-            sts_client_secret_file: PathBuf::from(required("PORTITOR_STS_CLIENT_SECRET_FILE")?),
+            sts_client_id,
+            sts_client_secret_file,
             trusted_issuers,
-            scope_type_aliases: list(
-                &text("PORTITOR_SCOPE_TYPE_ALIASES")
-                    .unwrap_or_else(|| DEFAULT_TYPE_ALIASES.to_owned()),
-            ),
+            scope_type_aliases: comma_list(&scope_type_aliases),
             allow_http: text("PORTITOR_ALLOW_HTTP_CALLBACKS")
                 .is_some_and(|v| v.eq_ignore_ascii_case("true")),
-            participant_id,
         })
     }
 }
@@ -136,15 +152,6 @@ fn invalid(name: &'static str, problem: &str) -> ConfigError {
         name,
         problem: problem.to_owned(),
     }
-}
-
-/// A comma-separated list, without empty entries.
-fn list(text: &str) -> Vec<String> {
-    text.split(',')
-        .map(str::trim)
-        .filter(|entry| !entry.is_empty())
-        .map(str::to_owned)
-        .collect()
 }
 
 /// The path part of an `http(s)` URL, without a trailing `/`: `""` for

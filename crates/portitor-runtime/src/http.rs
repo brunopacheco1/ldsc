@@ -6,7 +6,6 @@
 //! [`HttpSender`] for messages to other participants, and the rule for
 //! which URLs a Portitor process may call.
 
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,27 +16,20 @@ use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
 use serde_json::Value;
 
-/// What [`Sender::post`] and [`Sender::get`] return: the counter-party's
-/// JSON answer (`Value::Null` if it sent none or no JSON), or why the
-/// request failed.
-///
-/// Read it as "a task that will finish later with `Result<Value,
-/// String>`". A trait method cannot simply be `async fn` here, because
-/// the connector keeps its sender as `Arc<dyn Sender>` (any sender,
-/// chosen at start), and Rust only allows that for traits whose methods
-/// return a known type. So each method returns the task boxed (`Box`),
-/// pinned in memory (`Pin`, which async tasks need), safe to move between
-/// threads (`Send`), and borrowing its arguments for as long as `'a`.
-pub type SendFuture<'a> = Pin<Box<dyn Future<Output = Result<Value, String>> + Send + 'a>>;
+use crate::BoxFuture;
 
 /// Port: sends a message to a counter-party and waits for its HTTP 2xx.
+/// Each method returns, later ([`BoxFuture`]), the counter-party's JSON
+/// answer (`Value::Null` if it sent none or no JSON), or why the request
+/// failed.
 pub trait Sender: Send + Sync {
     /// POSTs `body` as JSON to `url`.
-    fn post<'a>(&'a self, url: &'a str, body: &'a Value) -> SendFuture<'a>;
+    fn post<'a>(&'a self, url: &'a str, body: &'a Value) -> BoxFuture<'a, Result<Value, String>>;
 
-    /// GETs `url` (a counter-party's negotiation state). The default
-    /// cannot, so a message that failed is never taken as delivered.
-    fn get<'a>(&'a self, url: &'a str) -> SendFuture<'a> {
+    /// GETs `url`, for example a counter-party's negotiation state. The
+    /// default implementation always fails: a sender that cannot read
+    /// (a test fake) then never makes a failed message look delivered.
+    fn get<'a>(&'a self, url: &'a str) -> BoxFuture<'a, Result<Value, String>> {
         Box::pin(async move { Err(format!("cannot read {url}")) })
     }
 
@@ -50,7 +42,7 @@ pub trait Sender: Send + Sync {
         url: &'a str,
         body: &'a Value,
         authorization: &'a str,
-    ) -> SendFuture<'a> {
+    ) -> BoxFuture<'a, Result<Value, String>> {
         let _ = authorization;
         self.post(url, body)
     }
@@ -58,13 +50,19 @@ pub trait Sender: Send + Sync {
     /// Like [`Sender::get`], with the header `Authorization:
     /// <authorization>`. The default leaves the header out, as
     /// [`Sender::post_authorized`] does.
-    fn get_authorized<'a>(&'a self, url: &'a str, authorization: &'a str) -> SendFuture<'a> {
+    fn get_authorized<'a>(
+        &'a self,
+        url: &'a str,
+        authorization: &'a str,
+    ) -> BoxFuture<'a, Result<Value, String>> {
         let _ = authorization;
         self.get(url)
     }
 }
 
-/// How long one POST to a counter-party may take, answer included.
+/// How long one request of [`HttpSender`] may take, from sending until
+/// the whole answer is read: a POST or GET to a counter-party, a token
+/// request to the STS, a DID document or status list fetch.
 const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The largest answer read from a counter-party. A `ContractNegotiation`
@@ -153,11 +151,11 @@ pub fn https_client(allow_http: bool) -> Result<(HttpsClient, bool), String> {
 }
 
 impl Sender for HttpSender {
-    fn post<'a>(&'a self, url: &'a str, body: &'a Value) -> SendFuture<'a> {
+    fn post<'a>(&'a self, url: &'a str, body: &'a Value) -> BoxFuture<'a, Result<Value, String>> {
         Box::pin(async move { self.json(json_post(url, body, None)?, url).await })
     }
 
-    fn get<'a>(&'a self, url: &'a str) -> SendFuture<'a> {
+    fn get<'a>(&'a self, url: &'a str) -> BoxFuture<'a, Result<Value, String>> {
         Box::pin(async move { self.json(json_get(url, None)?, url).await })
     }
 
@@ -166,14 +164,18 @@ impl Sender for HttpSender {
         url: &'a str,
         body: &'a Value,
         authorization: &'a str,
-    ) -> SendFuture<'a> {
+    ) -> BoxFuture<'a, Result<Value, String>> {
         Box::pin(async move {
             let request = json_post(url, body, Some(authorization))?;
             self.json(request, url).await
         })
     }
 
-    fn get_authorized<'a>(&'a self, url: &'a str, authorization: &'a str) -> SendFuture<'a> {
+    fn get_authorized<'a>(
+        &'a self,
+        url: &'a str,
+        authorization: &'a str,
+    ) -> BoxFuture<'a, Result<Value, String>> {
         Box::pin(async move { self.json(json_get(url, Some(authorization))?, url).await })
     }
 }
@@ -262,7 +264,9 @@ impl HttpSender {
         request: hyper::Request<Full<Bytes>>,
         max_bytes: usize,
     ) -> Result<Bytes, String> {
-        if !callback_allowed(url, self.allow_http) {
+        // the text names callbacks, the first use of this rule; it now
+        // covers every outbound URL, and tests look for this text
+        if !outbound_url_allowed(url, self.allow_http) {
             return Err(format!("refused callback URL {url}"));
         }
         if !self.has_ca_certificates && url.to_ascii_lowercase().starts_with("https://") {
@@ -271,9 +275,14 @@ impl HttpSender {
                     .to_owned(),
             );
         }
-        tokio::time::timeout(SEND_TIMEOUT, self.exchange(request, max_bytes))
-            .await
-            .map_err(|_| format!("no answer within {}s", SEND_TIMEOUT.as_secs()))?
+        let exchange = self.exchange(request, max_bytes);
+        // `timeout` gives an error only when the time is up; when the
+        // exchange finished in time, `answer` is its own result, which may
+        // be an error too, and is returned as it is
+        let Ok(answer) = tokio::time::timeout(SEND_TIMEOUT, exchange).await else {
+            return Err(format!("no answer within {}s", SEND_TIMEOUT.as_secs()));
+        };
+        answer
     }
 
     async fn exchange(
@@ -301,11 +310,12 @@ impl HttpSender {
     }
 }
 
-/// Whether the connector may send to `url`. The consumer chooses the
-/// callback address, so only `https://` URLs with a host are allowed,
-/// plus `http://` when `allow_http` is set.
+/// Whether a Portitor process may send to `url`. Other participants
+/// choose many of the URLs called (callback addresses, DID documents,
+/// Credential Services, status lists), so only `https://` URLs with a
+/// host are allowed, plus `http://` when `allow_http` is set.
 #[must_use]
-pub fn callback_allowed(url: &str, allow_http: bool) -> bool {
+pub fn outbound_url_allowed(url: &str, allow_http: bool) -> bool {
     let lower = url.to_ascii_lowercase();
     let after_scheme = if let Some(rest) = lower.strip_prefix("https://") {
         rest
@@ -323,17 +333,64 @@ pub fn callback_allowed(url: &str, allow_http: bool) -> bool {
     !host.is_empty() && !host.contains('@')
 }
 
+/// The token of an `Authorization` header value `Bearer <token>` (RFC
+/// 6750, section 2.1), the one rule for every Portitor endpoint that
+/// takes a bearer token. The scheme name may be written in any case
+/// (`bearer`, `BEARER`; RFC 7235, section 2.1), and spaces around the
+/// token are ignored. `None` for another scheme, an empty token, or a
+/// token without the scheme in front (EDC and the DCP TCK refuse that
+/// too).
+#[must_use]
+pub fn bearer_token(header_value: &str) -> Option<&str> {
+    let (scheme, token) = header_value.split_once(' ')?;
+    let token = token.trim();
+    if scheme.eq_ignore_ascii_case("bearer") && !token.is_empty() {
+        Some(token)
+    } else {
+        None
+    }
+}
+
+/// The bearer token of a request's `Authorization` header, if any (see
+/// [`bearer_token`]). The value is read as UTF-8, so a management API
+/// key with non-ASCII characters still works.
+#[must_use]
+pub fn bearer_token_in(headers: &hyper::HeaderMap) -> Option<&str> {
+    let value = headers.get(hyper::header::AUTHORIZATION)?;
+    let text = std::str::from_utf8(value.as_bytes()).ok()?;
+    bearer_token(text)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
     #[test]
-    fn callback_urls() {
-        assert!(callback_allowed("https://c.example/cb", false));
-        assert!(callback_allowed("HTTPS://c.example", false));
-        assert!(!callback_allowed("http://c.example/cb", false));
-        assert!(callback_allowed("http://c.example/cb", true));
+    fn bearer_tokens_are_read_from_the_authorization_header() {
+        assert_eq!(bearer_token("Bearer abc"), Some("abc"));
+        assert_eq!(bearer_token("bearer  abc "), Some("abc"));
+        assert_eq!(bearer_token("BEARER abc"), Some("abc"));
+        for refused in ["", "abc", "Bearer", "Bearer  ", "Basic abc", "Bearerabc"] {
+            assert_eq!(bearer_token(refused), None, "{refused:?}");
+        }
+        let mut headers = hyper::HeaderMap::new();
+        assert_eq!(bearer_token_in(&headers), None);
+        headers.insert(hyper::header::AUTHORIZATION, "Bearer abc".parse().unwrap());
+        assert_eq!(bearer_token_in(&headers), Some("abc"));
+        headers.insert(
+            hyper::header::AUTHORIZATION,
+            hyper::header::HeaderValue::from_bytes("Bearer k\u{e9}y".as_bytes()).unwrap(),
+        );
+        assert_eq!(bearer_token_in(&headers), Some("k\u{e9}y"));
+    }
+
+    #[test]
+    fn outbound_urls() {
+        assert!(outbound_url_allowed("https://c.example/cb", false));
+        assert!(outbound_url_allowed("HTTPS://c.example", false));
+        assert!(!outbound_url_allowed("http://c.example/cb", false));
+        assert!(outbound_url_allowed("http://c.example/cb", true));
         for bad in [
             "",
             "https://",
@@ -342,7 +399,7 @@ mod tests {
             "file:///etc",
             "c.example",
         ] {
-            assert!(!callback_allowed(bad, true), "{bad}");
+            assert!(!outbound_url_allowed(bad, true), "{bad}");
         }
     }
 
@@ -444,7 +501,7 @@ mod tests {
     struct Plain;
 
     impl Sender for Plain {
-        fn post<'a>(&'a self, _: &'a str, _: &'a Value) -> SendFuture<'a> {
+        fn post<'a>(&'a self, _: &'a str, _: &'a Value) -> BoxFuture<'a, Result<Value, String>> {
             Box::pin(async { Ok(Value::from("posted")) })
         }
     }

@@ -5,7 +5,7 @@
 //! The presentation API (DCP v1.0.1, presentation protocol, section 5.4):
 //! `POST <credential service>/presentations/query`.
 //!
-//! 1. The verifier's self-issued ID token is checked ([`crate::caller`]).
+//! 1. The verifier's self-issued ID token is checked (`caller.rs`).
 //! 2. Its `token` claim must be an access token this component's STS
 //!    signed, for that verifier ([`AccessToken::verify`]).
 //! 3. The query must ask by `scope`; presentation definitions are not
@@ -23,7 +23,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use portitor_dcp::credential::Profile;
-use portitor_dcp::holder::{AccessToken, Validity, sign_presentation};
+use portitor_dcp::holder::{AccessToken, TokenFrame, sign_presentation};
 use portitor_dcp::message::{PresentationQueryMessage, PresentationResponseMessage, QueryError};
 use portitor_dcp::scope::Scope;
 use portitor_runtime::api_key::problem;
@@ -48,11 +48,17 @@ pub(crate) async fn query(
     };
     let now = now_secs();
     let public_key = identity.key.public_jwk();
-    let access =
-        match AccessToken::verify(token, &public_key, &identity.did, &caller.sub, now, LEEWAY) {
-            Ok(access) => access,
-            Err(e) => return refused(&e.to_string()),
-        };
+    let access = match AccessToken::verify(
+        token,
+        &public_key,
+        &identity.participant_id,
+        &caller.sub,
+        now,
+        LEEWAY,
+    ) {
+        Ok(access) => access,
+        Err(e) => return refused(&e.to_string()),
+    };
     let message: PresentationQueryMessage = match serde_json::from_slice(&body) {
         Ok(message) => message,
         Err(e) => return problem(StatusCode::BAD_REQUEST, &e.to_string()),
@@ -160,15 +166,15 @@ fn presentations(
         if of_profile.is_empty() {
             continue;
         }
-        let validity = Validity {
+        let frame = TokenFrame {
             audience: verifier,
-            id: &new_uuid(),
+            jti: &new_uuid(),
             issued_at: now,
             expires_at: now + TOKEN_SECONDS,
         };
         jwts.push(sign_presentation(
             identity.signer(),
-            validity,
+            frame,
             profile,
             &of_profile,
         )?);

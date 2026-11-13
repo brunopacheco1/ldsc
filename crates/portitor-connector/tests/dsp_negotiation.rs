@@ -12,11 +12,12 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
-use portitor_connector::http_client::{SendFuture, Sender};
+use portitor_connector::http_client::Sender;
 use portitor_connector::ports::{Retry, Shared};
 use portitor_connector::{Config, Ports};
 use portitor_dsp::guard::{Direction, MessageGuard, Rejection};
 use portitor_dsp::negotiation::provider::{Decider, Decision, Negotiation};
+use portitor_runtime::BoxFuture;
 use serde_json::{Value, json};
 use tokio::sync::Notify;
 use tower::ServiceExt as _;
@@ -40,7 +41,7 @@ struct FakeSender {
 }
 
 impl Sender for FakeSender {
-    fn post<'a>(&'a self, url: &'a str, body: &'a Value) -> SendFuture<'a> {
+    fn post<'a>(&'a self, url: &'a str, body: &'a Value) -> BoxFuture<'a, Result<Value, String>> {
         self.sent
             .lock()
             .unwrap()
@@ -57,7 +58,7 @@ impl Sender for FakeSender {
         })
     }
 
-    fn get<'a>(&'a self, url: &'a str) -> SendFuture<'a> {
+    fn get<'a>(&'a self, url: &'a str) -> BoxFuture<'a, Result<Value, String>> {
         Box::pin(async move {
             assert_eq!(url, format!("{CALLBACK}/negotiations/urn:uuid:consumer-1"));
             let state = self.reported.ok_or("no answer")?;

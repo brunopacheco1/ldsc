@@ -31,7 +31,7 @@ use serde_json::Value;
 
 use crate::auth::Caller;
 use crate::consumer::{InMemoryConsumerNegotiations, page};
-use crate::http_client::callback_allowed;
+use crate::http_client::outbound_url_allowed;
 use crate::outbox::{self, Link, Message, Outbox};
 use crate::ports::{
     AnyConsumerTransferDecider, AnyConsumerTransferStore, AnyHeldAgreements, Ports,
@@ -176,7 +176,7 @@ impl TransferConsumer {
         agreement_id: &str,
         format: &str,
     ) -> Result<ConsumerTransfer, Box<Failure>> {
-        if !callback_allowed(provider_address, self.allow_http) {
+        if !outbound_url_allowed(provider_address, self.allow_http) {
             return Err(Box::new(refused(
                 "the provider address must be an https URL",
             )));

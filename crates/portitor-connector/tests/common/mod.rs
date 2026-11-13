@@ -13,7 +13,8 @@ use std::sync::{Arc, Mutex};
 
 use axum::http::request::Builder;
 use portitor_connector::Ports;
-use portitor_connector::auth::{AuthFuture, Caller, CallerVerifier, Prover};
+use portitor_connector::auth::{Caller, CallerVerifier, Prover};
+use portitor_runtime::BoxFuture;
 
 /// The consumer's DID in the tests.
 pub const CONSUMER: &str = "did:web:consumer.example";
@@ -27,7 +28,7 @@ impl CallerVerifier for NamedCaller {
     fn verify<'a>(
         &'a self,
         authorization: Option<&'a str>,
-    ) -> AuthFuture<'a, Result<Caller, String>> {
+    ) -> BoxFuture<'a, Result<Caller, String>> {
         let did = authorization.and_then(|value| value.strip_prefix("Bearer "));
         let caller = did
             .map(|did| Caller(did.to_owned()))
@@ -47,7 +48,7 @@ pub struct NameSelf {
 }
 
 impl Prover for NameSelf {
-    fn authorization<'a>(&'a self, audience: &'a str) -> AuthFuture<'a, Result<String, String>> {
+    fn authorization<'a>(&'a self, audience: &'a str) -> BoxFuture<'a, Result<String, String>> {
         self.audiences.lock().unwrap().push(audience.to_owned());
         Box::pin(async move { Ok(bearer(&self.did)) })
     }
@@ -59,20 +60,20 @@ pub fn bearer(did: &str) -> String {
     format!("Bearer {did}")
 }
 
-/// `ports` with the test verifier, and the test prover for `own_did`.
+/// `ports` with the test verifier, and the test prover for `participant_id`.
 #[must_use]
-pub fn authenticating(ports: Ports, own_did: &str) -> Ports {
-    recording(ports, own_did).0
+pub fn authenticating(ports: Ports, participant_id: &str) -> Ports {
+    recording(ports, participant_id).0
 }
 
 /// Like [`authenticating`], and the audiences of the tokens the prover
 /// gives.
 #[must_use]
-pub fn recording(mut ports: Ports, own_did: &str) -> (Ports, Audiences) {
+pub fn recording(mut ports: Ports, participant_id: &str) -> (Ports, Audiences) {
     let audiences = Audiences::default();
     ports.verifier = Arc::new(NamedCaller);
     ports.prover = Arc::new(NameSelf {
-        did: own_did.to_owned(),
+        did: participant_id.to_owned(),
         audiences: Arc::clone(&audiences),
     });
     (ports, audiences)
