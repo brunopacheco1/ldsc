@@ -157,11 +157,10 @@ start with an error.
   kept in memory, and keys are compared in constant time. The port speaks
   plain HTTP: keep it on a private network or behind TLS, and never on the
   public proxy. To change the key, replace the file and restart.
-- **Access tokens are kept in memory only.** As consumer, the connector
-  holds the data address of each usable transfer, token included, in
-  memory until the transfer ends, never in `/data/portitor.db` (ADR 0014).
-  After a restart, terminate the transfers that were `STARTED` and request
-  them again.
+- **The database file holds access tokens.** As consumer, the connector
+  keeps the data address of each usable transfer, token included, in
+  `/data/portitor.db` until the transfer ends (ADR 0014). Protect the volume
+  and its backups like the management key.
 - Do not set `PORTITOR_ALLOW_HTTP_CALLBACKS=true` outside development and tests.
 - Report vulnerabilities as described in [SECURITY.md](../SECURITY.md).
 

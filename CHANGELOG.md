@@ -24,9 +24,8 @@ versions may change behaviour and configuration.
   negotiations), `GET /v1/transfers`, `GET /v1/transfers/{consumerPid}`
   (with the data address once started), and `.../completion` and
   `.../termination`. Your own system fetches the data with that address.
-  The address and its token are kept in memory only, never in the SQLite
-  file, and dropped when the transfer ends; after a restart, request the
-  transfer again (new migration).
+  The address and its token are kept in the SQLite file while the transfer
+  can be used, and removed when it ends (new migration).
 - The provider's policy may now also suspend, start again, complete or
   terminate a transfer. When the provider starts a pull transfer again,
   its data plane gives a new token, since DSP requires a data address in

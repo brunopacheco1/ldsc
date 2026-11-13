@@ -6,7 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # ADR 0014: Transfers as consumer
 
-- Status: **Proposed**
+- Status: **Accepted** (maintainer, 2026-11-13)
 - Date: 2026-11-13
 - Scope: release 0.4 (transfer process, consumer side, and the provider's
   own steps). Builds on ADR 0007 (outbox and proof of delivery) and
@@ -53,42 +53,17 @@ the connector and leaves where data goes to the operator.
 
 ### Keeping the token
 
-Authentication and authorization happen when the consumer asks: the
-provider checks the `TransferRequestMessage` and the agreement. The token
-is not the consumer's credential. It is the provider's data access token,
-and it arrives later, in the provider's `TransferStartMessage` to our
-callback address ("an opaque authorization token that clients MAY present
-when accessing the transport-specific endpoint address"). The answer to
-the request is only an acknowledgement. So the connector holds the token
-from the start message until the operator's system reads it through the
-management API. That is the only reason to hold it (maintainer,
-2026-11-13).
-
-- The data address, token included, is kept **in memory only**, never in
-  the SQLite file. The transfer's state is still in the file. When the
-  transfer ends (`COMPLETED` or `TERMINATED`) the address is dropped.
-- After a restart a `STARTED` transfer has no data address. The
-  operator's system terminates it and requests a new transfer. Tokens are
-  short-lived (Portitor as provider: one hour by default), so this costs
-  little, and no token is ever on disk or in a backup.
-- The consumer cannot know when a token expires: DSP 2025-1 has no
-  renewal message and the data address has no expiry field. An expired
-  token gets 401 from the provider; the fix is again a new transfer.
 - The consumer must present the token, so it cannot keep only a hash (as
-  the provider does).
-- The first start message must carry a data address (DSP: "The
-  dataAddress MUST be provided if the current transfer is a pull
-  transfer"); one without it is refused. A later start (after a
-  suspension) may carry a new address, which replaces the old one;
-  without one, the old one is kept.
-- The management API shows the token to callers with the API key, so the
-  key must be protected (DEPLOYING.md).
-- Rejected: keeping the token in the SQLite file (the first version of
-  this ADR). It survives restarts, but puts a secret on disk and in
-  backups for no need the protocol has. Rejected for now: pushing the
-  token to the operator's system (a webhook) when the start arrives. It
-  needs more configuration and retries, during which the connector holds
-  the token anyway.
+  the provider does). The data address, token included, is kept in the
+  SQLite file while the transfer can still be used (`STARTED` or
+  `SUSPENDED`) and removed when it ends (`COMPLETED` or `TERMINATED`).
+- The first start message must carry a data address (DSP, quoted above);
+  one without it is refused. A later start (after a suspension) may carry
+  a new address, which replaces the old one; without one, the old one is
+  kept.
+- The management API shows the token to callers with the API key. The
+  SQLite file and the API key must be protected alike (DEPLOYING.md).
+  Encrypting the token in the file is later work.
 
 ### The consumer's own steps
 
@@ -136,10 +111,8 @@ no start message is sent back (ADR 0013).
 - One shape for both sides and for negotiations: the domain decides, the
   adapter sends, every write compares a version, and pending messages are
   sent again after a restart.
-- No data access token is written to disk. Whoever holds the API key
-  can fetch the data until the transfer ends or the token expires.
-- A restart makes started transfers unusable: they must be requested
-  again.
+- A data access token sits in the consumer's SQLite file while the
+  transfer is usable. Whoever can read the file or holds the API key can
+  fetch the data until the transfer ends or the token expires.
 - The consumer side has no data plane of its own: no push transfers into
   Portitor, no caching of data.
-- Proposed until the maintainer accepts it.

@@ -222,3 +222,13 @@ all checks green, Scorecard published.
 - Interoperability tests against Eclipse EDC and Simpl-Open (with Gaia-X).
 - API and config freeze, upgrade notes, documentation review.
 - Exit: Scorecard at least 8/10; no open high findings in Sonar or CodeQL.
+
+## Later (not planned for a release yet)
+
+- Push transfers to object storage (S3-compatible): the consumer gives a
+  bucket address and short-lived credentials in its transfer request
+  (`dataAddress`, DSP 2025-1), and the provider's data plane writes the
+  data there. Each transfer method is its own distribution and `format`
+  in the catalog, with its own data address and authentication
+  (maintainer, 2026-11-13). It is a second data plane behind the Data
+  Plane Signaling port; the DSP code does not change.
