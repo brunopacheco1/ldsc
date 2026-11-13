@@ -136,6 +136,11 @@ all checks green, Scorecard published.
   error) whose `$ref` to `AbstractTransferCodeMessage` is not a valid JSON
   pointer (`#definitions/...` instead of `#/definitions/...`; tag
   2025-1-err2). Each report links back from the code that works around it.
+- Report the same way to the Eclipse Data Plane Signaling project what
+  implementing v1.0-RC4 shows (listed in ARCHITECTURE, "Data plane"):
+  examples that fail the specification's own schemas, a pull `start`
+  example that breaks a MUST, who may resume, and the HTTP profile's
+  `endpointType` (maintainer, 2026-11-13).
 - Code quality and readability review of the whole code base before the
   release, so a maintainer who is not a Rust expert can follow it (asked
   by the maintainer, 2026-11-13): simpler code where it is hard to read,
