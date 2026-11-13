@@ -18,3 +18,6 @@ __pycache__/
 !.vscode/launch.json
 !.vscode/tasks.json
 !.vscode/extensions.json
+
+# the demo's management API key (scripts/demo-compose.sh makes one)
+/examples/compose/management.key

@@ -1,0 +1,66 @@
+# SPDX-FileCopyrightText: Portitor contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Two Portitor connectors and a data source, for trying Portitor out.
+# Not a production setup: plain HTTP between the containers
+# (PORTITOR_ALLOW_HTTP_CALLBACKS) and no caller authentication until 0.5.
+#
+#   openssl rand -hex 32 > examples/compose/management.key
+#   docker compose -f examples/compose/compose.yaml up -d
+#
+# Then use the consumer's management API on http://127.0.0.1:18091 (see
+# the README); negotiate with the provider at http://provider:8080/dsp/2025-1.
+# scripts/demo-compose.sh does all of it and runs the demo checks.
+# PORTITOR_IMAGE picks another image, for example a local build.
+
+name: portitor-demo
+
+services:
+  # the provider's data: a plain web server with examples/data
+  data:
+    image: nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
+    volumes:
+      - ../data:/usr/share/nginx/html:ro
+
+  provider:
+    image: ${PORTITOR_IMAGE:-ghcr.io/brunopacheco1/portitor-connector:0.4.0}
+    environment:
+      PORTITOR_PARTICIPANT_ID: did:web:provider%3A8080
+      # where data addresses point: your app, on this machine, fetches the
+      # data from there (the consumer reaches the provider as
+      # http://provider:8080, the address given when negotiating)
+      PORTITOR_PUBLIC_URL: http://127.0.0.1:18080
+      PORTITOR_DATASETS_FILE: /config/datasets.json
+      PORTITOR_ALLOW_HTTP_CALLBACKS: "true"
+    volumes:
+      - ./datasets.json:/config/datasets.json:ro
+      - provider-data:/data
+    ports:
+      - 127.0.0.1:18080:8080
+    depends_on:
+      - data
+
+  consumer:
+    image: ${PORTITOR_IMAGE:-ghcr.io/brunopacheco1/portitor-connector:0.4.0}
+    environment:
+      PORTITOR_PARTICIPANT_ID: did:web:consumer%3A8080
+      PORTITOR_PUBLIC_URL: http://consumer:8080
+      PORTITOR_ALLOW_HTTP_CALLBACKS: "true"
+      PORTITOR_MANAGEMENT_BIND: 0.0.0.0:8081
+      PORTITOR_MANAGEMENT_API_KEY_FILE: /run/secrets/management-key
+    secrets:
+      - management-key
+    volumes:
+      - consumer-data:/data
+    ports:
+      - 127.0.0.1:18090:8080
+      - 127.0.0.1:18091:8081
+
+secrets:
+  management-key:
+    file: ./management.key
+
+volumes:
+  provider-data:
+  consumer-data:

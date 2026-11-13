@@ -1,0 +1,5 @@
+station,date,pm25_ug_m3,no2_ug_m3
+demo-north,2026-11-01,8.4,17.2
+demo-north,2026-11-02,11.0,21.5
+demo-south,2026-11-01,6.1,12.8
+demo-south,2026-11-02,7.9,15.0

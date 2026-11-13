@@ -21,7 +21,8 @@ project checks every change. All commands run from the repository root.
 | Licence headers | `reuse lint` | every PR (`REUSE compliance`) |
 | DSP conformance (TCK) | see [below](#dsp-conformance-tck) | every PR (`DSP TCK`) |
 | Fuzzing | see [below](#fuzzing) | every PR (short), weekly (long) |
-| Two connectors agree a contract | `scripts/demo.sh` | every PR (`CI`) |
+| Two connectors agree a contract and transfer a file | `scripts/demo.sh` | every PR (`CI`) |
+| The same in Docker Compose | `scripts/demo-compose.sh` | every PR (`CI`) |
 | Image builds and starts | `docker build` then a health check | every PR (`CI`) |
 | Static analysis | CodeQL, OpenSSF Scorecard, ORT | every PR or on `main` |
 
@@ -216,8 +217,17 @@ provider sends the `FINALIZED` event. `GET
 `scripts/demo.sh` does all of this in one go and checks the result: it
 starts a provider and a consumer, copies the `air-quality` offer from the
 catalog, negotiates it to `FINALIZED`, and checks that the same offer id
-without its constraint is `TERMINATED`. CI runs it on every pull request.
-It needs `curl`, `jq` and `openssl`.
+without its constraint is `TERMINATED`. Then it requests a transfer under
+the agreement, fetches the file with the token, checks it equals
+`examples/data/air-quality.csv`, completes the transfer and checks that the
+token is refused afterwards. It needs `curl`, `jq`, `openssl` and Python 3
+(to serve the file).
+
+`scripts/demo-compose.sh [image]` runs the same checks
+(`scripts/demo-steps.sh`) against the services in
+`examples/compose/compose.yaml`, with the released image or the one you
+name. CI runs both on every pull request, the second with the image it has
+just built.
 
 By hand, one connector as provider, one as consumer, both on your machine:
 

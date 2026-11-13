@@ -6,7 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # ADR 0014: Transfers as consumer
 
-- Status: **Proposed**
+- Status: **Accepted** (maintainer, 2026-11-13)
 - Date: 2026-11-13
 - Scope: release 0.4 (transfer process, consumer side, and the provider's
   own steps). Builds on ADR 0007 (outbox and proof of delivery) and
@@ -116,4 +116,3 @@ no start message is sent back (ADR 0013).
   fetch the data until the transfer ends or the token expires.
 - The consumer side has no data plane of its own: no push transfers into
   Portitor, no caching of data.
-- Proposed until the maintainer accepts it.

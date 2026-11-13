@@ -1,0 +1,35 @@
+[
+  {
+    "@id": "air-quality",
+    "@type": "Dataset",
+    "portitor:source": "http://data/air-quality.csv",
+    "dct:title": "Air quality",
+    "dcat:keyword": [
+      "air quality"
+    ],
+    "hasPolicy": [
+      {
+        "@id": "air-quality:offer:until-2030",
+        "@type": "Offer",
+        "permission": [
+          {
+            "action": "use",
+            "constraint": [
+              {
+                "leftOperand": "dateTime",
+                "operator": "lteq",
+                "rightOperand": "2030-12-31"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "distribution": [
+      {
+        "@type": "Distribution",
+        "format": "HttpData-PULL"
+      }
+    ]
+  }
+]
