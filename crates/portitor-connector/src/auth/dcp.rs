@@ -24,6 +24,14 @@
 //! Every fetch (DID documents, the Credential Service, status lists) goes
 //! through the shared HTTP client: HTTPS only unless allowed for tests,
 //! time and size limits, no redirects.
+//!
+//! The caller chooses what is in its presentations, and each credential
+//! could make the verifier fetch more (the issuer's DID document, status
+//! lists). So credentials from issuers that are not trusted are skipped
+//! before anything is fetched for them, the answer may hold at most
+//! [`MAX_PRESENTATIONS`] presentations of at most [`MAX_CREDENTIALS`]
+//! credentials with at most [`MAX_STATUS_ENTRIES`] status entries each, and
+//! the whole check must end within [`DEADLINE`].
 
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -51,6 +59,21 @@ const MAX_STATUS_LIST: usize = 2 * 1024 * 1024;
 /// The credential type every caller must hold (ADR 0016).
 pub const MEMBERSHIP: &str = "MembershipCredential";
 
+/// The most presentations read from one Credential Service answer. A
+/// Credential Service sends one per profile (DCP "Homogeneity
+/// requirement"), so two would do.
+pub const MAX_PRESENTATIONS: usize = 8;
+
+/// The most credentials read from one presentation.
+pub const MAX_CREDENTIALS: usize = 16;
+
+/// The most status entries read from one credential (one revocation and
+/// one suspension list is usual).
+pub const MAX_STATUS_ENTRIES: usize = 4;
+
+/// The longest one caller check may take, all fetches included.
+pub const DEADLINE: Duration = Duration::from_secs(20);
+
 /// How often, and how far apart, [`DcpVerifier::check_own_identity`]
 /// tries to read our DID document: the identity component may still be
 /// starting.
@@ -69,6 +92,7 @@ pub struct DcpVerifier {
     /// per store (ADR 0016).
     used_token_ids: Mutex<JtiCache>,
     start_tries: u32,
+    deadline: Duration,
 }
 
 impl std::fmt::Debug for DcpVerifier {
@@ -105,6 +129,7 @@ impl DcpVerifier {
             scopes: settings.scopes.clone(),
             used_token_ids: Mutex::new(JtiCache::default()),
             start_tries: START_TRIES,
+            deadline: DEADLINE,
         })
     }
 
@@ -158,8 +183,19 @@ impl DcpVerifier {
         ))
     }
 
-    /// The whole check, steps 1 to 5 of the module doc.
+    /// The whole check, cut off after [`DEADLINE`].
     async fn check(&self, authorization: Option<&str>) -> Result<Caller, String> {
+        match tokio::time::timeout(self.deadline, self.check_steps(authorization)).await {
+            Ok(result) => result,
+            Err(_) => Err(format!(
+                "checking the caller took longer than {} s",
+                self.deadline.as_secs_f32()
+            )),
+        }
+    }
+
+    /// Steps 1 to 5 of the module doc.
+    async fn check_steps(&self, authorization: Option<&str>) -> Result<Caller, String> {
         let token = bearer(authorization)?;
         let checked = self.check_token(token).await?;
         let caller = checked.doc.id.clone();
@@ -216,7 +252,8 @@ impl DcpVerifier {
         presentation_jwts(answer)
     }
 
-    /// Steps 4 and 5.
+    /// Steps 4 and 5. Only credentials from trusted issuers are checked
+    /// (and count); the others are skipped.
     async fn check_presentations(
         &self,
         caller: &str,
@@ -235,11 +272,20 @@ impl DcpVerifier {
             presentation
                 .verify(holder, &self.own_did, now, leeway)
                 .map_err(|e| format!("presentation: {e}"))?;
+            if presentation.credentials.len() > MAX_CREDENTIALS {
+                return Err(format!(
+                    "a presentation holds more than {MAX_CREDENTIALS} credentials"
+                ));
+            }
             for credential in &presentation.credentials {
+                // skipped before its issuer's DID document or status list
+                // is fetched: an untrusted issuer could name any URL there
+                if !self.trusted_issuers.contains(&credential.issuer) {
+                    tracing::debug!(issuer = %credential.issuer, "credential from an untrusted issuer skipped");
+                    continue;
+                }
                 self.check_credential(credential, caller, now).await?;
-                if credential.has_type(MEMBERSHIP)
-                    && self.trusted_issuers.contains(&credential.issuer)
-                {
+                if credential.has_type(MEMBERSHIP) {
                     member = true;
                 }
             }
@@ -264,6 +310,11 @@ impl DcpVerifier {
             && credential.subject_ids().all(|id| id == caller);
         if !about_caller {
             return Err("a credential is not about the caller (credentialSubject.id)".to_owned());
+        }
+        if credential.status.len() > MAX_STATUS_ENTRIES {
+            return Err(format!(
+                "a credential has more than {MAX_STATUS_ENTRIES} status entries"
+            ));
         }
         let issuer = self.resolver.resolve(&credential.issuer).await?;
         let leeway = i64::try_from(LEEWAY).unwrap_or(0);
@@ -345,6 +396,11 @@ fn presentation_jwts(answer: Value) -> Result<Vec<String>, String> {
         serde_json::from_value(answer).map_err(|e| format!("presentation response: {e}"))?;
     if response.presentation.is_empty() {
         return Err("the presentation response is empty".to_owned());
+    }
+    if response.presentation.len() > MAX_PRESENTATIONS {
+        return Err(format!(
+            "the presentation response holds more than {MAX_PRESENTATIONS} presentations"
+        ));
     }
     let mut jwts = Vec::new();
     for presentation in &response.presentation {
