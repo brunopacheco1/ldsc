@@ -112,6 +112,15 @@ steps 3 and 5, including revocation.
 - Parsing of tokens, DID documents, presentations and status lists is
   covered by fuzz targets (ClusterFuzzLite).
 
+### Amended during the 0.5 review (2026-11-13)
+
+The decision stands; one detail changed while it was built:
+
+- The `tck` build maps the DSP TCK's fixed `Authorization` header to the
+  participant id `TCK_PARTICIPANT` (the TCK's
+  `DspConstants.TCK_PARTICIPANT_ID`), not to a test DID: that id is
+  what the TCK's own messages and agreements use.
+
 ## Consequences
 
 - Running a connector now needs an identity component (or a compatible
