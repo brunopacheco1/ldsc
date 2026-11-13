@@ -1,0 +1,23 @@
+{
+  "messageId": "b1d5f9e2-3c4b-4f7a-9c3e-2f1e5d6c7b8a",
+  "participantId": "provider-participant-id",
+  "counterPartyId": "consumer-participant-id",
+  "dataspaceContext": "test-dataspace-context",
+  "dataFlowId": "test-transfer-process-id",
+  "agreementId": "test-agreement-id",
+  "datasetId": "asset-id",
+  "profile": "https://w3id.org/dspace-sig/profile/s3-push",
+  "claims": {
+    "membership": "active",
+    "sub": "subject"
+  },
+  "labels": [
+    "gold",
+    "blue"
+  ],
+  "metadata": {
+    "bucketName": "destinationBucket",
+    "region": "westeurope",
+    "...": "..."
+  }
+}

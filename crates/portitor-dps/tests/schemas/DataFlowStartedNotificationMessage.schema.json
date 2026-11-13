@@ -1,0 +1,16 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "$id": "DataFlowStartedNotificationMessage.json",
+    "title": "DataFlowStartedNotificationMessage",
+    "type": "object",
+    "properties": {
+        "messageId": {
+            "type": "string",
+            "description": "Unique identifier for the message"
+        },
+        "dataAddress": {
+            "$ref": "https://w3id.org/dspace/2025/1/transfer/data-address-schema.json"
+        }
+    },
+    "required": ["messageId"]
+}

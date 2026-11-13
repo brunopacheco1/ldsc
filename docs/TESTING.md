@@ -40,13 +40,17 @@ cargo test -p portitor-connector --features tck   # also the TCK scripts
 
 Where the tests are:
 
-- **Domain crates** (`crates/portitor-dsp`, `crates/portitor-dcp`): pure functions
+- **Domain crates** (`crates/portitor-dsp`, `crates/portitor-dcp`,
+  `crates/portitor-dps`): pure functions
   and ports, tested without network or disk. Examples: the negotiation state
   machine is checked for every (state, message, sender) combination;
   `tests/negotiation_spec.rs` parses every example of the DSP
   specification, writes it back unchanged and validates it against the
   official JSON Schema (`tests/schemas`, copied unchanged from the
-  specification).
+  specification). `portitor-dps` does the same for Data Plane Signaling
+  (`tests/spec.rs`); five of that specification's examples fail its own
+  schemas, so the test checks they fail, fixes them the smallest way, and
+  checks again.
 - **Connector** (`crates/portitor-connector`): HTTP tests drive the real router
   in memory (`tower::ServiceExt::oneshot`), with fake adapters for what
   leaves the process. `tests/dsp_negotiation.rs`, for example, records the

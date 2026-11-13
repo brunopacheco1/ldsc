@@ -1,0 +1,37 @@
+{
+  "messageId": "b1d5f9e2-3c4b-4f7a-9c3e-2f1e5d6c7b8a",
+  "participantId": "provider-participant-id",
+  "counterPartyId": "consumer-participant-id",
+  "dataspaceContext": "test-dataspace-context",
+  "dataFlowId": "test-transfer-process-id",
+  "agreementId": "test-agreement-id",
+  "datasetId": "asset-id",
+  "profile": "https://w3id.org/dspace-sig/profile/http-pull",
+  "claims": {
+    "membership": "active",
+    "sub": "subject"
+  },
+  "dataAddress": {
+    "endpointType": "https://w3id.org/idsa/v4.1/HTTP",
+    "endpoint": "http://dataplane.provider.com/api/public",
+    "endpointProperties": [
+      {
+        "name": "authorization",
+        "value": "<AUTH_TOKEN>"
+      },
+      {
+        "name": "authType",
+        "value": "bearer"
+      }
+    ]
+  },
+  "labels": [
+    "gold",
+    "blue"
+  ],
+  "metadata": {
+    "bucketName": "sourceBucket",
+    "region": "westeurope",
+    "...": "..."
+  }
+}

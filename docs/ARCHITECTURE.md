@@ -135,3 +135,29 @@ released, split it out as an optional component (option B) without
 changing the connector's protocol code. Interoperability with EDC and
 Simpl-Open is not affected either way: other connectors only see DSP and
 the data endpoint, never our internal split.
+
+**In code (0.4).** The domain crate `portitor-dps` holds the signaling
+messages, the data flow state machine and two ports: `DataPlane` (what the
+control plane asks: `prepare`, `start`, `started`, `suspend`, `resume`,
+`terminate`, `completed`, `status`) and `ControlPlane` (what the data plane
+reports: `prepared`, `started`, `completed`, `errored`). The optional
+agreement retrieval endpoint and registration are left out: one built-in
+data plane needs neither.
+
+What implementing v1.0-RC4 showed (to report to the Data Plane Signaling
+project, and to settle in ADR 0013 where it affects us):
+
+- Five examples (start, started, resume, status and the base data address
+  example) fail the specification's own schemas: their data addresses lack
+  the `@type` fields that the DSP `DataAddress` schema requires, and two
+  are an empty `{}`.
+- The `DataFlowStartMessage` example is an HTTP pull with a `dataAddress`,
+  while the text says a data address on `start` for a pull "MUST result in
+  a HTTP 4xx Client Error".
+- Resume: the specification lets only the party that suspended resume;
+  DSP 2025-1 lets either party start a suspended transfer again.
+- The HTTP transfer profile (`profiles` repository, no release yet) sets
+  `endpointType` to `https://w3id.org/dspace-sig/profile/http-pull` and
+  requires HTTPS endpoints; DSP examples and the TCK use
+  `https://w3id.org/idsa/v4.1/HTTP` and the format `HTTP-PULL`. Which value
+  Portitor sends over DSP is decided in ADR 0013 (0.4 PR 3).
