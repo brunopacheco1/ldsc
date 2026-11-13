@@ -92,11 +92,8 @@ impl Validity {
     /// stricter of two sources (JWT claims and credential fields) wins.
     fn narrow(self, other: Self) -> Self {
         Self {
-            from: self.from.max(other.from),
-            until: match (self.until, other.until) {
-                (Some(a), Some(b)) => Some(a.min(b)),
-                (a, b) => a.or(b),
-            },
+            from: later(self.from, other.from),
+            until: earlier(self.until, other.until),
         }
     }
 
@@ -119,6 +116,24 @@ impl Validity {
             return Err(CredentialError::Invalid("expired"));
         }
         Ok(())
+    }
+}
+
+/// The later of two start times; `None` (no start) loses to any time.
+fn later(a: Option<i64>, b: Option<i64>) -> Option<i64> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (Some(one), None) | (None, Some(one)) => Some(one),
+        (None, None) => None,
+    }
+}
+
+/// The earlier of two end times; `None` (no end) loses to any time.
+fn earlier(a: Option<i64>, b: Option<i64>) -> Option<i64> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(one), None) | (None, Some(one)) => Some(one),
+        (None, None) => None,
     }
 }
 
@@ -151,45 +166,34 @@ impl Credential {
         let jws = Jws::parse(jwt)?;
         let payload: Map<String, Value> = serde_json::from_slice(jws.payload())
             .map_err(|_| CredentialError::Unsupported("payload is not a JSON object"))?;
-        let mut credential = match payload.get("vc") {
-            Some(vc) => Self::from_vc11(&payload, vc)?,
-            None => Self::from_vc20(&payload)?,
-        };
-        jwt.clone_into(&mut credential.jwt);
-        Ok(credential)
+        match payload.get("vc") {
+            Some(vc) => Self::from_vc11(jwt, &payload, vc),
+            None => Self::from_vc20(jwt, &payload),
+        }
     }
 
     /// VC Data Model 1.1, JWT encoding (section 6.3.1): the registered
     /// claims stand for some credential fields. Where both are present,
     /// they must agree; for dates the stricter one counts.
-    fn from_vc11(claims: &Map<String, Value>, vc: &Value) -> Result<Self, CredentialError> {
+    fn from_vc11(
+        jwt: &str,
+        claims: &Map<String, Value>,
+        vc: &Value,
+    ) -> Result<Self, CredentialError> {
         let body = Body::read(vc)?;
         let issuer = agree(
             text(claims, "iss"),
             body.issuer.as_deref(),
             "iss and issuer differ",
-        )?
-        .ok_or(CredentialError::Unsupported("no issuer"))?;
+        )?;
+        let issuer = issuer.ok_or(CredentialError::Unsupported("no issuer"))?;
         // section 6.3.1 has `jti` stand for `id`. The DCP TCK v1.2.1
         // (`JwtCredentialGenerator`) sets both, to two different random
         // values, so the credential's own `id` wins when both are present.
         let id = body.id.or_else(|| text(claims, "jti").map(str::to_owned));
         let mut subjects = body.subjects;
         if let Some(sub) = text(claims, "sub") {
-            match subjects.as_mut_slice() {
-                [only] => match only.get("id").and_then(Value::as_str) {
-                    Some(id) if id != sub => {
-                        return Err(CredentialError::Invalid(
-                            "sub and credentialSubject.id differ",
-                        ));
-                    }
-                    Some(_) => {}
-                    None => {
-                        only.insert("id".to_owned(), Value::from(sub));
-                    }
-                },
-                _ => return Err(CredentialError::Unsupported("sub with several subjects")),
-            }
+            fill_subject_id(&mut subjects, sub)?;
         }
         let claimed = Validity {
             from: number(claims, "nbf"),
@@ -207,13 +211,13 @@ impl Credential {
             subjects,
             validity: claimed.narrow(written),
             status: body.status,
-            jwt: String::new(),
+            jwt: jwt.to_owned(),
         })
     }
 
     /// VC Data Model 2.0 secured with JOSE: the payload is the credential.
     /// Optional `nbf` and `exp` claims narrow its validity.
-    fn from_vc20(payload: &Map<String, Value>) -> Result<Self, CredentialError> {
+    fn from_vc20(jwt: &str, payload: &Map<String, Value>) -> Result<Self, CredentialError> {
         let vc = Value::Object(payload.clone());
         if first_context(&vc) != Some(VC2_CONTEXT) {
             return Err(CredentialError::Unsupported(
@@ -229,17 +233,18 @@ impl Credential {
             from: date(&vc, "validFrom")?,
             until: date(&vc, "validUntil")?,
         };
+        let issuer = body
+            .issuer
+            .ok_or(CredentialError::Unsupported("no issuer"))?;
         Ok(Self {
             profile: Profile::Vc20,
             id: body.id,
             types: body.types,
-            issuer: body
-                .issuer
-                .ok_or(CredentialError::Unsupported("no issuer"))?,
+            issuer,
             subjects: body.subjects,
             validity: claimed.narrow(written),
             status: body.status,
-            jwt: String::new(),
+            jwt: jwt.to_owned(),
         })
     }
 
@@ -283,6 +288,25 @@ impl Credential {
     }
 }
 
+/// VC 1.1 JWT encoding: the `sub` claim stands for the id of the one
+/// credential subject. Writes it there when the subject has no id, and
+/// refuses a `sub` that differs from the id, or several subjects.
+fn fill_subject_id(subjects: &mut [Map<String, Value>], sub: &str) -> Result<(), CredentialError> {
+    let [only] = subjects else {
+        return Err(CredentialError::Unsupported("sub with several subjects"));
+    };
+    match only.get("id").and_then(Value::as_str) {
+        None => {
+            only.insert("id".to_owned(), Value::from(sub));
+            Ok(())
+        }
+        Some(id) if id == sub => Ok(()),
+        Some(_) => Err(CredentialError::Invalid(
+            "sub and credentialSubject.id differ",
+        )),
+    }
+}
+
 /// A verifiable presentation read from a JWT, not yet verified.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Presentation {
@@ -311,24 +335,27 @@ impl Presentation {
     /// that cannot be read, or credentials of another profile.
     pub fn parse(jwt: &str) -> Result<Self, CredentialError> {
         let claims = payload_of(jwt)?;
-        if claims.get("vp").is_none() && types(&claims).contains(&"EnvelopedVerifiablePresentation")
-        {
-            let inner = text(&claims, "id")
-                .and_then(|id| id.strip_prefix(VP_JWT_DATA))
-                .ok_or(CredentialError::Unsupported("envelope without a vp+jwt"))?;
-            let mut presentation = Self::parse_unwrapped(inner)?;
-            if presentation.profile == Profile::Vc11 {
-                return Err(CredentialError::Unsupported(
-                    "envelope around a VC 1.1 presentation",
-                ));
-            }
-            let outer = Self::claims_of(&claims);
-            presentation.validity = presentation.validity.narrow(outer.0);
-            presentation.audience.extend(outer.1);
-            presentation.signed.push(jwt.to_owned());
-            return Ok(presentation);
+        // EDC's extra wrapping (see the module doc): a JWT without a `vp`
+        // claim, of type EnvelopedVerifiablePresentation
+        let is_envelope = claims.get("vp").is_none()
+            && types(&claims).contains(&"EnvelopedVerifiablePresentation");
+        if !is_envelope {
+            return Self::parse_unwrapped(jwt);
         }
-        Self::parse_unwrapped(jwt)
+        let inner = text(&claims, "id")
+            .and_then(|id| id.strip_prefix(VP_JWT_DATA))
+            .ok_or(CredentialError::Unsupported("envelope without a vp+jwt"))?;
+        let mut presentation = Self::parse_unwrapped(inner)?;
+        if presentation.profile == Profile::Vc11 {
+            return Err(CredentialError::Unsupported(
+                "envelope around a VC 1.1 presentation",
+            ));
+        }
+        let (envelope_validity, envelope_audience) = Self::claims_of(&claims);
+        presentation.validity = presentation.validity.narrow(envelope_validity);
+        presentation.audience.extend(envelope_audience);
+        presentation.signed.push(jwt.to_owned());
+        Ok(presentation)
     }
 
     fn parse_unwrapped(jwt: &str) -> Result<Self, CredentialError> {
@@ -423,30 +450,30 @@ fn credentials_of(vp: &Value, profile: Profile) -> Result<Vec<Credential>, Crede
         Some(Value::Array(entries)) => entries.as_slice(),
         Some(one) => std::slice::from_ref(one),
     };
-    entries
-        .iter()
-        .map(|entry| {
-            let jwt = match (profile, entry) {
-                (Profile::Vc11, Value::String(jwt)) => jwt.as_str(),
-                (Profile::Vc20, Value::Object(envelope))
-                    if envelope.get("type").and_then(Value::as_str)
-                        == Some("EnvelopedVerifiableCredential") =>
-                {
-                    envelope
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .and_then(|id| id.strip_prefix(VC_JWT_DATA))
-                        .ok_or(CredentialError::Unsupported("envelope without a vc+jwt"))?
-                }
-                _ => {
-                    return Err(CredentialError::Unsupported(
-                        "credential entry of an unexpected form",
-                    ));
-                }
-            };
-            Credential::parse(jwt)
-        })
-        .collect()
+    let mut credentials = Vec::new();
+    for entry in entries {
+        let jwt = credential_jwt(entry, profile)?;
+        credentials.push(Credential::parse(jwt)?);
+    }
+    Ok(credentials)
+}
+
+/// The JWT of one `verifiableCredential` entry: the string itself for
+/// VC 1.1, the `data:` URL in the envelope's `id` for 2.0.
+fn credential_jwt(entry: &Value, profile: Profile) -> Result<&str, CredentialError> {
+    match (profile, entry) {
+        (Profile::Vc11, Value::String(jwt)) => Ok(jwt),
+        (Profile::Vc20, Value::Object(envelope))
+            if text(envelope, "type") == Some("EnvelopedVerifiableCredential") =>
+        {
+            text(envelope, "id")
+                .and_then(|id| id.strip_prefix(VC_JWT_DATA))
+                .ok_or(CredentialError::Unsupported("envelope without a vc+jwt"))
+        }
+        _ => Err(CredentialError::Unsupported(
+            "credential entry of an unexpected form",
+        )),
+    }
 }
 
 fn verify_signature(jwt: &str, doc: &DidDocument, purpose: Purpose) -> Result<(), CredentialError> {
