@@ -243,6 +243,17 @@ EDC v1.0.0-RC7 sources):
   built with the Eclipse Data Plane SDK 1.2.1 (`runtimes/dataplane`), and
   serves one file. Control plane and data plane register with each other
   without authorization (test-only).
+- **Dependency verification.** Gradle checks the SHA-256 of every
+  plugin and library it downloads against
+  `interop/edc/runtimes/gradle/verification-metadata.xml` and stops on a
+  mismatch or an unknown file. After changing a version in
+  `gradle.properties` or the build files, write it again with the same
+  Gradle as the Dockerfile and review the diff:
+
+  ```sh
+  docker run --rm -v "$PWD/interop/edc/runtimes:/src" -w /src \
+    gradle:9.8.2-jdk21 gradle --no-daemon --write-verification-metadata sha256 shadowJar
+  ```
 - **IdentityHub admin.** The Identity API takes a JWT signed by the demo
   authority (`test-issuer admin-token --scope identity-api:admin`), checked
   against the authority's JWKS.

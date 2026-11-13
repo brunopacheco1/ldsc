@@ -135,6 +135,10 @@ versions may change behaviour and configuration.
   0.5 numbers and the cost of DCP per DSP request (about 2 ms, idle) are
   in ADR 0002, section 7.
 
+- The EDC interop test's Gradle build verifies the SHA-256 of every
+  downloaded plugin and library
+  (`interop/edc/runtimes/gradle/verification-metadata.xml`).
+
 ### Fixed
 - EDC can read Portitor's catalog: a catalog request whose `filter`
   selects nothing (EDC always sends a `QuerySpec` with only paging) gets
