@@ -4,22 +4,12 @@
 
 //! Transfers as consumer, and the agreements the consumer holds, in the
 //! same `SQLite` file as the negotiations (ADR 0014).
-//!
-//! The provider's data address, with its access token, is kept in memory
-//! only, never in the file: it is needed only until the operator's system
-//! reads it, and the token is short-lived. After a restart a started
-//! transfer has no data address; the operator terminates it and requests
-//! a new one.
-
-use std::collections::HashMap;
-use std::fmt;
-use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use portitor_dsp::negotiation::NegotiationState;
 use portitor_dsp::transfer::consumer::{
     AgreementProvider, ConsumerTransfer, ConsumerTransferStore, HeldAgreements, Outgoing,
 };
-use portitor_dsp::transfer::{DataAddress, TransferState, Transition};
+use portitor_dsp::transfer::{TransferState, Transition};
 use rusqlite::{Row, params};
 
 use super::transfers::{parsed_transfer_state, transfer_state_text};
@@ -29,40 +19,7 @@ use super::{
 };
 
 const COLUMNS: &str = "consumer_pid, provider_pid, state, provider_address, provider_id, \
-     agreement_id, format, pending, version";
-
-/// The data addresses of our transfers, by consumer pid, in memory only.
-#[derive(Default)]
-pub(super) struct Addresses(Mutex<HashMap<String, DataAddress>>);
-
-impl Addresses {
-    fn map(&self) -> MutexGuard<'_, HashMap<String, DataAddress>> {
-        // a plain map stays usable even if a holder panicked
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// Keeps the address of `t`, or forgets it when `t` has none.
-    fn keep(&self, t: &ConsumerTransfer) {
-        let mut map = self.map();
-        match &t.data_address {
-            Some(a) => map.insert(t.consumer_pid.clone(), a.clone()),
-            None => map.remove(&t.consumer_pid),
-        };
-    }
-
-    /// `t` with the address we hold for it, if any.
-    fn added_to(&self, mut t: ConsumerTransfer) -> ConsumerTransfer {
-        t.data_address = self.map().get(&t.consumer_pid).cloned();
-        t
-    }
-}
-
-impl fmt::Debug for Addresses {
-    // never print a token
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Addresses({} held)", self.map().len())
-    }
-}
+     agreement_id, format, data_address, pending, version";
 
 /// The pending message as stored in the `pending` column.
 fn pending_text(o: Option<&Outgoing>) -> Result<Option<String>, StoreError> {
@@ -90,7 +47,7 @@ fn pending_message(consumer_pid: &str, text: &str) -> Result<Outgoing, StoreErro
 
 fn consumer_transfer(r: &Row<'_>) -> Result<ConsumerTransfer, StoreError> {
     let consumer_pid: String = col(r, 0)?;
-    let pending = col::<Option<String>>(r, 7)?
+    let pending = col::<Option<String>>(r, 8)?
         .map(|text| pending_message(&consumer_pid, &text))
         .transpose()?;
     Ok(ConsumerTransfer {
@@ -100,84 +57,68 @@ fn consumer_transfer(r: &Row<'_>) -> Result<ConsumerTransfer, StoreError> {
         provider_id: col(r, 4)?,
         agreement_id: col(r, 5)?,
         format: col(r, 6)?,
-        data_address: None, // in memory only: see `Addresses`
+        data_address: col::<Option<String>>(r, 7)?
+            .map(|a| parsed("data address", &a))
+            .transpose()?,
         pending,
-        version: parsed_version(col(r, 8)?)?,
+        version: parsed_version(col(r, 9)?)?,
         consumer_pid,
     })
-}
-
-impl SqliteNegotiations {
-    /// The transfers `sql` selects, each with the address we hold for it.
-    fn transfers(
-        &self,
-        sql: &str,
-        args: impl rusqlite::Params,
-    ) -> Result<Vec<ConsumerTransfer>, StoreError> {
-        let found = self.query(sql, args, consumer_transfer)?;
-        Ok(found
-            .into_iter()
-            .map(|t| self.addresses.added_to(t))
-            .collect())
-    }
 }
 
 impl ConsumerTransferStore for SqliteNegotiations {
     fn get(&self, consumer_pid: &str) -> Result<Option<ConsumerTransfer>, StoreError> {
         let sql = format!("SELECT {COLUMNS} FROM consumer_transfer WHERE consumer_pid = ?1");
-        let found = self.transfers(&sql, params![consumer_pid])?;
+        let found = self.query(&sql, params![consumer_pid], consumer_transfer)?;
         Ok(found.into_iter().next())
     }
 
     fn insert(&self, t: &ConsumerTransfer) -> Result<(), StoreError> {
         let sql = format!(
             "INSERT INTO consumer_transfer ({COLUMNS})
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"
         );
-        let conn = self.conn();
-        conn.execute(
-            &sql,
-            params![
-                t.consumer_pid,
-                t.provider_pid,
-                transfer_state_text(t.state)?,
-                t.provider_address,
-                t.provider_id,
-                t.agreement_id,
-                t.format,
-                pending_text(t.pending.as_ref())?,
-                version(t.version)?,
-            ],
-        )
-        .map_err(err)?;
-        self.addresses.keep(t);
+        self.conn()
+            .execute(
+                &sql,
+                params![
+                    t.consumer_pid,
+                    t.provider_pid,
+                    transfer_state_text(t.state)?,
+                    t.provider_address,
+                    t.provider_id,
+                    t.agreement_id,
+                    t.format,
+                    t.data_address.as_ref().map(json).transpose()?,
+                    pending_text(t.pending.as_ref())?,
+                    version(t.version)?,
+                ],
+            )
+            .map_err(err)?;
         Ok(())
     }
 
     fn replace_if(&self, t: &ConsumerTransfer, expected: u64) -> Result<bool, StoreError> {
         // compare-and-update in one statement: a concurrent change makes
         // the WHERE clause miss and nothing is written. Only the fields a
-        // transfer step changes are written. The connection stays locked
-        // until the address is kept too, so both change together.
-        let conn = self.conn();
-        let changed = conn
+        // transfer step changes are written.
+        let changed = self
+            .conn()
             .execute(
                 "UPDATE consumer_transfer
-                 SET provider_pid = ?2, state = ?3, pending = ?4, version = ?5
-                 WHERE consumer_pid = ?1 AND version = ?6",
+                 SET provider_pid = ?2, state = ?3, data_address = ?4, pending = ?5, version = ?6
+                 WHERE consumer_pid = ?1 AND version = ?7",
                 params![
                     t.consumer_pid,
                     t.provider_pid,
                     transfer_state_text(t.state)?,
+                    t.data_address.as_ref().map(json).transpose()?,
                     pending_text(t.pending.as_ref())?,
                     version(t.version)?,
                     version(expected)?,
                 ],
             )
             .map_err(err)?;
-        if changed == 1 {
-            self.addresses.keep(t);
-        }
         Ok(changed == 1)
     }
 
@@ -186,7 +127,7 @@ impl ConsumerTransferStore for SqliteNegotiations {
             "SELECT {COLUMNS} FROM consumer_transfer WHERE pending IS NOT NULL
              ORDER BY consumer_pid"
         );
-        self.transfers(&sql, [])
+        self.query(&sql, [], consumer_transfer)
     }
 
     fn list(&self, after: Option<&str>, limit: usize) -> Result<Vec<ConsumerTransfer>, StoreError> {
@@ -196,7 +137,7 @@ impl ConsumerTransferStore for SqliteNegotiations {
              ORDER BY consumer_pid LIMIT ?2"
         );
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        self.transfers(&sql, params![after, limit])
+        self.query(&sql, params![after, limit], consumer_transfer)
     }
 }
 
@@ -285,46 +226,6 @@ mod tests {
         assert_eq!(db.list(None, 10).unwrap().len(), 2);
         assert_eq!(db.list(Some("urn:uuid:c"), 10).unwrap(), vec![other]);
         assert_eq!(db.list(None, 1).unwrap(), vec![started]);
-    }
-
-    #[test]
-    fn the_data_address_is_never_written_to_the_file() {
-        let dir = std::env::temp_dir().join(format!("portitor-addr-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("p.db");
-        let mut started = stored_transfer();
-        {
-            let file = SqliteNegotiations::open(&path).unwrap();
-            let db: &dyn ConsumerTransferStore = &file;
-            db.insert(&started).unwrap();
-            started.state = TransferState::Started;
-            started.data_address = Some(DataAddress {
-                kind: DataAddressType,
-                endpoint_type: "https://w3id.org/idsa/v4.1/HTTP".to_owned(),
-                endpoint: Some("https://p.example/data/x".to_owned()),
-                endpoint_properties: vec![EndpointProperty::new("authorization", "t0ken")],
-            });
-            started.version = 1;
-            assert!(db.replace_if(&started, 0).unwrap());
-            assert_eq!(db.get("urn:uuid:c").unwrap(), Some(started.clone()));
-            assert!(
-                !format!("{file:?}").contains("t0ken"),
-                "Debug hides the token"
-            );
-        }
-        let file = std::fs::read(&path).unwrap();
-        assert!(
-            !file.windows(5).any(|w| w == b"t0ken"),
-            "no token in the file"
-        );
-
-        // after a restart the transfer is still there, without its address
-        let reopened = SqliteNegotiations::open(&path).unwrap();
-        let db: &dyn ConsumerTransferStore = &reopened;
-        started.data_address = None;
-        assert_eq!(db.get("urn:uuid:c").unwrap(), Some(started));
-        drop(reopened);
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
