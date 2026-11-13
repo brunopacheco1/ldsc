@@ -91,6 +91,7 @@ All configuration is by environment variable. The full table is in the
 | `PORTITOR_ALLOW_HTTP_CALLBACKS` | **unset** (never `true` in production) |
 | `PORTITOR_DATA_TOKEN_SECONDS` | leave the default, `3600`, unless consumers need longer to fetch |
 | `PORTITOR_STS_URL` | **required**: your identity's STS token endpoint, `<identity base URL>/sts/token` |
+| `PORTITOR_STS_ALLOW_HTTP` | unset; `true` only when `PORTITOR_STS_URL` is plain `http://` on an internal network ([section 4](#endpoints)) |
 | `PORTITOR_STS_CLIENT_SECRET_FILE` | **required**: path of the mounted STS secret, the same file as the identity's |
 | `PORTITOR_STS_CLIENT_ID` | leave the default, `PORTITOR_PARTICIPANT_ID` |
 | `PORTITOR_TRUSTED_ISSUERS` | **required**: comma-separated DIDs trusted to issue `MembershipCredential` |
@@ -215,7 +216,7 @@ participant.
 | Port | Path | Who calls it |
 |---|---|---|
 | public | `GET /.well-known/did.json` (or the DID's path) | anyone |
-| public | `POST /sts/token` | your connector only (client id and secret); keep it off the public proxy if you can |
+| public | `POST /sts/token` | your connector only (client id and secret); route it on the internal network only, never through the public proxy |
 | public | `POST <credential service>/presentations/query` | verifiers, with a self-issued ID token and an access token from your STS (DCP 5.4) |
 | public | `POST <credential service>/credentials`, `/offers` | trusted issuers (DCP 6.5, 6.6) |
 | public | `GET /health` | probes |
@@ -227,7 +228,8 @@ and to check partners' credentials:
 | Variable (connector) | Production value |
 |---|---|
 | `PORTITOR_PARTICIPANT_ID` | the identity's DID |
-| `PORTITOR_STS_URL` | **required**: the identity's STS token endpoint, `<identity base URL>/sts/token` |
+| `PORTITOR_STS_URL` | **required**: the identity's STS token endpoint on the internal network, for example `http://identity:8090/sts/token` |
+| `PORTITOR_STS_ALLOW_HTTP` | `true` when `PORTITOR_STS_URL` is plain `http://`: allows plain HTTP for that URL only, nothing else (the connector refuses to start with an `http://` STS URL without it) |
 | `PORTITOR_STS_CLIENT_SECRET_FILE` | **required**: the same secret file as the identity's |
 | `PORTITOR_STS_CLIENT_ID` | leave the default, `PORTITOR_PARTICIPANT_ID` |
 | `PORTITOR_TRUSTED_ISSUERS` | **required**: DIDs trusted to issue `MembershipCredential` |
@@ -237,7 +239,7 @@ and to check partners' credentials:
 
 | Port | Serves | Reached by | Expose |
 |---|---|---|---|
-| 8090 | DID document, credential service (presentation and Storage API), STS | partners and issuers (DID document, credential service); your connector (STS) | through your HTTPS reverse proxy |
+| 8090 | DID document, credential service (presentation and Storage API), STS | partners and issuers (DID document, credential service); your connector (STS) | through your HTTPS reverse proxy, except `/sts/token`: your connector reaches it on the internal network |
 | 8091 | management API | your operators only | **never publicly**: host loopback or an internal network, never the public proxy |
 
 ### Run

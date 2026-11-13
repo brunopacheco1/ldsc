@@ -210,6 +210,7 @@ async fn dataspace() -> Dataspace {
     let settings = AuthSettings {
         participant_id: me.did.clone(),
         sts_url: String::new(),
+        sts_allow_http: false,
         sts_client_id: String::new(),
         sts_client_secret: String::new(),
         trusted_issuers: vec![issuer.did.clone()],
@@ -896,6 +897,7 @@ async fn our_identity_must_match_the_sts() {
     let settings = AuthSettings {
         participant_id: ds.me_did.clone(),
         sts_url: String::new(),
+        sts_allow_http: false,
         sts_client_id: String::new(),
         sts_client_secret: String::new(),
         trusted_issuers: Vec::new(),

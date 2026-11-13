@@ -150,6 +150,10 @@ pub struct AuthSettings {
     pub participant_id: String,
     /// Our STS token endpoint (`PORTITOR_STS_URL`).
     pub sts_url: String,
+    /// Allow a plain-HTTP `sts_url`, and only that URL
+    /// (`PORTITOR_STS_ALLOW_HTTP`): the STS on an internal network, next
+    /// to the connector.
+    pub sts_allow_http: bool,
     /// Our STS client id (`PORTITOR_STS_CLIENT_ID`, default the
     /// participant id).
     pub sts_client_id: String,
@@ -172,6 +176,7 @@ impl std::fmt::Debug for AuthSettings {
         f.debug_struct("AuthSettings")
             .field("participant_id", &self.participant_id)
             .field("sts_url", &self.sts_url)
+            .field("sts_allow_http", &self.sts_allow_http)
             .field("sts_client_id", &self.sts_client_id)
             .field("trusted_issuers", &self.trusted_issuers)
             .field("scopes", &self.scopes)
@@ -197,8 +202,9 @@ impl AuthSettings {
     ///
     /// # Errors
     ///
-    /// The secret file cannot be read or is empty, no trusted issuer is
-    /// set, or a scope is empty.
+    /// The STS URL is plain HTTP without `PORTITOR_STS_ALLOW_HTTP`, the
+    /// secret file cannot be read or is empty, no trusted issuer is set,
+    /// or a scope is empty.
     pub fn from_vars(
         participant_id: &str,
         allow_http: bool,
@@ -208,6 +214,16 @@ impl AuthSettings {
         let Some(sts_url) = text("PORTITOR_STS_URL").filter(|url| !url.is_empty()) else {
             return Ok(None);
         };
+        let sts_allow_http =
+            text("PORTITOR_STS_ALLOW_HTTP").is_some_and(|v| v.eq_ignore_ascii_case("true"));
+        let plain_http = sts_url
+            .get(..7)
+            .is_some_and(|scheme| scheme.eq_ignore_ascii_case("http://"));
+        if plain_http && !sts_allow_http && !allow_http {
+            return Err(format!(
+                "PORTITOR_STS_URL {sts_url} is plain HTTP: set PORTITOR_STS_ALLOW_HTTP=true if the STS is on an internal network"
+            ));
+        }
         let secret_file = text("PORTITOR_STS_CLIENT_SECRET_FILE")
             .ok_or("PORTITOR_STS_CLIENT_SECRET_FILE is required with PORTITOR_STS_URL")?;
         let sts_client_secret = std::fs::read_to_string(&secret_file)
@@ -231,6 +247,7 @@ impl AuthSettings {
         Ok(Some(Self {
             participant_id: participant_id.to_owned(),
             sts_url,
+            sts_allow_http,
             sts_client_id: text("PORTITOR_STS_CLIENT_ID")
                 .filter(|id| !id.is_empty())
                 .unwrap_or_else(|| participant_id.to_owned()),
@@ -333,6 +350,21 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!((s.sts_client_id.as_str(), s.scopes.len()), ("client", 2));
+        assert!(!s.sts_allow_http);
+        // a plain-HTTP STS needs PORTITOR_STS_ALLOW_HTTP (or the test flag)
+        let internal = [
+            ("PORTITOR_STS_URL", "http://identity:8090/sts/token"),
+            ("PORTITOR_STS_CLIENT_SECRET_FILE", secret.as_str()),
+            ("PORTITOR_TRUSTED_ISSUERS", "did:web:a"),
+        ];
+        let err = AuthSettings::from_vars(me, false, vars(&internal)).unwrap_err();
+        assert!(err.contains("PORTITOR_STS_ALLOW_HTTP"), "{err}");
+        let mut allowed = internal.to_vec();
+        allowed.push(("PORTITOR_STS_ALLOW_HTTP", "true"));
+        let s = AuthSettings::from_vars(me, false, vars(&allowed))
+            .unwrap()
+            .unwrap();
+        assert!(s.sts_allow_http && !s.allow_http);
         for missing in [
             vec![
                 ("PORTITOR_STS_URL", "u"),
