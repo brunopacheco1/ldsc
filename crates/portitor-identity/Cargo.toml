@@ -40,11 +40,5 @@ name = "test-issuer"
 path = "examples/test-issuer/main.rs"
 test = true
 
-[features]
-# Test settings for the DCP TCK. Test builds only; the release image is
-# built without it. Nothing needs it yet: the TCK runs against the normal
-# build (see .github/workflows/tck.yml).
-tck = []
-
 [lints]
 workspace = true
