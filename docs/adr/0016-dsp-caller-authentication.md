@@ -6,7 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # ADR 0016: DSP caller authentication with DCP
 
-- Status: **Proposed** (2026-11-13)
+- Status: **Accepted** (2026-11-13, by the maintainer)
 - Date: 2026-11-13
 - Scope: release 0.5. Closes the known gap "no DSP caller authentication"
   open since 0.3. Builds on ADR 0013 (agreement identity check) and

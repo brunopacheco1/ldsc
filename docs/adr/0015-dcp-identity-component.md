@@ -6,7 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # ADR 0015: DCP identity component (`portitor-identity`)
 
-- Status: **Proposed** (2026-11-13)
+- Status: **Accepted** (2026-11-13, by the maintainer)
 - Date: 2026-11-13
 - Scope: release 0.5. Builds on ADR 0003 (three images; the identity
   image ships in 0.5) and ADR 0004 (hexagonal architecture).
