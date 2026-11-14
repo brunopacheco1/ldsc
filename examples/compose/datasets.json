@@ -84,5 +84,36 @@
         "format": "HttpData-PULL"
       }
     ]
+  },
+  {
+    "@id": "processing-records",
+    "portitor:source": "http://data/air-quality.csv",
+    "@type": "Dataset",
+    "dct:title": "Processing records",
+    "dct:description": "Air-quality readings for data processors in the EU: the offer checks a claim of a second credential type, DataProcessorCredential (ADR 0019).",
+    "hasPolicy": [
+      {
+        "@id": "processing-records:offer:eu-processors",
+        "@type": "Offer",
+        "permission": [
+          {
+            "action": "use",
+            "constraint": [
+              {
+                "leftOperand": "DataProcessorCredential.processing",
+                "operator": "eq",
+                "rightOperand": "eu"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "distribution": [
+      {
+        "@type": "Distribution",
+        "format": "HttpData-PULL"
+      }
+    ]
   }
 ]

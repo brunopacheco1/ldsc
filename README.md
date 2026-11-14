@@ -231,22 +231,24 @@ validate them yet. See
 [examples/datasets.json](examples/datasets.json).
 
 To see two participants agree a contract and transfer a file, run the demo
-in Docker Compose (needs Docker, `curl`, `jq`, `openssl` and Rust, to build
-the demo authority):
+in Docker Compose (needs Docker, `curl`, `jq` and `openssl`):
 
 ```sh
 scripts/demo-compose.sh
 ```
 
-It starts a provider and a consumer, each a connector with its identity
-component, a small web server that holds the provider's data and the site
-of a test-only demo authority ([examples/compose](examples/compose)). The
-authority delivers each identity a `MembershipCredential`. Then it checks
-that the provider refuses a catalog request without a DCP token, reads the
-catalog with a token from the consumer's STS, agrees a contract, checks
-that changed terms are refused, transfers
+It starts the data space's issuer (`portitor-issuer`), a provider and a
+consumer, each a connector with its identity component, and a small web
+server that holds the provider's data ([examples/compose](examples/compose)).
+The issuer registers both participants, and each identity asks it for its
+credentials. Then it checks that the provider refuses a catalog request
+without a DCP token, reads the catalog with a token from the consumer's
+STS, agrees a contract, checks that changed terms are refused, checks
+offers that ask for credential claims, transfers
 [examples/data/air-quality.csv](examples/data/air-quality.csv), fetches it
-with the token and completes the transfer. It stops everything at the end;
+with the token and completes the transfer; last, once the issuer revokes
+the consumer's `DataProcessorCredential`, a new transfer that needs it is
+refused. It stops everything at the end;
 `KEEP=1` leaves it running. `scripts/demo.sh` does the same without Docker
 (needs Python 3 as well).
 

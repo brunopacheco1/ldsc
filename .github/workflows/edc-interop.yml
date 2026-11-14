@@ -3,9 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # The EDC interop test (docs/TESTING.md): Portitor (connector and identity)
-# against EDC v1.0.0-RC7 (control plane, data plane, IdentityHub), with
-# credentials from the test-only demo authority. Catalog, negotiation and
-# pull transfer both ways, then revocation both ways. The EDC runtimes are
+# against EDC v1.0.0-RC7 (control plane, data plane, IdentityHub); both
+# ask portitor-issuer for their MembershipCredential. Catalog, negotiation
+# and pull transfer both ways, then revocation both ways. The EDC runtimes are
 # built from Maven Central (interop/edc/runtimes); there are no EDC images.
 name: EDC interop
 on:
@@ -43,16 +43,15 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Build the Portitor images (as CI does)
         run: |
-          cargo build --release --locked --target x86_64-unknown-linux-musl -p portitor-connector -p portitor-identity
+          cargo build --release --locked --target x86_64-unknown-linux-musl -p portitor-connector -p portitor-identity \
+            -p portitor-issuer
           mkdir -p dist/amd64
-          cp target/x86_64-unknown-linux-musl/release/portitor-{connector,identity} dist/amd64/
+          cp target/x86_64-unknown-linux-musl/release/portitor-{connector,identity,issuer} dist/amd64/
           docker build --target portitor-connector -t portitor-connector:ci .
           docker build --target portitor-identity -t portitor-identity:ci .
-      - name: Build the demo authority (test-issuer example, test-only)
-        run: cargo build --locked -p portitor-identity --example test-issuer
+          docker build --target portitor-issuer -t portitor-issuer:ci .
       - name: Run the interop test
         env:
-          TEST_ISSUER: target/debug/examples/test-issuer
           LOGS: edc-interop.log
         run: scripts/edc-interop.sh
       - name: Keep the container logs

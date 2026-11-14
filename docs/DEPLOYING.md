@@ -367,7 +367,10 @@ issuer must be in `PORTITOR_TRUSTED_ISSUERS`, or nothing is sent.
 3. Follow it: `GET /v1/credential-requests/{holderPid}` shows the local
    state (`REQUESTED`, then `ISSUED` or `REJECTED`) and the issuer's
    status, read from the `statusUrl` (DCP 6.8). `GET
-   /v1/credential-requests` lists all requests.
+   /v1/credential-requests` lists all requests. An issuer such as
+   `portitor-issuer` decides and delivers in the background, so the
+   request stays `REQUESTED` for a moment: poll until it is `ISSUED`
+   (`request_credentials` in `scripts/participants.sh` does).
 
 The issuer then sends its `CredentialMessage` with that `holderPid` to
 `<credential service>/credentials`. The component checks the issuer's
@@ -388,7 +391,7 @@ offered: `POST /v1/offers/request` with `{"issuerDid": "..."}` (and
 `credentialIds` to ask for only some).
 
 **Issuers asked out of band.** For an issuer that is asked some other
-way (the DCP TCK, a test tool), leave `credentialIds` out: the request is
+way (for example the DCP TCK), leave `credentialIds` out: the request is
 only recorded, so the Storage API accepts that issuer's delivery for the
 `holderPid` you give, without an access token:
 

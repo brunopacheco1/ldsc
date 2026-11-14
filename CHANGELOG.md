@@ -39,8 +39,7 @@ versions may change behaviour and configuration.
   is described in `docs/api/issuer-openapi.json`.
 - `portitor-dcp`: `issuance` signs credentials of any type and claims in
   both profiles, status list credentials and the delivery token (moved
-  from the `test-issuer` example, which stays until the demos use the
-  issuer).
+  from the `test-issuer` example).
 - `portitor-runtime`: `caller` checks a DCP caller's self-issued token at
   the HTTP edge, shared by the identity component and the issuer.
 - DCP TCK v1.2.1 issuer tests (41) in the `TCK` workflow against
@@ -73,6 +72,12 @@ versions may change behaviour and configuration.
 - Spike report `docs/spikes/0.6-shacl-engine.md` on the SHACL engine for
   ADR 0005 (rudof, an own SHACL Core subset, or a JVM sidecar), and its
   result in ADR 0005, which stays proposed.
+- Demos with a second credential type (ADR 0019): `scripts/demo.sh` and
+  the Compose demo issue the consumer a `DataProcessorCredential`, its
+  `processing-records` offer checks it, and once the issuer revokes it a
+  new transfer request is refused. The demo credential definitions are
+  in `examples/issuer-credentials.json` (claims `memberOf`, `role`,
+  `processing`).
 - `portitor-issuer`: new crate for the issuer component (work in
   progress).
 - Credential constraints in ODRL policies (ADR 0019): an offer may
@@ -124,6 +129,26 @@ versions may change behaviour and configuration.
 - As consumer, the connector does not accept a provider's offer (DSP
   `OFFERED`) that has credential constraints: it cannot check its own
   credentials as the provider will.
+- The demos (`scripts/demo.sh`, the Compose demo), `scripts/measure.sh`,
+  `scripts/dev-identities.sh` and the EDC interop test run
+  `portitor-issuer` as the data space's authority: it registers the
+  participants, each identity asks it for its credentials through its own
+  management API, and revocation is `POST /v1/credentials/{id}/revoke`.
+  EDC IdentityHub v1.0.0-RC7 asks it through its own Identity API
+  (`.../credentials/request`). `scripts/demo.sh` and `scripts/measure.sh`
+  take the issuer binary as a third argument (default: next to the
+  connector), `scripts/demo-compose.sh` the issuer image
+  (`PORTITOR_ISSUER_IMAGE`); `TEST_ISSUER` is gone. `scripts/measure.sh`
+  reports the issuer's binary size and memory. The Compose demo's default
+  images are 0.6.0.
+- The EDC interop test signs the IdentityHub's Identity API tokens itself
+  (a test-only RSA key per run, `openssl`), served by a small web server.
+
+### Removed
+
+- The test-only `test-issuer` example of `portitor-identity`, its
+  fixture key and its dev-dependencies (`hyper`, `http-body-util`)
+  (ADR 0018).
 
 ### Fixed
 

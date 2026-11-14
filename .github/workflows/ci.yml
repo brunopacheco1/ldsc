@@ -55,14 +55,11 @@ jobs:
           cargo build --release --locked --target x86_64-unknown-linux-musl -p portitor-connector -p portitor-identity \
             -p portitor-issuer
           echo "release build seconds (with cache): $(( $(date +%s) - start ))" >> "$GITHUB_STEP_SUMMARY"
-      - name: Build the demo authority (test-issuer example, test-only)
-        run: cargo build --locked -p portitor-identity --example test-issuer
-      - name: Two participants agree a contract and transfer a file
-        env:
-          TEST_ISSUER: target/debug/examples/test-issuer
+      - name: Two participants get their credentials from the issuer, agree contracts and transfer a file
         run: |
           scripts/demo.sh target/x86_64-unknown-linux-musl/release/portitor-connector \
-            target/x86_64-unknown-linux-musl/release/portitor-identity
+            target/x86_64-unknown-linux-musl/release/portitor-identity \
+            target/x86_64-unknown-linux-musl/release/portitor-issuer
       - name: Build images
         run: |
           mkdir -p dist/amd64
@@ -118,9 +115,7 @@ jobs:
           fi
           cat issuer-smoke.log
       - name: The same in Docker Compose
-        env:
-          TEST_ISSUER: target/debug/examples/test-issuer
-        run: scripts/demo-compose.sh portitor-connector:ci portitor-identity:ci
+        run: scripts/demo-compose.sh portitor-connector:ci portitor-identity:ci portitor-issuer:ci
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: portitor-musl
