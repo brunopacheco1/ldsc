@@ -21,6 +21,21 @@
 //!    `assertionMethod` key, valid now, not revoked or suspended).
 //! 5. Require one `MembershipCredential` from a trusted issuer.
 //!
+//! DCP v1.0.1 section 5.4.3 ("Presentation Validation"), step 8: "If any
+//! of the steps fail, the Verifier MUST consider the Verifiable
+//! Presentation invalid". So one credential that fails its checks
+//! (signature, validity, revocation or suspension, holder binding) makes
+//! its presentation invalid, and the caller is refused, even when a valid
+//! `MembershipCredential` sits next to it. The failing credential is
+//! logged (`credential refused`, with its issuer, types and reason). A
+//! holder whose credential was revoked and reissued must delete the
+//! revoked one from its identity (DEPLOYING).
+//!
+//! The verified credentials go with the caller to the handler. When an
+//! offer or agreement has credential constraints (ADR 0019), the handler
+//! asks for more scopes with [`CallerVerifier::credentials`]: steps 3 and 4
+//! again, with the access token the caller sent.
+//!
 //! Every fetch (DID documents, the Credential Service, status lists) goes
 //! through the shared HTTP client: HTTPS only unless allowed for tests,
 //! time and size limits, no redirects.
@@ -38,8 +53,10 @@ use std::time::Duration;
 
 use portitor_dcp::credential::{Credential, Presentation};
 use portitor_dcp::message::{PresentationQueryMessage, PresentationResponseMessage};
+use portitor_dcp::scope::merge_scopes;
 use portitor_dcp::status_list::{self, Status, StatusEntry};
 use portitor_dcp::{Claims, DidDocument, JtiCache, unverified_claims, validate_self_issued};
+use portitor_dsp::policy::HeldCredential;
 use portitor_runtime::BoxFuture;
 use portitor_runtime::did::{DEFAULT_TTL, DidWebResolver};
 use portitor_runtime::http::{HttpSender, Sender as _, bearer_token};
@@ -58,7 +75,7 @@ const LEEWAY: u64 = 60;
 const MAX_STATUS_LIST: usize = 2 * 1024 * 1024;
 
 /// The credential type every caller must hold (ADR 0016).
-pub const MEMBERSHIP: &str = "MembershipCredential";
+pub const MEMBERSHIP: &str = portitor_dsp::policy::MEMBERSHIP;
 
 /// The most presentations read from one Credential Service answer. A
 /// Credential Service sends one per profile (DCP "Homogeneity
@@ -188,10 +205,20 @@ impl DcpVerifier {
 
     /// The whole check, cut off after [`DEADLINE`].
     async fn check(&self, authorization: Option<&str>) -> Result<Caller, String> {
-        match tokio::time::timeout(self.deadline, self.check_steps(authorization)).await {
+        self.within_deadline("checking the caller", self.check_steps(authorization))
+            .await
+    }
+
+    /// `work`, cut off after [`DEADLINE`].
+    async fn within_deadline<T>(
+        &self,
+        what: &str,
+        work: impl Future<Output = Result<T, String>>,
+    ) -> Result<T, String> {
+        match tokio::time::timeout(self.deadline, work).await {
             Ok(result) => result,
             Err(_) => Err(format!(
-                "checking the caller took longer than {} s",
+                "{what} took longer than {} s",
                 self.deadline.as_secs_f32()
             )),
         }
@@ -202,10 +229,40 @@ impl DcpVerifier {
         let token = bearer(authorization)?;
         let checked = self.check_token(token).await?;
         let caller = checked.doc.id.clone();
-        let presentations = self.query(&checked).await?;
-        self.check_presentations(&caller, &checked.doc, &presentations)
+        let presentations = self.query(&checked, &self.scopes).await?;
+        let credentials = self
+            .check_presentations(&caller, &checked.doc, &presentations)
             .await?;
-        Ok(Caller(caller))
+        let is_member = credentials
+            .iter()
+            .any(|credential| credential.has_type(MEMBERSHIP));
+        if !is_member {
+            return Err(format!("no {MEMBERSHIP} from a trusted issuer"));
+        }
+        Ok(Caller {
+            id: caller,
+            credentials,
+            access_token: Some(checked.access_token),
+        })
+    }
+
+    /// Steps 3 and 4 again, for the configured scopes and `extra` (ADR
+    /// 0019), with the access token `caller` sent.
+    async fn more_credentials(
+        &self,
+        caller: &Caller,
+        extra: &[String],
+    ) -> Result<Vec<HeldCredential>, String> {
+        let access_token = caller
+            .access_token
+            .clone()
+            .ok_or("the caller sent no access token")?;
+        let doc = self.resolver.resolve(&caller.id).await?;
+        let checked = CheckedToken { doc, access_token };
+        let scopes = merge_scopes(&self.scopes, extra);
+        let presentations = self.query(&checked, &scopes).await?;
+        self.check_presentations(&caller.id, &checked.doc, &presentations)
+            .await
     }
 
     /// Step 2: the caller's self-issued ID token.
@@ -240,9 +297,13 @@ impl DcpVerifier {
         validate_self_issued(token, doc, &self.participant_id, now, LEEWAY, &mut used)
     }
 
-    /// Step 3: asks the caller's Credential Service for presentations.
-    /// Returns them as JWTs.
-    async fn query(&self, checked: &CheckedToken) -> Result<Vec<String>, String> {
+    /// Step 3: asks the caller's Credential Service for presentations of
+    /// `scopes`. Returns them as JWTs.
+    async fn query(
+        &self,
+        checked: &CheckedToken,
+        scopes: &[String],
+    ) -> Result<Vec<String>, String> {
         let service = checked
             .doc
             .credential_service()
@@ -255,7 +316,7 @@ impl DcpVerifier {
             access_token: Some(&checked.access_token),
         };
         let our_token = self.sts.token(request).await?;
-        let query = PresentationQueryMessage::for_scopes(self.scopes.clone());
+        let query = PresentationQueryMessage::for_scopes(scopes.to_vec());
         let body = serde_json::to_value(&query).map_err(|e| e.to_string())?;
         let answer = self
             .http
@@ -265,16 +326,18 @@ impl DcpVerifier {
         presentation_jwts(answer)
     }
 
-    /// Steps 4 and 5. Only credentials from trusted issuers are checked
-    /// (and count); the others are skipped.
+    /// Step 4. Only credentials from trusted issuers are checked (and
+    /// returned); the others are skipped. A presentation that fails its
+    /// checks, or holds a credential that fails its own, refuses the
+    /// caller (DCP 5.4.3, step 8; module doc).
     async fn check_presentations(
         &self,
         caller: &str,
         holder: &DidDocument,
         jwts: &[String],
-    ) -> Result<(), String> {
+    ) -> Result<Vec<HeldCredential>, String> {
         let now = now_secs();
-        let mut member = false;
+        let mut verified = Vec::new();
         for jwt in jwts {
             let presentation =
                 Presentation::parse(jwt).map_err(|e| format!("presentation: {e}"))?;
@@ -296,35 +359,45 @@ impl DcpVerifier {
                     tracing::debug!(issuer = %credential.issuer, "credential from an untrusted issuer skipped");
                     continue;
                 }
-                self.check_credential(credential, caller, now).await?;
-                if credential.has_type(MEMBERSHIP) {
-                    member = true;
+                // holder binding (DCP 5.4.3) and the fetch limit
+                if !credential.is_only_about(caller) {
+                    return Err(
+                        "a credential is not about the caller (credentialSubject.id)".to_owned(),
+                    );
                 }
+                if credential.status.len() > MAX_STATUS_ENTRIES {
+                    return Err(format!(
+                        "a credential has more than {MAX_STATUS_ENTRIES} status entries"
+                    ));
+                }
+                if let Err(reason) = self.check_credential(credential, now).await {
+                    // DCP 5.4.3, step 8: the whole presentation is
+                    // invalid; the log names the credential that failed
+                    tracing::info!(
+                        %caller,
+                        issuer = %credential.issuer,
+                        types = ?credential.types,
+                        %reason,
+                        "credential refused"
+                    );
+                    return Err(format!(
+                        "a {} credential fails its checks, so its presentation is invalid: {reason}",
+                        credential_types(credential)
+                    ));
+                }
+                verified.push(HeldCredential {
+                    types: credential.types.clone(),
+                    subjects: credential.subjects.clone(),
+                });
             }
         }
-        if member {
-            Ok(())
-        } else {
-            Err(format!("no {MEMBERSHIP} from a trusted issuer"))
-        }
+        Ok(verified)
     }
 
-    /// One credential: about the caller, signed by its issuer, valid now,
-    /// not revoked or suspended.
-    async fn check_credential(
-        &self,
-        credential: &Credential,
-        caller: &str,
-        now: u64,
-    ) -> Result<(), String> {
-        if !credential.is_only_about(caller) {
-            return Err("a credential is not about the caller (credentialSubject.id)".to_owned());
-        }
-        if credential.status.len() > MAX_STATUS_ENTRIES {
-            return Err(format!(
-                "a credential has more than {MAX_STATUS_ENTRIES} status entries"
-            ));
-        }
+    /// One credential about the caller (checked before): signed by its
+    /// issuer, valid now, not revoked or suspended. The error says why
+    /// not.
+    async fn check_credential(&self, credential: &Credential, now: u64) -> Result<(), String> {
         let issuer = self.resolver.resolve(&credential.issuer).await?;
         credential
             .verify(&issuer, now, LEEWAY)
@@ -377,6 +450,40 @@ impl CallerVerifier for DcpVerifier {
         authorization: Option<&'a str>,
     ) -> BoxFuture<'a, Result<Caller, String>> {
         Box::pin(self.check(authorization))
+    }
+
+    fn credentials<'a>(
+        &'a self,
+        caller: &'a Caller,
+        scopes: &'a [String],
+    ) -> BoxFuture<'a, Result<Vec<HeldCredential>, String>> {
+        Box::pin(async move {
+            // the first query asked for the configured scopes already
+            if scopes.iter().all(|scope| self.scopes.contains(scope)) {
+                return Ok(caller.credentials.clone());
+            }
+            self.within_deadline(
+                "asking the caller for more credentials",
+                self.more_credentials(caller, scopes),
+            )
+            .await
+        })
+    }
+}
+
+/// A credential's types for a message, without the base type
+/// `VerifiableCredential` (every credential has it).
+fn credential_types(credential: &Credential) -> String {
+    let mut names = Vec::new();
+    for credential_type in &credential.types {
+        if credential_type != "VerifiableCredential" {
+            names.push(credential_type.as_str());
+        }
+    }
+    if names.is_empty() {
+        "VerifiableCredential".to_owned()
+    } else {
+        names.join("/")
     }
 }
 

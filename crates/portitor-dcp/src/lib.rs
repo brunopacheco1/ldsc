@@ -6,7 +6,8 @@
 //! (`id_token.rs`), did:web and DID documents (`did.rs`), JWS
 //! verification (`jws.rs`) and keys (`keys.rs`), credentials and
 //! presentations ([`credential`]), the DCP messages ([`message`]),
-//! scopes ([`scope`]) and status list checks ([`status_list`]).
+//! scopes ([`scope`]), status list checks ([`status_list`]), and what a
+//! holder ([`holder`]) and an issuer ([`issuance`]) sign.
 //!
 //! Only `ES256` and `PS256` are accepted. Any other `alg`, including
 //! `none`, is rejected before a key is even looked up.
@@ -20,6 +21,7 @@ mod did;
 mod gzip;
 pub mod holder;
 mod id_token;
+pub mod issuance;
 mod jws;
 mod keys;
 pub mod message;
@@ -32,7 +34,7 @@ pub use id_token::{
     validate_self_issued,
 };
 pub use jws::{Alg, Jws};
-pub use keys::{Jwk, SigningKey};
+pub use keys::{Jwk, Signer, SigningKey};
 
 /// Errors from token creation or validation.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

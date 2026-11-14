@@ -1,0 +1,265 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Portitor issuer",
+    "description": "The public HTTP interface of portitor-issuer (ADR 0018): the issuer's did:web DID document, the DCP v1.0.1 issuer service (metadata, credential request, request status) and the Bitstring Status List credentials. Message bodies follow the DCP v1.0.1 JSON Schemas (copies in crates/portitor-dcp/tests/schemas, linked from each operation). Issued credentials are delivered to the holder's Storage API, not answered here. The management API is described separately in issuer-management-openapi.json. Written by hand; a test checks that every operation here is served.",
+    "license": {
+      "name": "Apache-2.0",
+      "identifier": "Apache-2.0"
+    },
+    "version": "0.6.0"
+  },
+  "externalDocs": {
+    "description": "Decentralized Claims Protocol v1.0.1",
+    "url": "https://github.com/eclipse-dataspace-dcp/decentralized-claims-protocol/tree/v1.0.1"
+  },
+  "servers": [
+    {
+      "url": "https://authority.example",
+      "description": "The issuer's public address (PORTITOR_BIND behind HTTPS)"
+    }
+  ],
+  "paths": {
+    "/.well-known/did.json": {
+      "get": {
+        "summary": "The issuer's DID document (did:web)",
+        "description": "Served at the path the did:web method gives for PORTITOR_PARTICIPANT_ID: /.well-known/did.json for a DID without a path, /<path>/did.json otherwise. One P-256 verification method (assertionMethod, capabilityInvocation) and the IssuerService entry (PORTITOR_ISSUER_SERVICE_URL).",
+        "operationId": "didDocument",
+        "responses": {
+          "200": {
+            "description": "The DID document",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "id",
+                    "verificationMethod",
+                    "service"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metadata": {
+      "servers": [
+        {
+          "url": "{issuerService}",
+          "variables": {
+            "issuerService": {
+              "default": "https://authority.example/issuer",
+              "description": "PORTITOR_ISSUER_SERVICE_URL"
+            }
+          }
+        }
+      ],
+      "get": {
+        "summary": "Issuer Metadata API (DCP 6.7)",
+        "description": "One CredentialObject per credential definition (PORTITOR_ISSUER_CREDENTIALS_FILE); its id is the definition's, stable across restarts. Open to anyone.",
+        "operationId": "issuerMetadata",
+        "responses": {
+          "200": {
+            "description": "IssuerMetadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "IssuerMetadata",
+                  "externalDocs": {
+                    "url": "https://github.com/brunopacheco1/portitor/blob/main/crates/portitor-dcp/tests/schemas/issuer-metadata-schema.json"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/credentials": {
+      "servers": [
+        {
+          "url": "{issuerService}",
+          "variables": {
+            "issuerService": {
+              "default": "https://authority.example/issuer",
+              "description": "PORTITOR_ISSUER_SERVICE_URL"
+            }
+          }
+        }
+      ],
+      "post": {
+        "summary": "Credential Request API: a holder asks for credentials (DCP 6.4)",
+        "description": "Only registered participants may call; anyone else gets 401, and nothing is recorded. The request is recorded RECEIVED and decided in the background: ISSUED if every id is in the metadata, the holder stays within the limit of active credentials per definition (PORTITOR_ISSUER_MAX_ACTIVE_PER_HOLDER) and the status list has room, REJECTED otherwise. Issued credentials go, in one CredentialMessage, to the holder's Storage API (the CredentialService of its DID document), with a self-issued ID token of the issuer whose token claim carries back the access token of the request's token. A rejection is not delivered; the holder reads the request status.",
+        "operationId": "credentialRequest",
+        "security": [
+          {
+            "selfIssuedIdToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "description": "CredentialRequestMessage",
+                "externalDocs": {
+                  "url": "https://github.com/brunopacheco1/portitor/blob/main/crates/portitor-dcp/tests/schemas/credential-request-message-schema.json"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Received",
+            "headers": {
+              "Location": {
+                "description": "The absolute URL of the request status, <issuerService>/requests/<issuerPid>",
+                "schema": {
+                  "type": "string",
+                  "format": "uri"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not a valid CredentialRequestMessage, an empty holderPid or an empty credentials array"
+          },
+          "401": {
+            "description": "The caller was refused: not a registered participant, or its token is not valid"
+          },
+          "409": {
+            "description": "This holder made a request with this holderPid before; nothing is issued again"
+          }
+        }
+      }
+    },
+    "/requests/{issuerPid}": {
+      "servers": [
+        {
+          "url": "{issuerService}",
+          "variables": {
+            "issuerService": {
+              "default": "https://authority.example/issuer",
+              "description": "PORTITOR_ISSUER_SERVICE_URL"
+            }
+          }
+        }
+      ],
+      "get": {
+        "summary": "Credential Request Status API (DCP 6.8)",
+        "description": "Only the holder that made the request may read it; another registered participant gets 404, as for an unknown id, and a caller that is not registered gets 401. The status is RECEIVED, then ISSUED or REJECTED, and never changes after that.",
+        "operationId": "requestStatus",
+        "security": [
+          {
+            "selfIssuedIdToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "issuerPid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The last part of the Location of the request"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "CredentialStatus",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "CredentialStatus",
+                  "externalDocs": {
+                    "url": "https://github.com/brunopacheco1/portitor/blob/main/crates/portitor-dcp/tests/schemas/credential-status-schema.json"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The caller was refused: not a registered participant, or its token is not valid"
+          },
+          "404": {
+            "description": "No such request for this caller"
+          }
+        }
+      }
+    },
+    "/status-lists/{name}": {
+      "servers": [
+        {
+          "url": "{issuerService}",
+          "variables": {
+            "issuerService": {
+              "default": "https://authority.example/issuer",
+              "description": "PORTITOR_ISSUER_SERVICE_URL"
+            }
+          }
+        }
+      ],
+      "get": {
+        "summary": "A status list credential (W3C Bitstring Status List v1.0)",
+        "description": "vc11 for the credentials of profile vc11-sl2021/jwt, vc20 for vc20-bssl/jwt. A BitstringStatusListCredential (VC Data Model 2.0, signed JWT) of 131,072 entries, purpose revocation, signed again after each revocation.",
+        "operationId": "statusList",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "enum": [
+                "vc11",
+                "vc20"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The signed status list credential",
+            "content": {
+              "application/vc+jwt": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such list"
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Liveness",
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "text/plain": {}
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "selfIssuedIdToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "A self-issued ID token of the holder (DCP base protocol, section 4.3), aud the issuer's DID, checked against the holder's DID document"
+      }
+    }
+  }
+}

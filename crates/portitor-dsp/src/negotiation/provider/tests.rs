@@ -78,6 +78,7 @@ impl DatasetStore for Catalog {
         let policy = match id {
             "d1" => offer(None),
             "d2" => expired,
+            "d3" => providers_only(None),
             _ => return None,
         };
         Some(Dataset {
@@ -129,6 +130,32 @@ fn offer(target: Option<&str>) -> Offer {
         obligation: vec![],
         target: target.map(str::to_owned),
         profile: None,
+    }
+}
+
+/// d3's offer: only for callers whose membership says role `provider`
+/// (ADR 0019).
+fn providers_only(target: Option<&str>) -> Offer {
+    let mut offer = offer(target);
+    offer.permission[0].constraint = vec![
+        serde_json::from_value(
+            serde_json::json!({"leftOperand": "MembershipCredential.role",
+            "operator": "eq", "rightOperand": "provider"}),
+        )
+        .unwrap(),
+    ];
+    offer
+}
+
+/// A caller whose membership says role `role`.
+fn member_with_role(role: &str) -> CallerCredentials {
+    let subject = serde_json::json!({"id": "c", "role": role});
+    CallerCredentials {
+        understood: crate::policy::CredentialTypes::default(),
+        held: vec![crate::policy::HeldCredential {
+            types: vec!["MembershipCredential".to_owned()],
+            subjects: vec![subject.as_object().unwrap().clone()],
+        }],
     }
 }
 
@@ -196,7 +223,9 @@ fn reason(f: &Failure) -> String {
 fn default_policy_agrees_and_finalizes() {
     let store = Store::default();
     let p = service(&store, AgreeToCatalogOffers);
-    let (ack, out) = p.request(None, request(None), "did:web:consumer").unwrap();
+    let (ack, out) = p
+        .request(None, request(None), "did:web:consumer", &none())
+        .unwrap();
     assert_eq!(ack.state, NegotiationState::Requested);
     let pid = ack.provider_pid.clone();
     let out = out.unwrap();
@@ -243,20 +272,22 @@ fn offer_accept_agree() {
         (NegotiationState::Accepted, Decision::Agree),
     ]));
     let p = service(&store, script);
-    let (ack, out) = p.request(None, request(None), "c").unwrap();
+    let (ack, out) = p.request(None, request(None), "c", &none()).unwrap();
     let pid = ack.provider_pid;
     let out = out.unwrap();
     assert_eq!(out.transition, Transition::Offer);
     assert_eq!(out.body["@type"], "ContractOfferMessage");
     assert_eq!(p.delivered(&out).unwrap(), None);
     let (ack, out) = p
-        .event(&pid, &event(&pid, NegotiationEvent::Accepted), "c")
+        .event(&pid, &event(&pid, NegotiationEvent::Accepted), "c", &none())
         .unwrap();
     assert_eq!(ack.state, NegotiationState::Accepted);
     assert_eq!(out.unwrap().transition, Transition::Agree);
 
     // counter-offer is not allowed after accepting
-    let err = p.request(Some(&pid), request(Some(&pid)), "c").unwrap_err();
+    let err = p
+        .request(Some(&pid), request(Some(&pid)), "c", &none())
+        .unwrap_err();
     assert!(reason(&err).contains("not allowed"), "{err:?}");
 }
 
@@ -268,7 +299,7 @@ fn counter_offer_and_provider_termination() {
         Decision::Terminate,
     )]));
     let p = service(&store, script);
-    let (ack, out) = p.request(None, request(None), "c").unwrap();
+    let (ack, out) = p.request(None, request(None), "c", &none()).unwrap();
     let pid = ack.provider_pid;
     let out = out.unwrap();
     assert_eq!(out.transition, Transition::Terminate);
@@ -291,12 +322,16 @@ fn consumer_counter_offer_and_termination() {
         Decision::Offer,
     )]));
     let p = service(&store, script);
-    let (ack, out) = p.request(None, request(None), "c").unwrap();
+    let (ack, out) = p.request(None, request(None), "c", &none()).unwrap();
     let pid = ack.provider_pid;
     p.delivered(&out.unwrap()).unwrap();
-    let (ack, _) = p.request(Some(&pid), request(Some(&pid)), "c").unwrap();
+    let (ack, _) = p
+        .request(Some(&pid), request(Some(&pid)), "c", &none())
+        .unwrap();
     assert_eq!(ack.state, NegotiationState::Requested);
-    let err = p.request(Some(&pid), request(Some("x")), "c").unwrap_err();
+    let err = p
+        .request(Some(&pid), request(Some("x")), "c", &none())
+        .unwrap_err();
     assert!(reason(&err).contains("does not match"), "{err:?}");
     let (ack, out) = p.terminate(&pid, &termination(&pid), "c").unwrap();
     assert_eq!(ack.state, NegotiationState::Terminated);
@@ -311,23 +346,23 @@ fn refuses_bad_requests() {
 
     let mut no_cb = request(None);
     no_cb.callback_address = None;
-    assert!(reason(&p.request(None, no_cb, "c").unwrap_err()).contains("callbackAddress"));
+    assert!(reason(&p.request(None, no_cb, "c", &none()).unwrap_err()).contains("callbackAddress"));
 
     let mut unknown = request(None);
     unknown.offer.id = "other".to_owned();
-    assert!(reason(&p.request(None, unknown, "c").unwrap_err()).contains("unknown offer"));
+    assert!(reason(&p.request(None, unknown, "c", &none()).unwrap_err()).contains("unknown offer"));
 
     let mut no_target = request(None);
     no_target.offer.target = None;
-    assert!(reason(&p.request(None, no_target, "c").unwrap_err()).contains("no target"));
+    assert!(reason(&p.request(None, no_target, "c", &none()).unwrap_err()).contains("no target"));
 
     let mut other_dataset = request(None);
     other_dataset.offer.target = Some("d7".to_owned());
-    assert!(p.request(None, other_dataset, "c").is_err());
+    assert!(p.request(None, other_dataset, "c", &none()).is_err());
 
     // unknown negotiation, and another consumer's negotiation: 404
     assert!(matches!(p.get("nope", "c"), Err(Failure::NotFound(_))));
-    let (ack, _) = p.request(None, request(None), "c").unwrap();
+    let (ack, _) = p.request(None, request(None), "c", &none()).unwrap();
     let pid = ack.provider_pid;
     assert!(matches!(p.get(&pid, "intruder"), Err(Failure::NotFound(_))));
     assert!(matches!(
@@ -341,7 +376,12 @@ fn refuses_bad_requests() {
     let err = p.verify(&pid, &verification("other"), "c").unwrap_err();
     assert!(reason(&err).contains("do not match"), "{err:?}");
     let err = p
-        .event(&pid, &event(&pid, NegotiationEvent::Finalized), "c")
+        .event(
+            &pid,
+            &event(&pid, NegotiationEvent::Finalized),
+            "c",
+            &none(),
+        )
         .unwrap_err();
     assert!(reason(&err).contains("Consumer"), "{err:?}");
 }
@@ -350,7 +390,7 @@ fn refuses_bad_requests() {
 fn concurrent_change_and_store_failure() {
     let store = Store::default();
     let p = service(&store, AgreeToCatalogOffers);
-    let (ack, out) = p.request(None, request(None), "c").unwrap();
+    let (ack, out) = p.request(None, request(None), "c", &none()).unwrap();
     let pid = ack.provider_pid.clone();
     let out = out.unwrap();
     // the consumer terminates while the agreement is on its way; the
@@ -361,7 +401,7 @@ fn concurrent_change_and_store_failure() {
     assert_eq!(n.state, NegotiationState::Terminated);
     assert_eq!((n.agreement, n.pending), (None, None));
 
-    let (ack, agree) = p.request(None, request(None), "c").unwrap();
+    let (ack, agree) = p.request(None, request(None), "c", &none()).unwrap();
     let agree = agree.unwrap();
     store.1.set(true);
     let err = p
@@ -395,7 +435,7 @@ fn concurrent_change_and_store_failure() {
 fn a_lost_write_is_read_and_tried_again() {
     let store = Store::default();
     let p = service(&store, AgreeToCatalogOffers);
-    let (ack, out) = p.request(None, request(None), "c").unwrap();
+    let (ack, out) = p.request(None, request(None), "c", &none()).unwrap();
     let pid = ack.provider_pid;
     let out = out.unwrap();
     assert_eq!(store.0.borrow()[&pid].version, 0);
@@ -417,7 +457,7 @@ fn a_lost_write_is_read_and_tried_again() {
 fn a_reply_proves_the_pending_message_arrived() {
     let store = Store::default();
     let p = service(&store, AgreeToCatalogOffers);
-    let (ack, agree) = p.request(None, request(None), "c").unwrap();
+    let (ack, agree) = p.request(None, request(None), "c", &none()).unwrap();
     let pid = ack.provider_pid;
     let agree = agree.unwrap();
     assert_eq!(agree.to, NegotiationState::Agreed);
@@ -453,7 +493,7 @@ fn proof_of_delivery_for_an_offer() {
         Decision::Offer,
     )]));
     let p = service(&store, script);
-    let (ack, out) = p.request(None, request(None), "c").unwrap();
+    let (ack, out) = p.request(None, request(None), "c", &none()).unwrap();
     let pid = ack.provider_pid;
     assert_eq!(out.unwrap().to, NegotiationState::Offered);
     let err = p.verify(&pid, &verification(&pid), "c").unwrap_err();
@@ -461,7 +501,7 @@ fn proof_of_delivery_for_an_offer() {
     let before = store.0.borrow()[&pid].clone();
     assert_eq!(before.state, NegotiationState::Requested);
     let (ack, out) = p
-        .event(&pid, &event(&pid, NegotiationEvent::Accepted), "c")
+        .event(&pid, &event(&pid, NegotiationEvent::Accepted), "c", &none())
         .unwrap();
     assert_eq!(ack.state, NegotiationState::Accepted);
     assert_eq!(out, None);
@@ -483,7 +523,7 @@ fn agrees_only_to_catalog_terms_that_hold_now() {
         ))
         .unwrap(),
     ];
-    let (_, out) = p.request(None, expired, "c").unwrap();
+    let (_, out) = p.request(None, expired, "c", &none()).unwrap();
     let out = out.unwrap();
     assert_eq!(out.transition, Transition::Terminate);
     let why = out.body["reason"][0].as_str().unwrap();
@@ -492,7 +532,7 @@ fn agrees_only_to_catalog_terms_that_hold_now() {
     // the catalog offer's id, with its constraint left out
     let mut altered = request(None);
     altered.offer.target = Some("d2".to_owned());
-    let (_, out) = p.request(None, altered, "c").unwrap();
+    let (_, out) = p.request(None, altered, "c", &none()).unwrap();
     let out = out.unwrap();
     assert_eq!(out.transition, Transition::Terminate);
     let why = out.body["reason"][0].as_str().unwrap();
@@ -513,11 +553,68 @@ fn agrees_only_to_catalog_terms_that_hold_now() {
         })
         .unwrap();
     let (ack, out) = p
-        .event("p9", &event("p9", NegotiationEvent::Accepted), "c")
+        .event("p9", &event("p9", NegotiationEvent::Accepted), "c", &none())
         .unwrap();
     assert_eq!(ack.state, NegotiationState::Accepted);
     let out = out.unwrap();
     assert_eq!(out.transition, Transition::Terminate);
     let why = out.body["reason"][0].as_str().unwrap();
     assert!(why.contains("no longer in the catalog"), "{why}");
+}
+
+/// No credentials: enough for offers without credential constraints.
+fn none() -> CallerCredentials {
+    CallerCredentials::default()
+}
+
+/// ADR 0019: a credential constraint is evaluated with the credentials the
+/// adapter verified for this request, on a request and on an acceptance.
+#[test]
+fn agrees_only_when_the_callers_credentials_meet_the_offer() {
+    let store = Store::default();
+    let p = service(&store, AgreeToCatalogOffers);
+    let mut msg = request(None);
+    msg.offer = providers_only(Some("d3"));
+
+    let (_, out) = p
+        .request(None, msg.clone(), "c", &member_with_role("provider"))
+        .unwrap();
+    assert_eq!(out.unwrap().transition, Transition::Agree);
+
+    for credentials in [member_with_role("consumer"), none()] {
+        let (_, out) = p.request(None, msg.clone(), "c", &credentials).unwrap();
+        let out = out.unwrap();
+        assert_eq!(out.transition, Transition::Terminate);
+        let why = out.body["reason"][0].as_str().unwrap();
+        assert!(why.contains("not satisfied"), "{why}");
+    }
+
+    // the provider offers first; the consumer's acceptance brings the
+    // credentials
+    let p = service(
+        &store,
+        Script(BTreeMap::from([
+            (NegotiationState::Requested, Decision::Offer),
+            (NegotiationState::Accepted, Decision::Agree),
+        ])),
+    );
+    for (role, expected) in [
+        ("provider", Transition::Agree),
+        ("consumer", Transition::Terminate),
+    ] {
+        let (ack, out) = p.request(None, msg.clone(), "c", &none()).unwrap();
+        let pid = ack.provider_pid;
+        p.delivered(&out.unwrap()).unwrap();
+        assert_eq!(p.offer_under_negotiation(&pid, "c").unwrap(), msg.offer);
+        assert!(p.offer_under_negotiation(&pid, "other").is_err());
+        let (_, out) = p
+            .event(
+                &pid,
+                &event(&pid, NegotiationEvent::Accepted),
+                "c",
+                &member_with_role(role),
+            )
+            .unwrap();
+        assert_eq!(out.unwrap().transition, expected, "{role}");
+    }
 }

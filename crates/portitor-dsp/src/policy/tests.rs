@@ -25,19 +25,28 @@ fn date_time(op: &str, right: serde_json::Value) -> serde_json::Value {
 const NOW: &str = "2026-11-12T12:00:00Z";
 
 fn holds(c: serde_json::Value) -> Result<(), PolicyError> {
-    permissions_hold(&offer(json!([c])), NOW)
+    permissions_hold(&offer(json!([c])), NOW, &CallerCredentials::default())
 }
 
 #[test]
 fn no_constraint_permits() {
-    assert_eq!(permissions_hold(&offer(json!([])), NOW), Ok(()));
+    assert_eq!(
+        permissions_hold(&offer(json!([])), NOW, &CallerCredentials::default()),
+        Ok(())
+    );
     let only_prohibition: Offer = serde_json::from_value(json!({"@id": "o", "@type": "Offer",
         "prohibition": [{"action": "distribute",
             "constraint": [{"leftOperand": "spatial", "operator": "eq", "rightOperand": "LU"}]}]}))
     .unwrap();
     // prohibitions are terms, not evaluated
-    assert_eq!(permissions_hold(&only_prohibition, NOW), Ok(()));
-    assert_eq!(validate(&only_prohibition), Ok(()));
+    assert_eq!(
+        permissions_hold(&only_prohibition, NOW, &CallerCredentials::default()),
+        Ok(())
+    );
+    assert_eq!(
+        validate(&only_prohibition, &CredentialTypes::default()),
+        Ok(())
+    );
 }
 
 #[test]
@@ -121,7 +130,7 @@ fn anything_else_fails_closed() {
             matches!(got, Err(PolicyError::Unsupported(_))),
             "{c}: {got:?}"
         );
-        assert!(validate(&offer(json!([c]))).is_err());
+        assert!(validate(&offer(json!([c])), &CredentialTypes::default()).is_err());
     }
     let bad_times = [
         "2030-01-01T00:00:00",
@@ -154,7 +163,7 @@ fn anything_else_fails_closed() {
         );
     }
     assert!(matches!(
-        permissions_hold(&offer(json!([])), "now"),
+        permissions_hold(&offer(json!([])), "now", &CallerCredentials::default()),
         Err(PolicyError::Unsupported(_))
     ));
 }
@@ -187,12 +196,25 @@ fn logical_constraints() {
     ];
     for (c, expected) in cases {
         assert_eq!(holds(c.clone()).is_ok(), expected, "{c}");
-        assert_eq!(validate(&offer(json!([c]))), Ok(()));
+        assert_eq!(
+            validate(&offer(json!([c])), &CredentialTypes::default()),
+            Ok(())
+        );
     }
     // several constraints on one rule must all hold
-    let both = permissions_hold(&offer(json!([open, closed])), NOW).unwrap_err();
+    let both = permissions_hold(
+        &offer(json!([open, closed])),
+        NOW,
+        &CallerCredentials::default(),
+    )
+    .unwrap_err();
     assert!(both.to_string().contains("not satisfied"), "{both}");
-    let l = permissions_hold(&offer(json!([{"and": [closed]}])), NOW).unwrap_err();
+    let l = permissions_hold(
+        &offer(json!([{"and": [closed]}])),
+        NOW,
+        &CallerCredentials::default(),
+    )
+    .unwrap_err();
     assert!(l.to_string().contains("logical"), "{l}");
     assert!(
         PolicyError::Unsupported("x".into())

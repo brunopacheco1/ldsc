@@ -5,38 +5,57 @@
 # Two Portitor participants and a data source, for trying Portitor out.
 # Each participant is a connector and its identity component
 # (portitor-identity). DSP requests are authenticated with DCP: the
-# caller shows a MembershipCredential from a trusted issuer, here a
-# test-only demo authority (the test-issuer example of portitor-identity).
-# Not a production setup: plain HTTP between the containers
-# (PORTITOR_ALLOW_HTTP_CALLBACKS) and a demo authority whose key is public.
+# caller shows a MembershipCredential from a trusted issuer, here the data
+# space's portitor-issuer (did:web:issuer%3A8070). Not a production setup:
+# plain HTTP between the containers (PORTITOR_ALLOW_HTTP_CALLBACKS), and
+# the issuer next to the participants.
 #
 #   scripts/demo-compose.sh
 #
-# writes the keys, secrets and the authority's site into run/, starts
-# everything, delivers each identity its credential and runs the demo
-# checks (scripts/demo-steps.sh). KEEP=1 leaves it running: then use the
-# consumer's management API on http://127.0.0.1:18091 (see the README),
-# with the key in run/consumer/management.key, and negotiate with the
-# provider at http://provider:8080/dsp/2025-1.
-# PORTITOR_IMAGE and PORTITOR_IDENTITY_IMAGE pick other images, for
-# example local builds.
+# writes the keys and secrets into run/, starts everything, registers both
+# participants at the issuer, has each identity ask it for its credentials
+# and runs the demo checks (scripts/demo-steps.sh). KEEP=1 leaves it
+# running: then use the consumer's management API on
+# http://127.0.0.1:18091 (see the README), with the key in
+# run/consumer/management.key, and negotiate with the provider at
+# http://provider:8080/dsp/2025-1. The issuer's management API is on
+# http://127.0.0.1:18071, with the key in run/issuer/management.key.
+# PORTITOR_IMAGE, PORTITOR_IDENTITY_IMAGE and PORTITOR_ISSUER_IMAGE pick
+# other images, for example local builds.
 
 name: portitor-demo
 
 # shared by both participants
 x-identity: &identity
-  image: ${PORTITOR_IDENTITY_IMAGE:-ghcr.io/brunopacheco1/portitor-identity:0.5.0}
-  depends_on: [authority]
+  image: ${PORTITOR_IDENTITY_IMAGE:-ghcr.io/brunopacheco1/portitor-identity:0.6.0}
+  depends_on: [issuer]
 x-connector: &connector
-  image: ${PORTITOR_IMAGE:-ghcr.io/brunopacheco1/portitor-connector:0.5.0}
+  image: ${PORTITOR_IMAGE:-ghcr.io/brunopacheco1/portitor-connector:0.6.0}
 
 services:
-  # The demo authority's did:web site (did:web:authority): its DID
-  # document and the status list of the credentials it issued.
-  authority:
-    image: nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
+  # The data space's authority: did:web:issuer%3A8070, its issuer service
+  # (credential requests, status lists) and its management API, where
+  # scripts/demo-compose.sh registers the participants.
+  issuer:
+    image: ${PORTITOR_ISSUER_IMAGE:-ghcr.io/brunopacheco1/portitor-issuer:0.6.0}
+    environment:
+      PORTITOR_PARTICIPANT_ID: did:web:issuer%3A8070
+      PORTITOR_ISSUER_SERVICE_URL: http://issuer:8070/issuer
+      PORTITOR_ISSUER_KEY_FILE: /run/secrets/issuer-key
+      # MembershipCredential (claims memberOf, role) and
+      # DataProcessorCredential (claim processing)
+      PORTITOR_ISSUER_CREDENTIALS_FILE: /config/issuer-credentials.json
+      PORTITOR_MANAGEMENT_BIND: 0.0.0.0:8071
+      PORTITOR_MANAGEMENT_API_KEY_FILE: /run/secrets/issuer-management-key
+      PORTITOR_ALLOW_HTTP_CALLBACKS: "true"
+    secrets:
+      - issuer-key
+      - issuer-management-key
     volumes:
-      - ./run/authority:/usr/share/nginx/html:ro
+      - ../issuer-credentials.json:/config/issuer-credentials.json:ro
+      - issuer-data:/data
+    ports:
+      - 127.0.0.1:18071:8071 # management API
 
   # the provider's data: a plain web server with examples/data
   data:
@@ -55,7 +74,7 @@ services:
       PORTITOR_IDENTITY_KEY_FILE: /run/secrets/provider-identity-key
       PORTITOR_CREDENTIAL_SERVICE_URL: http://provider-identity:8090/cs
       PORTITOR_STS_CLIENT_SECRET_FILE: /run/secrets/provider-sts-secret
-      PORTITOR_TRUSTED_ISSUERS: did:web:authority
+      PORTITOR_TRUSTED_ISSUERS: did:web:issuer%3A8070
       PORTITOR_MANAGEMENT_BIND: 0.0.0.0:8091
       PORTITOR_MANAGEMENT_API_KEY_FILE: /run/secrets/provider-identity-management-key
       PORTITOR_ALLOW_HTTP_CALLBACKS: "true"
@@ -66,7 +85,7 @@ services:
     volumes:
       - provider-identity-data:/data
     ports:
-      - 127.0.0.1:18082:8090 # credential service, where the authority delivers
+      - 127.0.0.1:18082:8090 # DID document, STS, credential service
       - 127.0.0.1:18083:8091 # management API
 
   provider:
@@ -76,12 +95,14 @@ services:
       PORTITOR_PARTICIPANT_ID: did:web:provider-identity%3A8090
       PORTITOR_STS_URL: http://provider-identity:8090/sts/token
       PORTITOR_STS_CLIENT_SECRET_FILE: /run/secrets/provider-sts-secret
-      PORTITOR_TRUSTED_ISSUERS: did:web:authority
+      PORTITOR_TRUSTED_ISSUERS: did:web:issuer%3A8070
       # where data addresses point: your app, on this machine, fetches the
       # data from there (the consumer reaches the provider as
       # http://provider:8080, the address given when negotiating)
       PORTITOR_PUBLIC_URL: http://127.0.0.1:18080
       PORTITOR_DATASETS_FILE: /config/datasets.json
+      # the processing-records offer checks a DataProcessorCredential claim (ADR 0019)
+      PORTITOR_POLICY_CREDENTIALS: DataProcessorCredential
       PORTITOR_ALLOW_HTTP_CALLBACKS: "true"
     secrets:
       - provider-sts-secret
@@ -101,7 +122,7 @@ services:
       PORTITOR_IDENTITY_KEY_FILE: /run/secrets/consumer-identity-key
       PORTITOR_CREDENTIAL_SERVICE_URL: http://consumer-identity:8090/cs
       PORTITOR_STS_CLIENT_SECRET_FILE: /run/secrets/consumer-sts-secret
-      PORTITOR_TRUSTED_ISSUERS: did:web:authority
+      PORTITOR_TRUSTED_ISSUERS: did:web:issuer%3A8070
       PORTITOR_MANAGEMENT_BIND: 0.0.0.0:8091
       PORTITOR_MANAGEMENT_API_KEY_FILE: /run/secrets/consumer-identity-management-key
       PORTITOR_ALLOW_HTTP_CALLBACKS: "true"
@@ -121,8 +142,9 @@ services:
       PORTITOR_PARTICIPANT_ID: did:web:consumer-identity%3A8090
       PORTITOR_STS_URL: http://consumer-identity:8090/sts/token
       PORTITOR_STS_CLIENT_SECRET_FILE: /run/secrets/consumer-sts-secret
-      PORTITOR_TRUSTED_ISSUERS: did:web:authority
+      PORTITOR_TRUSTED_ISSUERS: did:web:issuer%3A8070
       PORTITOR_PUBLIC_URL: http://consumer:8080
+      PORTITOR_POLICY_CREDENTIALS: DataProcessorCredential
       PORTITOR_ALLOW_HTTP_CALLBACKS: "true"
       PORTITOR_MANAGEMENT_BIND: 0.0.0.0:8081
       PORTITOR_MANAGEMENT_API_KEY_FILE: /run/secrets/consumer-management-key
@@ -139,6 +161,10 @@ services:
 # written by scripts/demo-compose.sh; the images run as user 65532, which
 # must read them
 secrets:
+  issuer-key:
+    file: ./run/issuer/issuer-key.pem
+  issuer-management-key:
+    file: ./run/issuer/management.key
   provider-identity-key:
     file: ./run/provider/identity-key.pem
   provider-sts-secret:
@@ -155,6 +181,7 @@ secrets:
     file: ./run/consumer/management.key
 
 volumes:
+  issuer-data:
   provider-identity-data:
   provider-data:
   consumer-identity-data:

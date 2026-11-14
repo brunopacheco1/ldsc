@@ -2,19 +2,21 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! What the identity component reads from other parties: their DID
-//! documents, and an issuer's metadata. [`Directory`] is the port,
-//! [`WebDirectory`] the adapter over HTTPS (the shared
-//! `portitor_runtime` client: HTTPS only unless allowed, time and size
-//! limits, no redirects).
+//! What the identity component and the issuer read from other parties:
+//! their DID documents (to check their tokens, and to find their
+//! services), and an issuer's metadata (the identity component only).
+//! [`Directory`] is the port, [`WebDirectory`] the adapter over HTTPS
+//! (`did:web` resolution with a cache, and the shared client: HTTPS only
+//! unless allowed, time and size limits, no redirects).
 
 use std::sync::Arc;
 
 use portitor_dcp::DidDocument;
-use portitor_runtime::BoxFuture;
-use portitor_runtime::did::{DEFAULT_TTL, DidWebResolver};
-use portitor_runtime::http::{HttpSender, Sender as _};
 use serde_json::Value;
+
+use crate::BoxFuture;
+use crate::did::{DEFAULT_TTL, DidWebResolver};
+use crate::http::{HttpSender, Sender as _};
 
 /// Port: reads other parties' public documents. Each lookup returns,
 /// later ([`BoxFuture`]), the value or the reason it failed.

@@ -10,14 +10,23 @@
 //!   made;
 //! - the Credential Offer API, `POST <credential service>/offers` (section
 //!   6.6): an issuer says credentials are available. Offers are recorded;
-//!   asking for them comes with the issuer in 0.6 (ADR 0015).
+//!   the operator asks for them through the management API
+//!   ([`crate::issuance`]), never by itself.
 //!
 //! Both accept calls only from a trusted issuer (`PORTITOR_TRUSTED_ISSUERS`)
 //! with a valid self-issued ID token for this participant.
 //!
 //! A delivery answers one open credential request (status `REQUESTED`) of
 //! the delivering issuer; the answer, `ISSUED` or `REJECTED`, closes it
-//! (ADR 0015). A renewed credential needs a new request.
+//! (ADR 0015). A renewed credential needs a new request. For a request
+//! this component sent to the issuer, the issuer's ID token must carry
+//! back the access token sent with it (DCP 6.1, steps 7 and 8).
+//!
+//! The same answer again (same `issuerPid` and status, for a request it
+//! closed) gets `200 OK` and stores nothing: an issuer whose first
+//! delivery reached us but whose reply was lost sends it again, and must
+//! not count it as failed. Any other delivery for a closed request is
+//! refused (`400`).
 
 use std::sync::Arc;
 
@@ -27,15 +36,17 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use portitor_dcp::DidDocument;
 use portitor_dcp::credential::{Credential, Profile};
+use portitor_dcp::holder::AccessToken;
 use portitor_dcp::message::{
     CredentialContainer, CredentialMessage, CredentialObject, CredentialOfferMessage,
-    IssuanceStatus, IssuerMetadata,
+    IssuanceStatus,
 };
 use portitor_runtime::api_key::{internal_error, problem};
 use portitor_runtime::system::{new_uuid, now_secs};
 
-use crate::caller::{Callers, authenticate};
-use crate::store::{RequestStatus, StoredCredential};
+use crate::caller::{Callers, authenticate, refused};
+use crate::issuance::issuer_metadata;
+use crate::store::{Answer, CredentialRequest, Delivered, RequestStatus, StoredCredential};
 use crate::{Identity, LEEWAY};
 
 /// `POST /credentials`: the Storage API.
@@ -44,30 +55,58 @@ pub(crate) async fn credentials(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let issuer = match authenticate(&identity, &headers, Callers::TrustedIssuers).await {
-        Ok(claims) => claims.sub,
-        Err(response) => return response,
-    };
+    let (issuer, access_token) =
+        match authenticate(&identity, &headers, Callers::TrustedIssuers).await {
+            Ok(claims) => (claims.sub, claims.token),
+            Err(response) => return response,
+        };
     let message: CredentialMessage = match serde_json::from_slice(&body) {
         Ok(message) => message,
         Err(e) => return bad_request(&e.to_string()),
     };
-    match store_delivery(&identity, &issuer, &message).await {
-        Ok(count) => {
+    let delivery = Delivery {
+        issuer: &issuer,
+        access_token: access_token.as_deref(),
+        message: &message,
+    };
+    match store_delivery(&identity, delivery).await {
+        Ok(Stored::New(count)) => {
             tracing::info!(%issuer, issuer_pid = %message.issuer_pid, count, "credentials stored");
+            StatusCode::OK.into_response()
+        }
+        Ok(Stored::Repeated) => {
+            tracing::info!(%issuer, issuer_pid = %message.issuer_pid, "repeated delivery acknowledged");
             StatusCode::OK.into_response()
         }
         Err(response) => response,
     }
 }
 
-/// Checks a delivery and stores it; returns how many credentials it
-/// held.
-async fn store_delivery(
-    identity: &Identity,
-    issuer: &str,
-    message: &CredentialMessage,
-) -> Result<usize, Response> {
+/// A delivery: who sent it (the verified `sub` of its ID token), the
+/// access token in that token's `token` claim, and the message.
+#[derive(Debug, Clone, Copy)]
+struct Delivery<'a> {
+    issuer: &'a str,
+    access_token: Option<&'a str>,
+    message: &'a CredentialMessage,
+}
+
+/// What a delivery that was accepted did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stored {
+    /// It closed its request; this many credentials are stored.
+    New(usize),
+    /// It repeated the answer that closed its request; nothing changed.
+    Repeated,
+}
+
+/// Checks a delivery and stores it.
+async fn store_delivery(identity: &Identity, delivery: Delivery<'_>) -> Result<Stored, Response> {
+    let Delivery {
+        issuer,
+        access_token,
+        message,
+    } = delivery;
     // DCP 6.5 makes holderPid optional, but without it the message cannot
     // be matched to a request, and Portitor accepts nothing it did not ask
     // for (ADR 0015)
@@ -79,14 +118,25 @@ async fn store_delivery(
         Ok(_) => return Err(bad_request("no credential request with this holderPid")),
         Err(e) => return Err(internal_error("identity store", &e)),
     };
-    // checked again when the answer is stored, in case two deliveries race
-    if request.status != RequestStatus::Requested {
-        return Err(bad_request("the credential request is answered already"));
-    }
+    check_access_token(identity, &request, issuer, access_token)
+        .map_err(|reason| refused(&reason))?;
     let status = match message.status {
         IssuanceStatus::Issued => RequestStatus::Issued,
         IssuanceStatus::Rejected => RequestStatus::Rejected,
     };
+    let answer = Answer {
+        issuer_pid: &message.issuer_pid,
+        status,
+    };
+    // checked again when the answer is stored, in case two deliveries race
+    if request.status != RequestStatus::Requested {
+        let same_answer = request.status == status
+            && request.issuer_pid.as_deref() == Some(message.issuer_pid.as_str());
+        if same_answer {
+            return Ok(Stored::Repeated);
+        }
+        return Err(bad_request("the credential request is answered already"));
+    }
     let mut accepted = Vec::new();
     if status == RequestStatus::Issued {
         let document = identity
@@ -108,11 +158,63 @@ async fn store_delivery(
             });
         }
     }
-    identity
+    let delivered = identity
         .store
-        .deliver(&request.holder_pid, status, &accepted)
+        .deliver(&request.holder_pid, answer, &accepted)
         .map_err(|e| bad_request(&e.0))?;
-    Ok(accepted.len())
+    match delivered {
+        Delivered::Stored => Ok(Stored::New(accepted.len())),
+        Delivered::Repeated => Ok(Stored::Repeated),
+    }
+}
+
+/// DCP 6.1, step 8: "The Credential Service validates the Self-Issued ID
+/// Token and, if present, the access token." An access token present
+/// must be one this participant signed for the delivering issuer, still
+/// valid. A request this component sent to the issuer (DCP 6.4) carried
+/// one, and the issuer must send it back (step 7): there it is required,
+/// and must be that very token (its `jti`). A request that was only
+/// recorded, for an issuer asked out of band, needs none. The error says
+/// why the token is refused.
+fn check_access_token(
+    identity: &Identity,
+    request: &CredentialRequest,
+    issuer: &str,
+    access_token: Option<&str>,
+) -> Result<(), String> {
+    // (the token the delivery carries, the id of the one we sent)
+    match (access_token, request.access_token_id.as_deref()) {
+        // a request only recorded, delivered without a token
+        (None, None) => Ok(()),
+        (None, Some(_)) => Err("the delivery does not carry our access token".to_owned()),
+        // a token we did not ask back must still be ours and valid
+        (Some(token), None) => verify_access_token(identity, token, issuer).map(|_access| ()),
+        (Some(token), Some(expected_id)) => {
+            let access = verify_access_token(identity, token, issuer)?;
+            if access.jti == expected_id {
+                Ok(())
+            } else {
+                Err("the access token is for another request".to_owned())
+            }
+        }
+    }
+}
+
+/// `token`, checked: signed by this participant, for `issuer`, valid now.
+fn verify_access_token(
+    identity: &Identity,
+    token: &str,
+    issuer: &str,
+) -> Result<AccessToken, String> {
+    AccessToken::verify(
+        token,
+        &identity.key.public_jwk(),
+        &identity.participant_id,
+        issuer,
+        now_secs(),
+        LEEWAY,
+    )
+    .map_err(|e| format!("access token: {e}"))
 }
 
 /// One delivered credential, checked: a JWT in a format Portitor stores,
@@ -198,9 +300,10 @@ async fn complete_sparse(
     if !offered.iter().any(CredentialObject::is_sparse) {
         return Ok(offered);
     }
-    let supported = issuer_metadata(identity, issuer)
-        .await?
-        .credentials_supported;
+    let supported = match issuer_metadata(identity, issuer).await {
+        Ok(service) => service.metadata.credentials_supported,
+        Err(reason) => return Err(bad_request(&reason)),
+    };
     let mut complete = Vec::new();
     for credential in offered {
         if !credential.is_sparse() {
@@ -218,33 +321,6 @@ async fn complete_sparse(
         }
     }
     Ok(complete)
-}
-
-/// The issuer's metadata (DCP 6.7): `GET <IssuerService>/metadata`, the
-/// service found in the issuer's DID document.
-async fn issuer_metadata(identity: &Identity, issuer: &str) -> Result<IssuerMetadata, Response> {
-    let document = identity
-        .directory
-        .did_document(issuer)
-        .await
-        .map_err(|e| bad_request(&format!("cannot resolve the issuer: {e}")))?;
-    let Some(service) = document.service_url("IssuerService") else {
-        return Err(bad_request(
-            "the issuer's DID document has no IssuerService",
-        ));
-    };
-    let url = format!("{}/metadata", service.trim_end_matches('/'));
-    let json = identity
-        .directory
-        .json(&url)
-        .await
-        .map_err(|e| bad_request(&format!("cannot read the issuer metadata: {e}")))?;
-    let metadata: IssuerMetadata =
-        serde_json::from_value(json).map_err(|e| bad_request(&format!("issuer metadata: {e}")))?;
-    if metadata.issuer != issuer {
-        return Err(bad_request("the issuer metadata names another issuer"));
-    }
-    Ok(metadata)
 }
 
 fn bad_request(reason: &str) -> Response {

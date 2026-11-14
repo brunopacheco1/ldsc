@@ -154,20 +154,7 @@ fn invalid(name: &'static str, problem: &str) -> ConfigError {
     }
 }
 
-/// The path part of an `http(s)` URL, without a trailing `/`: `""` for
-/// `https://id.example/`, `"/cs"` for `https://id.example/cs/`. `None`
-/// if it is not an `http(s)` URL with a host.
-#[must_use]
-pub fn base_path(url: &str) -> Option<String> {
-    let rest = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))?;
-    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
-    if host.is_empty() || path.contains(['?', '#']) {
-        return None;
-    }
-    Some(format!("/{path}").trim_end_matches('/').to_owned())
-}
+pub use portitor_runtime::settings::base_path;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
@@ -245,17 +232,5 @@ mod tests {
             read(&vars).unwrap_err(),
             invalid("PORTITOR_TRUSTED_ISSUERS", "required")
         );
-    }
-
-    #[test]
-    fn base_paths() {
-        assert_eq!(base_path("https://id.example").as_deref(), Some(""));
-        assert_eq!(base_path("https://id.example/").as_deref(), Some(""));
-        assert_eq!(
-            base_path("http://id.example:8090/cs/").as_deref(),
-            Some("/cs")
-        );
-        assert_eq!(base_path("ftp://id.example"), None);
-        assert_eq!(base_path("https:///cs"), None);
     }
 }

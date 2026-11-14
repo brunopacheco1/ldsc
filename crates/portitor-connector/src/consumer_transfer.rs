@@ -17,6 +17,8 @@ use axum::Json;
 use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use portitor_dsp::negotiation::Agreement;
+use portitor_dsp::policy::credential_scopes;
 use portitor_dsp::transfer::consumer::{
     AgreementProvider, ConsumerTransfer, ConsumerTransferDecision, ConsumerTransferService,
     ConsumerTransferStore, Handled, HeldAgreements, Outgoing,
@@ -107,6 +109,22 @@ impl HeldAgreements for InMemoryConsumerNegotiations {
                 address: negotiation.provider_address.clone(),
                 id: negotiation.provider_id.clone(),
             }))
+    }
+
+    fn agreement(&self, agreement_id: &str) -> Result<Option<Agreement>, StoreError> {
+        use portitor_dsp::negotiation::NegotiationState;
+        let map = self.map();
+        for negotiation in map.values() {
+            if negotiation.state != NegotiationState::Finalized {
+                continue;
+            }
+            if let Some(agreement) = &negotiation.agreement
+                && agreement.id == agreement_id
+            {
+                return Ok(Some(agreement.clone()));
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -289,6 +307,22 @@ impl Outbox for TransferConsumer {
         reached_state(state, out.to)
     }
 
+    /// A transfer request makes the provider evaluate the agreement again
+    /// with our credentials: our token lets it read those its constraints
+    /// need (ADR 0019). An agreement we do not hold (the TCK's) needs none.
+    fn scopes(&self, out: &Outgoing) -> Vec<String> {
+        if !out.initial {
+            return Vec::new();
+        }
+        let Ok(transfer) = self.service.transfer(&out.consumer_pid) else {
+            return Vec::new();
+        };
+        match self.held.agreement(&transfer.agreement_id) {
+            Ok(Some(agreement)) => credential_scopes(&agreement, &self.link.credential_types),
+            Ok(None) | Err(_) => Vec::new(),
+        }
+    }
+
     fn link(&self) -> &Link {
         &self.link
     }
@@ -315,10 +349,10 @@ type Consumer = State<Arc<TransferConsumer>>;
 /// `GET <callback>/transfers/{consumerPid}`.
 pub(crate) async fn get(
     State(consumer): Consumer,
-    Extension(Caller(caller)): Extension<Caller>,
+    Extension(caller): Extension<Caller>,
     Path(cpid): Path<String>,
 ) -> Response {
-    if let Some(refused) = consumer.refusal(&cpid, &caller) {
+    if let Some(refused) = consumer.refusal(&cpid, &caller.id) {
         return refused;
     }
     match consumer.service.get(&cpid) {
@@ -330,11 +364,11 @@ pub(crate) async fn get(
 /// `POST <callback>/transfers/{consumerPid}/start`.
 pub(crate) async fn start(
     State(consumer): Consumer,
-    Extension(Caller(caller)): Extension<Caller>,
+    Extension(caller): Extension<Caller>,
     Path(cpid): Path<String>,
     body: Body,
 ) -> Response {
-    if let Some(refused) = consumer.refusal(&cpid, &caller) {
+    if let Some(refused) = consumer.refusal(&cpid, &caller.id) {
         return refused;
     }
     let msg: TransferStartMessage = match consumer.read(body, "TransferStartMessage", &cpid) {
@@ -347,11 +381,11 @@ pub(crate) async fn start(
 /// `POST <callback>/transfers/{consumerPid}/suspension`.
 pub(crate) async fn suspension(
     State(consumer): Consumer,
-    Extension(Caller(caller)): Extension<Caller>,
+    Extension(caller): Extension<Caller>,
     Path(cpid): Path<String>,
     body: Body,
 ) -> Response {
-    if let Some(refused) = consumer.refusal(&cpid, &caller) {
+    if let Some(refused) = consumer.refusal(&cpid, &caller.id) {
         return refused;
     }
     let msg: TransferSuspensionMessage =
@@ -370,11 +404,11 @@ pub(crate) async fn suspension(
 /// `POST <callback>/transfers/{consumerPid}/completion`.
 pub(crate) async fn completion(
     State(consumer): Consumer,
-    Extension(Caller(caller)): Extension<Caller>,
+    Extension(caller): Extension<Caller>,
     Path(cpid): Path<String>,
     body: Body,
 ) -> Response {
-    if let Some(refused) = consumer.refusal(&cpid, &caller) {
+    if let Some(refused) = consumer.refusal(&cpid, &caller.id) {
         return refused;
     }
     let msg: TransferCompletionMessage =
@@ -393,11 +427,11 @@ pub(crate) async fn completion(
 /// `POST <callback>/transfers/{consumerPid}/termination`.
 pub(crate) async fn termination(
     State(consumer): Consumer,
-    Extension(Caller(caller)): Extension<Caller>,
+    Extension(caller): Extension<Caller>,
     Path(cpid): Path<String>,
     body: Body,
 ) -> Response {
-    if let Some(refused) = consumer.refusal(&cpid, &caller) {
+    if let Some(refused) = consumer.refusal(&cpid, &caller.id) {
         return refused;
     }
     let msg: TransferTerminationMessage =
@@ -483,11 +517,14 @@ mod tests {
         };
         negotiations.insert(&n).unwrap();
         assert_eq!(held.provider_of("a").unwrap(), None);
+        assert_eq!(held.agreement("a").unwrap(), None);
         n.state = NegotiationState::Finalized;
         n.version = 1;
         assert!(negotiations.replace_if(&n, 0).unwrap());
         let provider = held.provider_of("a").unwrap().unwrap();
         assert_eq!(provider.address, "https://p.example/dsp");
         assert_eq!(held.provider_of("b").unwrap(), None);
+        assert_eq!(held.agreement("a").unwrap(), n.agreement);
+        assert_eq!(held.agreement("b").unwrap(), None);
     }
 }

@@ -38,7 +38,7 @@
       "problemMatcher": []
     },
     {
-      // The demo authority and the provider's and consumer's identity components, with
+      // The issuer and the provider's and consumer's identity components, with
       // their credentials (scripts/dev-identities.sh). Keeps running; "ready" once the
       // credentials are delivered. Keys, secrets and logs in target/vscode-dcp/.
       "label": "portitor: identities",

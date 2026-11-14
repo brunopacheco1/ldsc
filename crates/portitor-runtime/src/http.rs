@@ -18,6 +18,32 @@ use serde_json::Value;
 
 use crate::BoxFuture;
 
+/// Why an exchange of [`HttpSender`] got no 2xx answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HttpError {
+    /// The counter-party answered with this status, which is not 2xx.
+    Status(u16),
+    /// No usable answer: the URL is not allowed, the connection failed,
+    /// no answer came in time, or the answer could not be read.
+    NoAnswer(String),
+}
+
+/// The text of the error: `HTTP 404 Not Found` for a status (the form
+/// [`answered_status`] reads back), the reason otherwise.
+impl std::fmt::Display for HttpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Status(code) => match hyper::StatusCode::from_u16(*code) {
+                Ok(status) => write!(f, "HTTP {status}"),
+                Err(_) => write!(f, "HTTP {code}"),
+            },
+            Self::NoAnswer(reason) => f.write_str(reason),
+        }
+    }
+}
+
+impl std::error::Error for HttpError {}
+
 /// Port: sends a message to a counter-party and waits for its HTTP 2xx.
 /// Each method returns, later ([`BoxFuture`]), the counter-party's JSON
 /// answer (`Value::Null` if it sent none or no JSON), or why the request
@@ -35,15 +61,15 @@ pub trait Sender: Send + Sync {
 
     /// Like [`Sender::post`], with the header `Authorization:
     /// <authorization>` (a DSP request carries the caller's DCP token,
-    /// ADR 0016). The default leaves the header out: only senders that do
+    /// ADR 0016). The default leaves the header out (`_authorization`
+    /// is not used): only senders that do
     /// not speak HTTP (test fakes) keep it; [`HttpSender`] sends it.
     fn post_authorized<'a>(
         &'a self,
         url: &'a str,
         body: &'a Value,
-        authorization: &'a str,
+        _authorization: &'a str,
     ) -> BoxFuture<'a, Result<Value, String>> {
-        let _ = authorization;
         self.post(url, body)
     }
 
@@ -53,9 +79,8 @@ pub trait Sender: Send + Sync {
     fn get_authorized<'a>(
         &'a self,
         url: &'a str,
-        authorization: &'a str,
+        _authorization: &'a str,
     ) -> BoxFuture<'a, Result<Value, String>> {
-        let _ = authorization;
         self.get(url)
     }
 }
@@ -229,6 +254,31 @@ impl HttpSender {
         self.json(request, url).await
     }
 
+    /// POSTs `body` as JSON with the header `Authorization:
+    /// <authorization>`, and returns the answer's `Location` header, if
+    /// any. A DCP issuer answers a credential request with `201 Created`
+    /// and the `Location` of the request status (DCP v1.0.1, section 6.4).
+    ///
+    /// # Errors
+    ///
+    /// The URL is not allowed or the request failed
+    /// ([`HttpError::NoAnswer`]), or the answer is not HTTP 2xx
+    /// ([`HttpError::Status`]).
+    pub async fn post_for_location(
+        &self,
+        url: &str,
+        body: &Value,
+        authorization: &str,
+    ) -> Result<Option<String>, HttpError> {
+        let request = json_post(url, body, Some(authorization)).map_err(HttpError::NoAnswer)?;
+        let (headers, _body) = self.call_with_headers(url, request, MAX_ANSWER).await?;
+        let location = headers
+            .get(hyper::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        Ok(location)
+    }
+
     /// GETs `url` asking for the media type `accept`, and returns the
     /// answer as text, read up to `max_bytes` (for example a status list
     /// credential as a JWT, `application/vc+jwt`).
@@ -247,14 +297,21 @@ impl HttpSender {
             .header(hyper::header::ACCEPT, accept)
             .body(Full::new(Bytes::new()))
             .map_err(|e| e.to_string())?;
-        let bytes = self.call(url, request, max_bytes).await?;
+        let bytes = self
+            .call(url, request, max_bytes)
+            .await
+            .map_err(|e| e.to_string())?;
         String::from_utf8(bytes.to_vec()).map_err(|_| "the answer is not UTF-8 text".to_owned())
     }
 
     /// Sends `request` and reads the answer as JSON (`Value::Null` when it
-    /// is empty or not JSON), up to [`MAX_ANSWER`] bytes.
+    /// is empty or not JSON), up to [`MAX_ANSWER`] bytes. The error is
+    /// text, as the [`Sender`] port carries it.
     async fn json(&self, request: hyper::Request<Full<Bytes>>, url: &str) -> Result<Value, String> {
-        let bytes = self.call(url, request, MAX_ANSWER).await?;
+        let bytes = self
+            .call(url, request, MAX_ANSWER)
+            .await
+            .map_err(|e| e.to_string())?;
         Ok(serde_json::from_slice(&bytes).unwrap_or(Value::Null))
     }
 
@@ -263,24 +320,38 @@ impl HttpSender {
         url: &str,
         request: hyper::Request<Full<Bytes>>,
         max_bytes: usize,
-    ) -> Result<Bytes, String> {
+    ) -> Result<Bytes, HttpError> {
+        let (_headers, body) = self.call_with_headers(url, request, max_bytes).await?;
+        Ok(body)
+    }
+
+    /// Like [`HttpSender::call`], and returns the answer's headers too.
+    async fn call_with_headers(
+        &self,
+        url: &str,
+        request: hyper::Request<Full<Bytes>>,
+        max_bytes: usize,
+    ) -> Result<(hyper::HeaderMap, Bytes), HttpError> {
         // the text names callbacks, the first use of this rule; it now
         // covers every outbound URL, and tests look for this text
         if !outbound_url_allowed(url, self.allow_http) {
-            return Err(format!("refused callback URL {url}"));
+            return Err(HttpError::NoAnswer(format!("refused callback URL {url}")));
         }
         if !self.has_ca_certificates && url.to_ascii_lowercase().starts_with("https://") {
-            return Err(
+            return Err(HttpError::NoAnswer(
                 "no CA certificates to verify the counter-party; mount the system bundle"
                     .to_owned(),
-            );
+            ));
         }
         let exchange = self.exchange(request, max_bytes);
         // `timeout` gives an error only when the time is up; when the
         // exchange finished in time, `answer` is its own result, which may
         // be an error too, and is returned as it is
         let Ok(answer) = tokio::time::timeout(SEND_TIMEOUT, exchange).await else {
-            return Err(format!("no answer within {}s", SEND_TIMEOUT.as_secs()));
+            return Err(HttpError::NoAnswer(format!(
+                "no answer within {}s",
+                SEND_TIMEOUT.as_secs()
+            )));
         };
         answer
     }
@@ -289,25 +360,44 @@ impl HttpSender {
         &self,
         request: hyper::Request<Full<Bytes>>,
         max_bytes: usize,
-    ) -> Result<Bytes, String> {
+    ) -> Result<(hyper::HeaderMap, Bytes), HttpError> {
         use http_body_util::BodyExt as _;
         let response = self
             .client
             .request(request)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| HttpError::NoAnswer(e.to_string()))?;
         let status = response.status();
         if !status.is_success() {
-            return Err(format!("HTTP {status}"));
+            return Err(HttpError::Status(status.as_u16()));
         }
         // read at most max_bytes: the counter-party controls the size
-        let body = http_body_util::Limited::new(response.into_body(), max_bytes)
+        let (parts, body) = response.into_parts();
+        let body = http_body_util::Limited::new(body, max_bytes)
             .collect()
             .await
-            .map_err(|e| format!("answer not read: {e}"))?
+            .map_err(|e| HttpError::NoAnswer(format!("answer not read: {e}")))?
             .to_bytes();
-        Ok(body)
+        Ok((parts.headers, body))
     }
+}
+
+/// The HTTP status code in the text of an [`HttpError::Status`]
+/// (`HTTP 404 Not Found`, for example); `None` when no answer came
+/// (refused URL, connection error, timeout) or for any other text.
+///
+/// Only for errors that came through the [`Sender`] port, which carries
+/// them as text (its test fakes word them the same way). Code that calls
+/// [`HttpSender`] directly gets an [`HttpError`] and matches on it.
+#[must_use]
+pub fn answered_status(error: &str) -> Option<u16> {
+    let after = error.strip_prefix("HTTP ")?;
+    let code = after.get(..3)?;
+    let rest = after.get(3..)?;
+    if !(rest.is_empty() || rest.starts_with(' ')) {
+        return None;
+    }
+    code.parse().ok().filter(|code| (100..600).contains(code))
 }
 
 /// Whether a Portitor process may send to `url`. Other participants
@@ -365,6 +455,17 @@ pub fn bearer_token_in(headers: &hyper::HeaderMap) -> Option<&str> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn answered_status_is_read_back_from_the_error() {
+        let error = format!("HTTP {}", hyper::StatusCode::NOT_FOUND);
+        assert_eq!(answered_status(&error), Some(404));
+        assert_eq!(answered_status("HTTP 503"), Some(503));
+        assert_eq!(answered_status("no answer within 30s"), None);
+        assert_eq!(answered_status("HTTP 4040 x"), None);
+        assert_eq!(answered_status("HTTP abc"), None);
+        assert_eq!(answered_status("HTTP 999 x"), None);
+    }
 
     #[test]
     fn bearer_tokens_are_read_from_the_authorization_header() {
@@ -494,6 +595,95 @@ mod tests {
             .unwrap();
         assert_eq!(text, "a.b.c accept=application/vc+jwt");
         assert!(sender.get_text(&jwt, "text/plain", 3).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn http_sender_reads_the_location_of_a_created_resource() {
+        use axum::http::{HeaderMap, StatusCode, header};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = axum::Router::new()
+            .route(
+                "/credentials",
+                axum::routing::post(move |headers: HeaderMap| async move {
+                    let authorization = headers
+                        .get(header::AUTHORIZATION)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or_default()
+                        .to_owned();
+                    let location = format!("/requests/{authorization}");
+                    (StatusCode::CREATED, [(header::LOCATION, location)])
+                }),
+            )
+            .route("/plain", axum::routing::post(|| async { StatusCode::OK }));
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        let sender = HttpSender::new(true).unwrap();
+        let body = serde_json::json!({"type": "CredentialRequestMessage"});
+        let created = sender
+            .post_for_location(&format!("http://{addr}/credentials"), &body, "t0ken")
+            .await
+            .unwrap();
+        assert_eq!(created.as_deref(), Some("/requests/t0ken"));
+        let plain = sender
+            .post_for_location(&format!("http://{addr}/plain"), &body, "t0ken")
+            .await
+            .unwrap();
+        assert_eq!(plain, None);
+    }
+
+    #[tokio::test]
+    async fn the_status_of_a_refusal_can_be_read_from_the_error() {
+        use axum::http::StatusCode;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = axum::Router::new()
+            .route(
+                "/bad",
+                axum::routing::post(|| async { StatusCode::BAD_REQUEST }),
+            )
+            .route(
+                "/down",
+                axum::routing::post(|| async { StatusCode::SERVICE_UNAVAILABLE }),
+            );
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        let sender = HttpSender::new(true).unwrap();
+        let body = serde_json::json!({});
+        let status_of = |path: &'static str| {
+            let sender = &sender;
+            let body = &body;
+            async move {
+                let url = format!("http://{addr}{path}");
+                let error = sender.post_for_location(&url, body, "t").await.unwrap_err();
+                // the text form, as the `Sender` port passes it on, says
+                // the same
+                assert_eq!(
+                    answered_status(&error.to_string()),
+                    match error {
+                        HttpError::Status(code) => Some(code),
+                        HttpError::NoAnswer(_) => None,
+                    }
+                );
+                error
+            }
+        };
+        assert_eq!(status_of("/bad").await, HttpError::Status(400));
+        assert_eq!(status_of("/down").await, HttpError::Status(503));
+        assert_eq!(status_of("/bad").await.to_string(), "HTTP 400 Bad Request");
+        // no answer at all: a refused URL, or nobody listening
+        let refused = sender
+            .post_for_location("ftp://example.com/x", &body, "t")
+            .await
+            .unwrap_err();
+        assert!(matches!(refused, HttpError::NoAnswer(_)), "{refused}");
+        assert_eq!(answered_status(&refused.to_string()), None);
+        let unreachable = sender
+            .post_for_location("http://127.0.0.1:9/x", &body, "t")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(unreachable, HttpError::NoAnswer(_)),
+            "{unreachable}"
+        );
     }
 
     /// A sender with only the required methods: the authorized variants

@@ -142,6 +142,29 @@ Err(e @ QueryError::DefinitionNotSupported) => { /* use e */ }
 value a name (`portitor-identity/src/presentation.rs`).
 
 ```rust
+let Delivery {
+    issuer,
+    access_token,
+    message,
+} = delivery;
+```
+
+A *struct pattern* takes a value apart into its fields, each in a
+variable of the same name (`portitor-identity/src/storage.rs`). In a
+`match`, `Mode::Evaluate { now, .. }` takes only `now` and ignores the
+rest (`..`, `policy.rs`). A pattern can also give a field another name,
+`Caller { id: caller, .. }`, which reads like a type annotation, so
+Portitor avoids it.
+
+```rust
+if matches!(mode, Mode::Validate(_)) { /* ... */ }
+```
+
+`matches!(value, pattern)` is `true` if the value fits the pattern: a
+`match` with one case that answers yes or no (`policy.rs`;
+`consumer.rs` checks `Transition::Request | Transition::Accept`).
+
+```rust
 while let Some(row) = rows.next()? {
     found.push(credential_from(row)?);
 }
@@ -216,6 +239,26 @@ takes a negotiation it may change". The domain services use this for
 their read, change, compare-and-write loop (`update`) and pass the change
 in. That way the loop is written only once.
 
+There are three kinds of function arguments. `Fn` may be called any
+number of times and changes nothing it captured; `FnMut` may change
+what it captured (so it is passed as `&mut`); `FnOnce` is called at most
+once (`admit: impl FnOnce(&Claims) -> bool` in
+`portitor-runtime/src/caller.rs`).
+
+```rust
+pub type SignCredentials<'a> = dyn FnMut(&[u64]) -> Result<SignedRequest, String> + 'a;
+
+fn issue(&self, /* ... */ sign: &mut SignCredentials<'_>) -> Result<IssueOutcome, StoreError>;
+```
+
+A `type` alias gives a long function type a name. `SignCredentials` is
+"a function that gets the chosen status list positions and returns the
+signed credentials". The issuer's store calls it in the middle of its
+transaction, after it has picked the positions and before it writes
+anything, so a position is used only if the credentials are written
+(`portitor-issuer/src/store.rs`). `dyn` because the store is a port: it
+takes any such function, chosen while the program runs.
+
 Never write `.unwrap()` outside tests. It stops the program when the
 value is missing, and the linter refuses it.
 
@@ -241,6 +284,49 @@ keeps each one as `Shared<dyn Port + Send + Sync>`. `Shared` wraps an
 `Arc` pointer. See `ports.rs`, which explains why the wrapper exists and
 holds all the `Any...` names.
 
+```rust
+fn scopes(&self, _out: &Self::Out) -> Vec<String> {
+    Vec::new()
+}
+```
+
+A trait method can have a body: a *default*. A type that implements the
+trait may write its own version or keep the default. The connector's
+`Outbox` trait answers "no extra scopes" by default; the consumer's
+outboxes write their own (`outbox.rs`, `consumer.rs`). A name starting
+with `_` says the default does not use that argument.
+
+```rust
+fn from_json<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, StoreError>
+fn to_json(value: &impl serde::Serialize) -> Result<String, StoreError>
+```
+
+A generic helper says what it needs of its type: `T: DeserializeOwned`
+is "any type serde can read from JSON", `&impl Serialize` "a borrowed
+value of any type serde can write" (`portitor-issuer/src/store.rs`). A
+struct can be generic too: `NewCredential<'a, C>` holds `claims: &'a C`,
+and `sign_credential<C: Serialize>` accepts it for any claims that
+serialize to JSON (`portitor-dcp/src/issuance.rs`).
+
+```rust
+authenticate(headers, audience, registered, &*issuer.directory).await
+```
+
+`issuer.directory` is an `Arc<dyn Directory>`, a shared pointer. `*`
+follows the pointer to the directory and `&` borrows it, so `&*` gives
+the `&dyn Directory` that `authenticate` asks for, without copying or
+taking the pointer (`portitor-issuer/src/requests.rs`).
+
+```rust
+pub fn subject_ids(&self) -> impl Iterator<Item = &str> {
+```
+
+`impl Iterator<Item = &str>` as a return type: "something you can loop
+over that gives `&str` values". The exact type is long and does not
+matter to the caller, who writes `for id in credential.subject_ids()`
+(`portitor-dcp/src/credential.rs`; `CredentialTypes::iter` in
+`policy/credentials.rs`).
+
 `use base64::Engine as _;` brings a trait into scope without a name:
 its methods (here `B64.encode(...)` and `.decode(...)`) can be called,
 but the name `Engine` is not used in the file. Rust only lets you call a
@@ -259,8 +345,35 @@ field expects.
 - `lock().unwrap_or_else(PoisonError::into_inner)` keeps going even if
   another thread panicked while it held the lock. Each place that does
   this says in a comment why it is safe there.
+- `lock()` returns a *guard*; the lock is held until the guard is
+  dropped. `let _one_at_a_time = ...lock()...;` keeps the guard in a
+  named variable, so the lock is held until the end of the function
+  (`refresh` in `portitor-issuer/src/status_lists.rs`). `let _ =
+  ...lock()...;` would drop it, and free the lock, at once: the leading
+  `_` in a name keeps the value, the bare `_` does not.
 - `Send` and `Sync` in a type mean "safe to move to, or share with,
   another thread". The web server needs them.
+
+## `SQLite` transactions
+
+```rust
+let tx = conn.transaction()?;
+let Some(holder_did) = holder_if_received(&tx, issuer_pid)? else {
+    return Ok(IssueOutcome::NotReceived);
+};
+/* ... more checks, then the writes ... */
+tx.commit()?;
+```
+
+A transaction groups reads and writes so they happen all together or
+not at all. In `rusqlite`, a transaction that is dropped without
+`commit()` is rolled back: an early `return` or a `?` leaves the file as
+it was (`SqliteStore::issue` in `portitor-issuer/src/store.rs`).
+
+`query_row(...)` fails when no row is found. `.optional()?` (from
+`rusqlite::OptionalExtension`) turns "no row" into `None` and keeps
+other errors as errors: `Option<(String, String)>` is "the row, if there
+is one".
 
 ## Printing for logs: `Debug`
 
@@ -292,7 +405,7 @@ after the HTTP answer has gone out.
 `BoxFuture<'a, T>` (`portitor-runtime/src/lib.rs`) is a boxed task that
 finishes later with a `T`. Every port with async methods returns one:
 the `Sender`, the connector's `CallerVerifier` and `Prover`, the
-identity component's `Directory`. Its comment explains why these traits
+`Directory` of the identity component and the issuer. Its comment explains why these traits
 cannot use `async fn` directly. Read `BoxFuture<'a, Result<Value,
 String>>` as "later, a `Value` or an error". (`AuthFuture` in the
 connector is another name for the same thing.)
@@ -307,6 +420,32 @@ tokio::select! {
 `tokio::select!` waits for several tasks at once and goes on with the
 first that finishes; the others are dropped. Here: stop on Ctrl-C or on
 SIGTERM, whichever comes first (`portitor-runtime/src/serve.rs`).
+
+```rust
+async fn within_deadline<T>(
+    &self,
+    what: &str,
+    work: impl Future<Output = Result<T, String>>,
+) -> Result<T, String>
+```
+
+A function can take a task as an argument: `impl Future<Output = X>` is
+"a task that finishes with an `X`, not started yet". `T` is any type:
+the helper does not care what the task produces. Here it runs `work`
+with a time limit (`tokio::time::timeout`), and the connector wraps
+every caller check in it (`auth/dcp.rs`).
+
+```rust
+tokio::select! {
+    () = issuer.outbox.notified() => {}
+    () = tokio::time::sleep(wait) => {}
+}
+```
+
+`tokio::sync::Notify` is a doorbell between tasks: `notify_one()` rings
+it, `notified()` waits for a ring. The issuer's outbox sleeps until the
+next delivery is due, or until a newly issued request rings
+(`portitor-issuer/src/delivery.rs`, `issue.rs`).
 
 ## Lifetimes: `'a`
 
@@ -327,7 +466,7 @@ pub struct TokenFrame<'a> {
 
 "A `TokenFrame` holds borrowed text, so it must not outlive the strings
 it points to" (`portitor-dcp/src/holder.rs`; also `Jws<'a>`, which keeps a
-slice of the token it was read from, and `Signer<'a>`). It saves copying
+slice of the token it was read from, and `Signer<'a>` in `keys.rs`). It saves copying
 the text for a value that only lives during one call.
 
 ## Errors in a `Box`
@@ -344,6 +483,15 @@ small. Clippy's `result_large_err` lint asks for this. Read
 - `#[serde(rename_all = "camelCase")]` and `#[serde(rename = "@type")]`
   map Rust field names to JSON names. `skip_serializing_if =
   "Option::is_none"` leaves out empty fields.
+- `#[serde(deny_unknown_fields)]`: refuse JSON with a field the type
+  does not have, instead of ignoring it (the management APIs' request
+  types, so a typo is an error).
+- `#[serde(default)]`: a missing field gets its empty default (`[]`,
+  `""`, `false`); `default = "pull_format"` calls that function instead
+  (`portitor-connector/src/management.rs`).
+- `#[serde(flatten)]`: the fields of this value sit at the same level
+  as the others in the JSON, not inside a field of their own (`Dataset`
+  keeps every other metadata property this way, `portitor-dsp/src/lib.rs`).
 - `#[serde(untagged)]` on an enum: try each variant in turn and take the
   first that fits the JSON. `Relationship` in `did.rs` is a key id string
   or a whole key object.
@@ -406,6 +554,15 @@ API needs (here the STS error list, `portitor-identity/src/sts.rs`).
 - `Self` is the type the `impl` is for.
 - `x.wrapping_add(1)` adds one and wraps around at the maximum instead of
   stopping the program. Used for version counters.
+- `cond.then_some(value)`: `Some(value)` if `cond` is true, else
+  `None` (`status_url` in `portitor-identity/src/issuance.rs`).
+- `a.saturating_sub(b)` stops at 0 instead of going below;
+  `1_u64.checked_shl(n)` is `1 << n`, or `None` when `n` is too large
+  (`retry_delay` in `portitor-issuer/src/delivery.rs`).
+- `[Profile; 2]` is a list of exactly two `Profile`s, fixed when the
+  program is built (`PROFILES` in `status_lists.rs`).
+- `env!("CARGO_PKG_VERSION")` is the crate's version from `Cargo.toml`,
+  read when the program is built (the `OpenAPI` documents).
 - `!` on an integer flips every bit, it is not "not": `!0u32` is
   `0xFFFF_FFFF` (CRC-32 in `gzip.rs`). On a `bool`, `!` is "not".
 - `Option` values can be compared, and `None` counts as smaller than any

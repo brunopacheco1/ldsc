@@ -22,6 +22,20 @@ pub const VC_TYPE: &str = "org.eclipse.dspace.dcp.vc.type";
 /// The DCP alias for "the credential with this id".
 pub const VC_ID: &str = "org.eclipse.dspace.dcp.vc.id";
 
+/// `base` followed by each scope of `extra` that is not in it yet, in
+/// order: a request for the configured scopes and the ones an offer
+/// needs on top (ADR 0019) asks for each scope once.
+#[must_use]
+pub fn merge_scopes(base: &[String], extra: &[String]) -> Vec<String> {
+    let mut merged = base.to_vec();
+    for scope in extra {
+        if !merged.contains(scope) {
+            merged.push(scope.clone());
+        }
+    }
+    merged
+}
+
 /// What a scope gives access to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Scope {
@@ -107,6 +121,18 @@ impl Scope {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn merged_scopes_keep_the_order_and_count_once() {
+        let list = |items: &[&str]| -> Vec<String> {
+            items.iter().map(|item| (*item).to_owned()).collect()
+        };
+        assert_eq!(
+            merge_scopes(&list(&["a", "b"]), &list(&["b", "c", "c"])),
+            list(&["a", "b", "c"])
+        );
+        assert_eq!(merge_scopes(&list(&["a"]), &[]), list(&["a"]));
+    }
 
     const EDC: &str = "org.eclipse.edc.vc.type";
 

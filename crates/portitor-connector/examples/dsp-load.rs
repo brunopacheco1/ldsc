@@ -134,7 +134,7 @@ async fn one_request(load: &Load, http: &HttpSender, body: &Value) -> Sample {
     let start = Instant::now();
     let header = match &load.auth {
         Auth::Fixed(header) => Ok(header.clone()),
-        Auth::Dcp(prover) => prover.authorization(&load.audience).await,
+        Auth::Dcp(prover) => prover.authorization(&load.audience, &[]).await,
     };
     let token_done = Instant::now();
     http.post_authorized(&load.url, body, &header?).await?;

@@ -12,13 +12,16 @@ use std::sync::{Arc, Mutex};
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
+use portitor_dcp::message::{CredentialRequestMessage, CredentialStatus};
 use portitor_dcp::{Claims, DidDocument, Relationship, Service, SigningKey, VerificationMethod};
 use portitor_identity::config::Config;
-use portitor_identity::directory::Directory;
-use portitor_identity::store::SqliteStore;
+use portitor_identity::issuance::{IssuerClient, SendError};
+use portitor_identity::store::{IdentityStore, SqliteStore};
 use portitor_identity::{Identity, Ports};
 use portitor_runtime::BoxFuture;
 use portitor_runtime::api_key::ApiKey;
+use portitor_runtime::directory::Directory;
+use portitor_runtime::http::HttpError;
 use portitor_runtime::system::{new_uuid, now_secs};
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
@@ -162,13 +165,84 @@ impl Directory for FakeDirectory {
     }
 }
 
+/// One credential request the fake issuer received.
+#[derive(Clone)]
+pub struct ReceivedRequest {
+    pub url: String,
+    pub message: CredentialRequestMessage,
+    pub id_token: String,
+}
+
+/// An issuer's `IssuerService` in memory: it records each credential
+/// request and answers with `location` (or fails with `refusal`, an
+/// error of the shared HTTP client such as `HTTP 401 Unauthorized` or
+/// `no answer within 10s`), and answers status reads with `status`.
+#[derive(Default)]
+pub struct FakeIssuer {
+    pub received: Mutex<Vec<ReceivedRequest>>,
+    pub location: Mutex<Option<String>>,
+    pub refusal: Mutex<Option<HttpError>>,
+    pub status: Mutex<Option<CredentialStatus>>,
+    /// The (URL, ID token) of each status read.
+    pub status_reads: Mutex<Vec<(String, String)>>,
+}
+
+impl FakeIssuer {
+    /// The requests received so far.
+    pub fn requests(&self) -> Vec<ReceivedRequest> {
+        self.received.lock().unwrap().clone()
+    }
+}
+
+impl IssuerClient for FakeIssuer {
+    fn request_credentials<'a>(
+        &'a self,
+        url: &'a str,
+        message: &'a CredentialRequestMessage,
+        id_token: &'a str,
+    ) -> BoxFuture<'a, Result<Option<String>, SendError>> {
+        self.received.lock().unwrap().push(ReceivedRequest {
+            url: url.to_owned(),
+            message: message.clone(),
+            id_token: id_token.to_owned(),
+        });
+        let answer = match self.refusal.lock().unwrap().clone() {
+            Some(error) => Err(SendError::from_http(&error)),
+            None => Ok(self.location.lock().unwrap().clone()),
+        };
+        Box::pin(async move { answer })
+    }
+
+    fn request_status<'a>(
+        &'a self,
+        url: &'a str,
+        id_token: &'a str,
+    ) -> BoxFuture<'a, Result<CredentialStatus, String>> {
+        self.status_reads
+            .lock()
+            .unwrap()
+            .push((url.to_owned(), id_token.to_owned()));
+        let answer = self
+            .status
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| "HTTP 404".to_owned());
+        Box::pin(async move { answer })
+    }
+}
+
 pub struct World {
     pub identity: Arc<Identity>,
     pub app: Router,
     pub management: Router,
     pub directory: Arc<FakeDirectory>,
+    pub issuer_service: Arc<FakeIssuer>,
     pub issuer: Party,
     pub verifier: Party,
+    /// A copy of the identity component's own key, to sign tokens it
+    /// would sign (for example an expired access token).
+    pub holder_key: SigningKey,
 }
 
 pub fn config() -> Config {
@@ -194,24 +268,26 @@ impl World {
 
     /// A world whose identity component has `config`.
     pub fn with(config: &Config) -> Self {
+        Self::with_store(config, Arc::new(SqliteStore::in_memory().unwrap()))
+    }
+
+    /// A world whose identity component has `config` and `store`.
+    pub fn with_store(config: &Config, store: Arc<dyn IdentityStore>) -> Self {
         let directory = Arc::new(FakeDirectory::default());
+        let issuer_service = Arc::new(FakeIssuer::default());
         let issuer = Party::new(ISSUER);
         let verifier = Party::new(VERIFIER);
         directory.add(&issuer);
         directory.add(&verifier);
+        let key = SigningKey::generate().unwrap();
+        let holder_key = SigningKey::from_pkcs8(key.pkcs8()).unwrap();
         let ports = Ports {
-            store: Arc::new(SqliteStore::in_memory().unwrap()),
+            store,
             directory: Arc::clone(&directory) as _,
+            issuers: Arc::clone(&issuer_service) as _,
         };
-        let identity = Arc::new(
-            Identity::new(
-                config,
-                SigningKey::generate().unwrap(),
-                ApiKey::new(STS_SECRET).unwrap(),
-                ports,
-            )
-            .unwrap(),
-        );
+        let identity =
+            Arc::new(Identity::new(config, key, ApiKey::new(STS_SECRET).unwrap(), ports).unwrap());
         let app = portitor_identity::router(Arc::clone(&identity));
         let management = portitor_identity::management::router(
             Arc::clone(&identity),
@@ -222,9 +298,16 @@ impl World {
             app,
             management,
             directory,
+            issuer_service,
             issuer,
             verifier,
+            holder_key,
         }
+    }
+
+    /// The key id of the identity component's key in its DID document.
+    pub fn holder_kid(&self) -> String {
+        format!("{HOLDER}#{}", self.holder_key.public_jwk().thumbprint())
     }
 
     /// Records a credential request for the issuer through the management

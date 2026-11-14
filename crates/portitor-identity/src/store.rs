@@ -15,7 +15,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use portitor_dcp::credential::Profile;
 use portitor_dcp::message::CredentialObject;
-use rusqlite::{Connection, OptionalExtension as _, Row, params};
+use rusqlite::{Connection, Row, params};
 
 /// A store operation failed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -68,7 +68,9 @@ pub enum RequestStatus {
 }
 
 impl RequestStatus {
-    fn text(self) -> &'static str {
+    /// How the status is written: `REQUESTED`, `ISSUED` or `REJECTED`.
+    #[must_use]
+    pub fn text(self) -> &'static str {
         match self {
             Self::Requested => "REQUESTED",
             Self::Issued => "ISSUED",
@@ -88,6 +90,11 @@ impl RequestStatus {
 
 /// A credential request the participant made, so the Storage API knows
 /// which `CredentialMessage` to accept (DCP 6.5: `holderPid`).
+///
+/// A request is either sent to the issuer by this component (DCP 6.4,
+/// with `credential_ids`, a status URL and an access token), or only
+/// recorded, for an issuer that is asked out of band (the DCP TCK, the
+/// test credential tool).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CredentialRequest {
     /// The holder's id of the request.
@@ -95,6 +102,65 @@ pub struct CredentialRequest {
     /// The issuer that may answer it.
     pub issuer: String,
     /// Where it stands.
+    pub status: RequestStatus,
+    /// The ids (in the issuer's metadata) of the credentials asked for;
+    /// empty for a request that was only recorded.
+    pub credential_ids: Vec<String>,
+    /// Where the issuer serves the request's status (the `Location` of
+    /// its `201 Created`, DCP 6.4 and 6.8), once known.
+    pub status_url: Option<String>,
+    /// The `jti` of the access token sent to the issuer in the `token`
+    /// claim (DCP 6.1); its delivery must carry this token back. None for
+    /// a request that was only recorded.
+    pub access_token_id: Option<String>,
+    /// When the request was made, seconds since 1970 (0 for requests
+    /// recorded before 0.6).
+    pub created_at: u64,
+    /// The issuer's id of the request (`issuerPid`), from its delivery,
+    /// once delivered.
+    pub issuer_pid: Option<String>,
+    /// Why the issuer's answer to the request is not known (no answer in
+    /// time, or a server error): the issuer may have taken it, so a
+    /// delivery is still accepted. None once the issuer answered.
+    pub send_error: Option<String>,
+}
+
+impl CredentialRequest {
+    /// A request for `issuer`, still open, with nothing sent yet.
+    #[must_use]
+    pub fn recorded(holder_pid: String, issuer: String, created_at: u64) -> Self {
+        Self {
+            holder_pid,
+            issuer,
+            status: RequestStatus::Requested,
+            credential_ids: Vec::new(),
+            status_url: None,
+            access_token_id: None,
+            created_at,
+            issuer_pid: None,
+            send_error: None,
+        }
+    }
+}
+
+/// What became of a delivery given to [`IdentityStore::deliver`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delivered {
+    /// The answer closed the request; its credentials are stored.
+    Stored,
+    /// The same answer (same `issuerPid` and status) closed the request
+    /// before: the issuer sent it again, for example because our first
+    /// reply was lost. Nothing is stored twice.
+    Repeated,
+}
+
+/// An issuer's answer to a request: its id of the request and the
+/// status it gave (DCP 6.5, `CredentialMessage`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Answer<'a> {
+    /// The issuer's id of the request (`issuerPid`).
+    pub issuer_pid: &'a str,
+    /// `Issued` or `Rejected`.
     pub status: RequestStatus,
 }
 
@@ -124,21 +190,50 @@ pub trait IdentityStore: Send + Sync {
     /// The store fails.
     fn request(&self, holder_pid: &str) -> Result<Option<CredentialRequest>, StoreError>;
 
-    /// Records an issuer's answer to a request that is still
-    /// [`RequestStatus::Requested`], with the credentials it delivered, all
-    /// at once; the answer closes the request. A credential with the `id`
-    /// of one already held from the same issuer replaces it.
+    /// Every request, newest first.
     ///
     /// # Errors
-    /// The store fails, the request is not open (unknown, or answered
-    /// already), or a credential has the `id` of one from another issuer.
+    /// The store fails.
+    fn requests(&self) -> Result<Vec<CredentialRequest>, StoreError>;
+
+    /// Keeps where the issuer serves the status of request `holder_pid`.
+    ///
+    /// # Errors
+    /// The store fails.
+    fn set_status_url(&self, holder_pid: &str, status_url: &str) -> Result<(), StoreError>;
+
+    /// Keeps why the issuer's answer to request `holder_pid` is not
+    /// known; the request stays open.
+    ///
+    /// # Errors
+    /// The store fails.
+    fn set_send_error(&self, holder_pid: &str, reason: &str) -> Result<(), StoreError>;
+
+    /// Removes request `holder_pid` if it is still open, so a late
+    /// delivery for it is refused; used when the issuer refused it, or
+    /// was never asked. Returns false if there was no open request.
+    ///
+    /// # Errors
+    /// The store fails.
+    fn withdraw_request(&self, holder_pid: &str) -> Result<bool, StoreError>;
+
+    /// Records an issuer's answer (`issuer_pid`, `status`) to a request
+    /// that is still [`RequestStatus::Requested`], with the credentials it
+    /// delivered, all at once; the answer closes the request. A credential
+    /// with the `id` of one already held from the same issuer replaces
+    /// it. The same answer again, for a request it closed, is
+    /// [`Delivered::Repeated`] and stores nothing.
+    ///
+    /// # Errors
+    /// The store fails, the request is unknown or closed by another
+    /// answer, or a credential has the `id` of one from another issuer.
     /// Then nothing is stored.
     fn deliver(
         &self,
         holder_pid: &str,
-        status: RequestStatus,
+        answer: Answer<'_>,
         credentials: &[StoredCredential],
-    ) -> Result<(), StoreError>;
+    ) -> Result<Delivered, StoreError>;
 
     /// Every credential held.
     ///
@@ -196,7 +291,20 @@ const MIGRATIONS: &[&str] = &[
         received_at   INTEGER NOT NULL,
         PRIMARY KEY (issuer, credential_id)
     )",
+    // 0.6: requests sent to the issuer by this component (DCP 6.4): what
+    // was asked, where the status is, the access token sent (ADR 0018)
+    "ALTER TABLE credential_request ADD COLUMN credential_ids TEXT NOT NULL DEFAULT '[]';
+    ALTER TABLE credential_request ADD COLUMN status_url TEXT;
+    ALTER TABLE credential_request ADD COLUMN access_token_id TEXT;
+    ALTER TABLE credential_request ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE credential_request ADD COLUMN issuer_pid TEXT;
+    ALTER TABLE credential_request ADD COLUMN send_error TEXT",
 ];
+
+/// The columns of a credential request, in the order of the `INSERT` in
+/// [`SqliteStore::add_request`]; read by name in [`request_from`].
+const REQUEST_COLUMNS: &str = "holder_pid, issuer_did, status, credential_ids, status_url, \
+     access_token_id, created_at, issuer_pid, send_error";
 
 /// Adapter: the store in a `SQLite` file.
 #[derive(Debug)]
@@ -230,54 +338,105 @@ impl SqliteStore {
 
 impl IdentityStore for SqliteStore {
     fn add_request(&self, request: &CredentialRequest) -> Result<bool, StoreError> {
+        let credential_ids = serde_json::to_string(&request.credential_ids)
+            .map_err(|e| StoreError(e.to_string()))?;
+        let created_at = i64::try_from(request.created_at).unwrap_or(i64::MAX);
         let added = self.conn().execute(
-            "INSERT INTO credential_request (holder_pid, issuer_did, status) VALUES (?1, ?2, ?3)
-                 ON CONFLICT (holder_pid) DO NOTHING",
-            params![request.holder_pid, request.issuer, request.status.text()],
+            &format!(
+                "INSERT INTO credential_request ({REQUEST_COLUMNS})
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 ON CONFLICT (holder_pid) DO NOTHING"
+            ),
+            params![
+                request.holder_pid,
+                request.issuer,
+                request.status.text(),
+                credential_ids,
+                request.status_url,
+                request.access_token_id,
+                created_at,
+                request.issuer_pid,
+                request.send_error
+            ],
         )?;
         Ok(added == 1)
     }
 
     fn request(&self, holder_pid: &str) -> Result<Option<CredentialRequest>, StoreError> {
-        let found = self
-            .conn()
-            .query_row(
-                "SELECT issuer_did, status FROM credential_request WHERE holder_pid = ?1",
-                [holder_pid],
-                |row| {
-                    let issuer: String = row.get("issuer_did")?;
-                    let status: String = row.get("status")?;
-                    Ok((issuer, status))
-                },
-            )
-            .optional()?;
-        let Some((issuer, status)) = found else {
-            return Ok(None);
-        };
-        Ok(Some(CredentialRequest {
-            holder_pid: holder_pid.to_owned(),
-            issuer,
-            status: RequestStatus::from_text(&status)?,
-        }))
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {REQUEST_COLUMNS} FROM credential_request WHERE holder_pid = ?1"
+        ))?;
+        let mut rows = stmt.query([holder_pid])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(request_from(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    fn requests(&self) -> Result<Vec<CredentialRequest>, StoreError> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {REQUEST_COLUMNS} FROM credential_request
+                 ORDER BY created_at DESC, holder_pid"
+        ))?;
+        let mut rows = stmt.query([])?;
+        let mut found = Vec::new();
+        while let Some(row) = rows.next()? {
+            found.push(request_from(row)?);
+        }
+        Ok(found)
+    }
+
+    fn set_status_url(&self, holder_pid: &str, status_url: &str) -> Result<(), StoreError> {
+        self.conn().execute(
+            "UPDATE credential_request SET status_url = ?2 WHERE holder_pid = ?1",
+            params![holder_pid, status_url],
+        )?;
+        Ok(())
+    }
+
+    fn set_send_error(&self, holder_pid: &str, reason: &str) -> Result<(), StoreError> {
+        self.conn().execute(
+            "UPDATE credential_request SET send_error = ?2 WHERE holder_pid = ?1",
+            params![holder_pid, reason],
+        )?;
+        Ok(())
+    }
+
+    fn withdraw_request(&self, holder_pid: &str) -> Result<bool, StoreError> {
+        let removed = self.conn().execute(
+            "DELETE FROM credential_request WHERE holder_pid = ?1 AND status = ?2",
+            params![holder_pid, RequestStatus::Requested.text()],
+        )?;
+        Ok(removed == 1)
     }
 
     fn deliver(
         &self,
         holder_pid: &str,
-        status: RequestStatus,
+        answer: Answer<'_>,
         credentials: &[StoredCredential],
-    ) -> Result<(), StoreError> {
+    ) -> Result<Delivered, StoreError> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         // only an open request takes an answer, and only one: a second
         // delivery finds it closed (the transaction is dropped, so nothing
         // is written)
         let closed = tx.execute(
-            "UPDATE credential_request SET status = ?2
-                 WHERE holder_pid = ?1 AND status = ?3",
-            params![holder_pid, status.text(), RequestStatus::Requested.text()],
+            "UPDATE credential_request SET status = ?2, issuer_pid = ?3, send_error = NULL
+                 WHERE holder_pid = ?1 AND status = ?4",
+            params![
+                holder_pid,
+                answer.status.text(),
+                answer.issuer_pid,
+                RequestStatus::Requested.text()
+            ],
         )?;
         if closed == 0 {
+            if closed_by(&tx, holder_pid, answer)? {
+                return Ok(Delivered::Repeated);
+            }
             return Err(StoreError(format!(
                 "credential request {holder_pid} is not open"
             )));
@@ -313,7 +472,7 @@ impl IdentityStore for SqliteStore {
             }
         }
         tx.commit()?;
-        Ok(())
+        Ok(Delivered::Stored)
     }
 
     fn credentials(&self) -> Result<Vec<StoredCredential>, StoreError> {
@@ -380,6 +539,41 @@ impl IdentityStore for SqliteStore {
     }
 }
 
+/// Whether request `holder_pid` was closed by `answer` (the same
+/// `issuerPid` and status) before.
+fn closed_by(
+    tx: &rusqlite::Transaction<'_>,
+    holder_pid: &str,
+    answer: Answer<'_>,
+) -> Result<bool, StoreError> {
+    let mut stmt = tx.prepare(
+        "SELECT 1 FROM credential_request
+             WHERE holder_pid = ?1 AND status = ?2 AND issuer_pid = ?3",
+    )?;
+    let found = stmt.exists(params![holder_pid, answer.status.text(), answer.issuer_pid])?;
+    Ok(found)
+}
+
+/// A credential request from a row with the [`REQUEST_COLUMNS`], read by
+/// column name.
+fn request_from(row: &Row<'_>) -> Result<CredentialRequest, StoreError> {
+    let status: String = row.get("status")?;
+    let credential_ids: String = row.get("credential_ids")?;
+    let created_at: i64 = row.get("created_at")?;
+    Ok(CredentialRequest {
+        holder_pid: row.get("holder_pid")?,
+        issuer: row.get("issuer_did")?,
+        status: RequestStatus::from_text(&status)?,
+        credential_ids: serde_json::from_str(&credential_ids)
+            .map_err(|e| StoreError(e.to_string()))?,
+        status_url: row.get("status_url")?,
+        access_token_id: row.get("access_token_id")?,
+        created_at: u64::try_from(created_at).unwrap_or_default(),
+        issuer_pid: row.get("issuer_pid")?,
+        send_error: row.get("send_error")?,
+    })
+}
+
 /// A stored credential from a row with the [`CREDENTIAL_COLUMNS`], read
 /// by column name.
 fn credential_from(row: &Row<'_>) -> Result<StoredCredential, StoreError> {
@@ -403,11 +597,7 @@ mod tests {
     use super::*;
 
     fn request(pid: &str) -> CredentialRequest {
-        CredentialRequest {
-            holder_pid: pid.to_owned(),
-            issuer: "did:web:issuer.example".to_owned(),
-            status: RequestStatus::Requested,
-        }
+        CredentialRequest::recorded(pid.to_owned(), "did:web:issuer.example".to_owned(), 1)
     }
 
     fn credential(id: &str, issuer: &str) -> StoredCredential {
@@ -425,36 +615,51 @@ mod tests {
         }
     }
 
+    /// The answer `issuer_pid` with `status`.
+    fn answer(issuer_pid: &str, status: RequestStatus) -> Answer<'_> {
+        Answer { issuer_pid, status }
+    }
+
     fn check(store: &dyn IdentityStore) {
+        use RequestStatus::{Issued, Rejected};
         assert!(store.add_request(&request("h-1")).unwrap());
         assert!(!store.add_request(&request("h-1")).unwrap(), "exists");
         assert_eq!(store.request("h-2").unwrap(), None);
 
         let issuer = "did:web:issuer.example";
-        store
-            .deliver("h-1", RequestStatus::Issued, &[credential("c-1", issuer)])
+        let delivered = store
+            .deliver("h-1", answer("i-1", Issued), &[credential("c-1", issuer)])
             .unwrap();
-        assert_eq!(
-            store.request("h-1").unwrap().unwrap().status,
-            RequestStatus::Issued
-        );
+        assert_eq!(delivered, Delivered::Stored);
+        let read = store.request("h-1").unwrap().unwrap();
+        assert_eq!(read.status, Issued);
+        assert_eq!(read.issuer_pid.as_deref(), Some("i-1"));
         assert_eq!(store.credentials().unwrap(), [credential("c-1", issuer)]);
 
-        // the answer closed the request: neither a second delivery nor a
+        // the same answer again (a lost reply): acknowledged, nothing
+        // stored twice
+        let again = store
+            .deliver("h-1", answer("i-1", Issued), &[credential("c-2", issuer)])
+            .unwrap();
+        assert_eq!(again, Delivered::Repeated);
+        assert_eq!(store.credentials().unwrap().len(), 1);
+
+        // the answer closed the request: neither another delivery nor a
         // rejection changes it, and nothing more is stored
-        for status in [RequestStatus::Issued, RequestStatus::Rejected] {
+        for other in [
+            answer("i-2", Issued),
+            answer("i-2", Rejected),
+            answer("i-1", Rejected),
+        ] {
             let err = store
-                .deliver("h-1", status, &[credential("c-2", issuer)])
+                .deliver("h-1", other, &[credential("c-2", issuer)])
                 .unwrap_err();
             assert!(err.0.contains("is not open"), "{err}");
         }
-        assert_eq!(
-            store.request("h-1").unwrap().unwrap().status,
-            RequestStatus::Issued
-        );
+        assert_eq!(store.request("h-1").unwrap().unwrap().status, Issued);
         assert_eq!(store.credentials().unwrap().len(), 1);
         let err = store
-            .deliver("unknown", RequestStatus::Issued, &[])
+            .deliver("unknown", answer("i-1", Issued), &[])
             .unwrap_err();
         assert!(err.0.contains("is not open"), "{err}");
 
@@ -464,7 +669,7 @@ mod tests {
         let err = store
             .deliver(
                 "h-3",
-                RequestStatus::Issued,
+                answer("i-3", Issued),
                 &[
                     credential("c-2", issuer),
                     credential("c-1", "did:web:eve.example"),
@@ -473,20 +678,61 @@ mod tests {
             .unwrap_err();
         assert!(err.0.contains("another issuer"));
         assert_eq!(store.credentials().unwrap().len(), 1);
-        assert_eq!(
-            store.request("h-3").unwrap().unwrap().status,
-            RequestStatus::Requested
-        );
+        let open = store.request("h-3").unwrap().unwrap();
+        assert_eq!(open.status, RequestStatus::Requested);
+        assert_eq!(open.issuer_pid, None);
 
-        // a rejection closes a request too
-        store.deliver("h-3", RequestStatus::Rejected, &[]).unwrap();
+        // a rejection closes a request too, and clears why the issuer's
+        // answer was unknown
+        store.set_send_error("h-3", "no answer within 10s").unwrap();
         assert_eq!(
-            store.request("h-3").unwrap().unwrap().status,
-            RequestStatus::Rejected
+            store.request("h-3").unwrap().unwrap().send_error.as_deref(),
+            Some("no answer within 10s")
         );
+        store.deliver("h-3", answer("i-3", Rejected), &[]).unwrap();
+        let rejected = store.request("h-3").unwrap().unwrap();
+        assert_eq!(rejected.status, Rejected);
+        assert_eq!(rejected.send_error, None);
 
         assert!(store.delete_credential("c-1").unwrap());
         assert!(!store.delete_credential("c-1").unwrap());
+        check_sent_requests_and_offers(store);
+    }
+
+    /// Run by [`check`], after its requests `h-1` and `h-3`.
+    fn check_sent_requests_and_offers(store: &dyn IdentityStore) {
+        let issuer = "did:web:issuer.example";
+        // a request sent to the issuer keeps what was asked, the access
+        // token's id and, once known, the status URL
+        let sent = CredentialRequest {
+            credential_ids: vec!["membership".to_owned()],
+            access_token_id: Some("jti-1".to_owned()),
+            created_at: 5,
+            ..request("h-4")
+        };
+        assert!(store.add_request(&sent).unwrap());
+        store
+            .set_status_url("h-4", "https://issuer.example/requests/i-4")
+            .unwrap();
+        let read = store.request("h-4").unwrap().unwrap();
+        assert_eq!(
+            read,
+            CredentialRequest {
+                status_url: Some("https://issuer.example/requests/i-4".to_owned()),
+                ..sent
+            }
+        );
+        let listed: Vec<String> = store
+            .requests()
+            .unwrap()
+            .into_iter()
+            .map(|r| r.holder_pid)
+            .collect();
+        assert_eq!(listed, ["h-4", "h-1", "h-3"], "newest first");
+        // only an open request can be withdrawn
+        assert!(!store.withdraw_request("h-1").unwrap());
+        assert!(store.withdraw_request("h-4").unwrap());
+        assert_eq!(store.request("h-4").unwrap(), None);
 
         let offered: CredentialObject =
             serde_json::from_value(serde_json::json!({"id": "o-1", "credentialType": "A"}))
@@ -506,6 +752,52 @@ mod tests {
     #[test]
     fn in_memory() {
         check(&SqliteStore::in_memory().unwrap());
+    }
+
+    /// The schema of 0.5 (its one migration), with one open request
+    /// recorded for an issuer asked out of band.
+    fn database_of_0_5(path: &Path) {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(MIGRATIONS[0]).unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        conn.execute(
+            "INSERT INTO credential_request (holder_pid, issuer_did, status)
+                 VALUES ('h-old', 'did:web:issuer.example', 'REQUESTED')",
+            [],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_database_of_0_5_is_brought_up_to_date() {
+        let dir = std::env::temp_dir().join(format!(
+            "portitor-identity-upgrade-{}",
+            portitor_runtime::system::new_uuid().trim_start_matches("urn:uuid:")
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("identity.db");
+        database_of_0_5(&path);
+
+        let store = SqliteStore::open(&path).unwrap();
+        // the new columns read their defaults
+        let expected =
+            CredentialRequest::recorded("h-old".to_owned(), "did:web:issuer.example".to_owned(), 0);
+        assert_eq!(store.request("h-old").unwrap().unwrap(), expected);
+        assert_eq!(store.requests().unwrap(), [expected]);
+        // the request still takes its delivery
+        let delivered = store
+            .deliver(
+                "h-old",
+                answer("i-1", RequestStatus::Issued),
+                &[credential("c-1", "did:web:issuer.example")],
+            )
+            .unwrap();
+        assert_eq!(delivered, Delivered::Stored);
+        drop(store);
+        // and the file opens again, at the current version
+        let again = SqliteStore::open(&path).unwrap();
+        assert_eq!(again.credentials().unwrap().len(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

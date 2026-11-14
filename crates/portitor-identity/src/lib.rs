@@ -11,22 +11,25 @@
 //!   participant's own connector, [`sts`];
 //! - the credential service: the presentation API (scopes only),
 //!   [`presentation`]; the Storage API and credential offers, [`storage`];
+//! - asking an issuer for credentials (holder side of DCP issuance),
+//!   [`issuance`];
 //! - a management API (API key, as the connector's), [`management`].
 //!
 //! The public routes are in [`router`]; the management API has its own
 //! router and port.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use axum::Router;
 use axum::routing::{get, post};
 use portitor_dcp::{JtiCache, SigningKey};
 use portitor_runtime::api_key::ApiKey;
+use portitor_runtime::directory::Directory;
 
 mod caller;
 pub mod config;
 pub mod did_document;
-pub mod directory;
+pub mod issuance;
 pub mod management;
 pub mod presentation;
 pub mod storage;
@@ -34,7 +37,7 @@ pub mod store;
 pub mod sts;
 
 use config::Config;
-use directory::Directory;
+use issuance::IssuerClient;
 use store::IdentityStore;
 
 /// Allowed clock difference with other parties, in seconds.
@@ -59,6 +62,7 @@ pub struct Identity {
     sts_client_secret: ApiKey,
     store: Arc<dyn IdentityStore>,
     directory: Arc<dyn Directory>,
+    issuers: Arc<dyn IssuerClient>,
     used_token_ids: Mutex<JtiCache>,
 }
 
@@ -77,6 +81,8 @@ pub struct Ports {
     pub store: Arc<dyn IdentityStore>,
     /// Where other parties' DID documents and metadata are read.
     pub directory: Arc<dyn Directory>,
+    /// Where the participant asks issuers for credentials.
+    pub issuers: Arc<dyn IssuerClient>,
 }
 
 impl Identity {
@@ -118,6 +124,7 @@ impl Identity {
             sts_client_secret,
             store: ports.store,
             directory: ports.directory,
+            issuers: ports.issuers,
             used_token_ids: Mutex::new(JtiCache::default()),
         })
     }
@@ -145,21 +152,12 @@ impl Identity {
     }
 
     /// Who signs: this participant, with its key.
-    fn signer(&self) -> portitor_dcp::holder::Signer<'_> {
-        portitor_dcp::holder::Signer {
+    fn signer(&self) -> portitor_dcp::Signer<'_> {
+        portitor_dcp::Signer {
             key: &self.key,
             kid: &self.kid,
             did: &self.participant_id,
         }
-    }
-
-    /// The used token ids. A panic while the lock was held could at worst
-    /// leave one id that is never forgotten (it only panics when memory
-    /// runs out), so a poisoned lock is used as it is.
-    fn used_token_ids(&self) -> std::sync::MutexGuard<'_, JtiCache> {
-        self.used_token_ids
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
     }
 }
 

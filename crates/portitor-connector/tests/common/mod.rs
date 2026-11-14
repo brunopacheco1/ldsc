@@ -14,7 +14,10 @@ use std::sync::{Arc, Mutex};
 use axum::http::request::Builder;
 use portitor_connector::Ports;
 use portitor_connector::auth::{Caller, CallerVerifier, Prover};
+use portitor_dsp::policy::HeldCredential;
 use portitor_runtime::BoxFuture;
+
+pub mod network;
 
 /// The consumer's DID in the tests.
 pub const CONSUMER: &str = "did:web:consumer.example";
@@ -30,10 +33,17 @@ impl CallerVerifier for NamedCaller {
         authorization: Option<&'a str>,
     ) -> BoxFuture<'a, Result<Caller, String>> {
         let did = authorization.and_then(|value| value.strip_prefix("Bearer "));
-        let caller = did
-            .map(|did| Caller(did.to_owned()))
-            .ok_or_else(|| "no caller".to_owned());
+        let caller = did.map(Caller::new).ok_or_else(|| "no caller".to_owned());
         Box::pin(async move { caller })
+    }
+
+    /// No credentials: the tests' offers have no credential constraints.
+    fn credentials<'a>(
+        &'a self,
+        caller: &'a Caller,
+        _: &'a [String],
+    ) -> BoxFuture<'a, Result<Vec<HeldCredential>, String>> {
+        Box::pin(async move { Ok(caller.credentials.clone()) })
     }
 }
 
@@ -48,7 +58,11 @@ pub struct NameSelf {
 }
 
 impl Prover for NameSelf {
-    fn authorization<'a>(&'a self, audience: &'a str) -> BoxFuture<'a, Result<String, String>> {
+    fn authorization<'a>(
+        &'a self,
+        audience: &'a str,
+        _: &'a [String],
+    ) -> BoxFuture<'a, Result<String, String>> {
         self.audiences.lock().unwrap().push(audience.to_owned());
         Box::pin(async move { Ok(bearer(&self.did)) })
     }

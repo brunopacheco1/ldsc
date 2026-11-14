@@ -17,6 +17,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use portitor_dsp::guard::{Direction, MessageGuard};
 use portitor_dsp::negotiation::Agreement;
+use portitor_dsp::policy::{CallerCredentials, credential_scopes};
 use portitor_dsp::transfer::provider::{
     Agreements, DataFlows, Failure, Handled, Outgoing, StoreError, Transfer, TransferService,
     TransferStore,
@@ -30,7 +31,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::InMemoryDatasets;
-use crate::auth::Caller;
+use crate::auth::{AnyVerifier, Caller, credentials_for};
 use crate::http_client::outbound_url_allowed;
 use crate::negotiation::InMemoryNegotiations;
 use crate::outbox::{self, Link, Message, Outbox};
@@ -140,6 +141,8 @@ type Service = TransferService<
 pub(crate) struct TransferProvider {
     service: Service,
     link: Link,
+    /// Asks a caller for more credentials when an agreement needs them.
+    verifier: AnyVerifier,
     allow_http: bool,
 }
 
@@ -156,8 +159,21 @@ impl TransferProvider {
                 SystemEnvironment,
             ),
             link: Link::new(ports),
+            verifier: Arc::clone(&ports.verifier),
             allow_http,
         }
+    }
+
+    /// The caller's verified credentials for the credential constraints of
+    /// its agreement `agreement_id`, if it holds that agreement (ADR 0019).
+    async fn credentials(&self, caller: &Caller, agreement_id: &str) -> CallerCredentials {
+        let types = &self.link.credential_types;
+        let scopes = match self.service.agreement(agreement_id, &caller.id) {
+            Ok(Some(agreement)) => credential_scopes(&agreement, types),
+            // the request is refused anyway
+            Ok(None) | Err(_) => Vec::new(),
+        };
+        credentials_for(&*self.verifier, types, caller, &scopes).await
     }
 
     /// Checks the message's shape with the guard, then reads it.
@@ -283,10 +299,10 @@ pub(crate) type Body = Result<Json<Value>, JsonRejection>;
 /// `GET /transfers/{providerPid}`.
 pub(crate) async fn get(
     State(provider): Provider,
-    Extension(Caller(caller)): Extension<Caller>,
+    Extension(caller): Extension<Caller>,
     Path(pid): Path<String>,
 ) -> Response {
-    match provider.service.get(&pid, &caller) {
+    match provider.service.get(&pid, &caller.id) {
         Ok(ack) => Json(ack).into_response(),
         Err(f) => failed(f),
     }
@@ -295,7 +311,7 @@ pub(crate) async fn get(
 /// `POST /transfers/request`.
 pub(crate) async fn request(
     State(provider): Provider,
-    Extension(Caller(caller)): Extension<Caller>,
+    Extension(caller): Extension<Caller>,
     body: Body,
 ) -> Response {
     let msg: TransferRequestMessage = match provider.read(body, "TransferRequestMessage", "") {
@@ -306,14 +322,16 @@ pub(crate) async fn request(
         let reason = "callbackAddress must be an https URL";
         return bad_request(TransferError::new("", &msg.consumer_pid, "400", reason));
     }
-    let handled = provider.service.request(&msg, &caller);
+    // the agreement is evaluated again with fresh credentials (ADR 0019)
+    let credentials = provider.credentials(&caller, &msg.agreement_id).await;
+    let handled = provider.service.request(&msg, &caller.id, &credentials);
     provider.finish(handled, StatusCode::CREATED)
 }
 
 /// `POST /transfers/{providerPid}/start`.
 pub(crate) async fn start(
     State(provider): Provider,
-    Extension(Caller(caller)): Extension<Caller>,
+    Extension(caller): Extension<Caller>,
     Path(pid): Path<String>,
     body: Body,
 ) -> Response {
@@ -321,14 +339,14 @@ pub(crate) async fn start(
         Ok(m) => m,
         Err(refused) => return bad_request(*refused),
     };
-    let handled = provider.service.start(&pid, &msg, &caller);
+    let handled = provider.service.start(&pid, &msg, &caller.id);
     provider.finish(handled, StatusCode::OK)
 }
 
 /// `POST /transfers/{providerPid}/suspension`.
 pub(crate) async fn suspension(
     State(provider): Provider,
-    Extension(Caller(caller)): Extension<Caller>,
+    Extension(caller): Extension<Caller>,
     Path(pid): Path<String>,
     body: Body,
 ) -> Response {
@@ -338,14 +356,14 @@ pub(crate) async fn suspension(
             Err(refused) => return bad_request(*refused),
         };
     let ids = (msg.provider_pid.as_str(), msg.consumer_pid.as_str());
-    let handled = provider.service.suspend(&pid, ids, &caller);
+    let handled = provider.service.suspend(&pid, ids, &caller.id);
     provider.finish(handled, StatusCode::OK)
 }
 
 /// `POST /transfers/{providerPid}/completion`.
 pub(crate) async fn completion(
     State(provider): Provider,
-    Extension(Caller(caller)): Extension<Caller>,
+    Extension(caller): Extension<Caller>,
     Path(pid): Path<String>,
     body: Body,
 ) -> Response {
@@ -355,14 +373,14 @@ pub(crate) async fn completion(
             Err(refused) => return bad_request(*refused),
         };
     let ids = (msg.provider_pid.as_str(), msg.consumer_pid.as_str());
-    let handled = provider.service.complete(&pid, ids, &caller);
+    let handled = provider.service.complete(&pid, ids, &caller.id);
     provider.finish(handled, StatusCode::OK)
 }
 
 /// `POST /transfers/{providerPid}/termination`.
 pub(crate) async fn termination(
     State(provider): Provider,
-    Extension(Caller(caller)): Extension<Caller>,
+    Extension(caller): Extension<Caller>,
     Path(pid): Path<String>,
     body: Body,
 ) -> Response {
@@ -372,6 +390,6 @@ pub(crate) async fn termination(
             Err(refused) => return bad_request(*refused),
         };
     let ids = (msg.provider_pid.as_str(), msg.consumer_pid.as_str());
-    let handled = provider.service.terminate(&pid, ids, &caller);
+    let handled = provider.service.terminate(&pid, ids, &caller.id);
     provider.finish(handled, StatusCode::OK)
 }

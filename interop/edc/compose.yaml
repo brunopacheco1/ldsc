@@ -5,27 +5,48 @@
 # The EDC interop test (docs/TESTING.md): a Portitor participant
 # (portitor-connector + portitor-identity) and an EDC participant (control
 # plane, data plane, IdentityHub with its STS) in one data space whose
-# MembershipCredentials come from a demo authority (the test-issuer
-# example). Test-only: plain HTTP between the containers, a Vault in dev
-# mode, fixed test keys. scripts/edc-interop.sh runs it and checks the
-# results; it writes the run/ directory first (keys, the authority's site).
+# MembershipCredentials come from its portitor-issuer; each participant
+# asks for its own through its identity's API. Test-only: plain HTTP
+# between the containers, a Vault in dev mode, keys made for each run.
+# scripts/edc-interop.sh runs it and checks the results; it writes the
+# run/ directory first (keys, secrets, the Identity API's JWKS).
 #
-# PORTITOR_IMAGE and PORTITOR_IDENTITY_IMAGE pick the Portitor images
-# (default: the ones CI builds, portitor-connector:ci, portitor-identity:ci).
+# PORTITOR_IMAGE, PORTITOR_IDENTITY_IMAGE and PORTITOR_ISSUER_IMAGE pick
+# the Portitor images (default: the ones CI builds, portitor-connector:ci,
+# portitor-identity:ci, portitor-issuer:ci).
 # The EDC images are built from runtimes/ (EDC v1.0.0-RC7 from Maven
 # Central).
 
 name: portitor-edc-interop
 
 services:
-  # The demo authority's did:web site: DID document, JWKS and status list
-  # (did:web:authority, http://authority/...), written by test-issuer init.
-  authority:
+  # The data space's authority: did:web:issuer%3A8070, its issuer service
+  # (credential requests from both identities, status lists) and its
+  # management API (participants, revocation).
+  issuer:
+    image: ${PORTITOR_ISSUER_IMAGE:-portitor-issuer:ci}
+    environment:
+      PORTITOR_PARTICIPANT_ID: did:web:issuer%3A8070
+      PORTITOR_ISSUER_SERVICE_URL: http://issuer:8070/issuer
+      PORTITOR_ISSUER_KEY_FILE: /config/issuer-key.pem
+      PORTITOR_ISSUER_CREDENTIALS_FILE: /config/issuer-credentials.json
+      PORTITOR_MANAGEMENT_BIND: 0.0.0.0:8071
+      PORTITOR_MANAGEMENT_API_KEY_FILE: /config/issuer-management.key
+      PORTITOR_ALLOW_HTTP_CALLBACKS: "true"
+    volumes:
+      - ./run/issuer/issuer-key.pem:/config/issuer-key.pem:ro
+      - ./run/issuer/management.key:/config/issuer-management.key:ro
+      - ./config/issuer-credentials.json:/config/issuer-credentials.json:ro
+      - issuer-data:/data
+    ports:
+      - 127.0.0.1:18371:8071 # management API, for scripts/edc-interop.sh
+
+  # The key set of the tokens for the IdentityHub's Identity API
+  # (http://identity-api-jwks/jwks.json), written by scripts/edc-interop.sh
+  identity-api-jwks:
     image: nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
     volumes:
-      - ./run/authority:/usr/share/nginx/html:ro
-    ports:
-      - 127.0.0.1:18300:80
+      - ./run/identity-api:/usr/share/nginx/html:ro
 
   # the files both providers share
   data:
@@ -53,7 +74,7 @@ services:
       - ./config/edc-identityhub.properties:/config/runtime.properties:ro
     ports:
       - 127.0.0.1:18281:7081 # Identity API, for scripts/edc-interop.sh
-    depends_on: [vault, authority]
+    depends_on: [vault, issuer, identity-api-jwks]
 
   edc-controlplane:
     image: portitor-interop/edc-controlplane:1.0.0-RC7
@@ -86,7 +107,7 @@ services:
       PORTITOR_MANAGEMENT_BIND: 0.0.0.0:8091
       PORTITOR_MANAGEMENT_API_KEY_FILE: /config/identity-management.key
       PORTITOR_STS_CLIENT_SECRET_FILE: /config/sts-client-secret
-      PORTITOR_TRUSTED_ISSUERS: did:web:authority
+      PORTITOR_TRUSTED_ISSUERS: did:web:issuer%3A8070
       PORTITOR_ALLOW_HTTP_CALLBACKS: "true"
     volumes:
       - ./run/portitor/identity-key.pem:/config/identity-key.pem:ro
@@ -96,7 +117,7 @@ services:
     ports:
       - 127.0.0.1:18190:8090 # DID document, STS, credential service
       - 127.0.0.1:18191:8091 # management API
-    depends_on: [authority]
+    depends_on: [issuer]
 
   portitor-connector:
     image: ${PORTITOR_IMAGE:-portitor-connector:ci}
@@ -109,7 +130,7 @@ services:
       PORTITOR_MANAGEMENT_API_KEY_FILE: /config/connector-management.key
       PORTITOR_STS_URL: http://portitor-identity:8090/sts/token
       PORTITOR_STS_CLIENT_SECRET_FILE: /config/sts-client-secret
-      PORTITOR_TRUSTED_ISSUERS: did:web:authority
+      PORTITOR_TRUSTED_ISSUERS: did:web:issuer%3A8070
       # the same scope as the EDC control plane's (config/edc-controlplane.properties)
       PORTITOR_DCP_SCOPES: org.eclipse.dspace.dcp.vc.type:MembershipCredential:read
     volumes:
@@ -129,5 +150,6 @@ services:
     profiles: [tools]
 
 volumes:
+  issuer-data:
   portitor-identity-data:
   portitor-connector-data:

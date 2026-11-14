@@ -5,7 +5,7 @@
 //! The DCP v1.0.1 messages a Credential Service receives or sends:
 //! presentation query and response (presentation protocol, section 5), and
 //! the credential and offer messages of the issuance protocol (sections
-//! 6.5 and 6.6). Field names follow the spec's JSON Schemas (tag
+//! 6.4 to 6.8). Field names follow the spec's JSON Schemas (tag
 //! `v1.0.1`); Rust names are the JSON names in `snake_case`.
 //!
 //! Each message checks its `type` and `@context` while it is parsed, so a
@@ -120,6 +120,14 @@ type_name!(
 type_name!(
     /// `type` of an [`IssuerMetadata`].
     IssuerMetadataType = "IssuerMetadata"
+);
+type_name!(
+    /// `type` of a [`CredentialRequestMessage`].
+    CredentialRequestType = "CredentialRequestMessage"
+);
+type_name!(
+    /// `type` of a [`CredentialStatus`].
+    CredentialStatusType = "CredentialStatus"
 );
 
 /// A verifier asks a Credential Service for presentations (DCP section
@@ -369,6 +377,106 @@ pub struct CredentialOfferMessage {
     pub credentials: Vec<CredentialObject>,
 }
 
+/// One credential a holder asks for, by its id in the issuer's
+/// [`IssuerMetadata`] (DCP section 6.4.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestedCredential {
+    /// The `id` of a [`CredentialObject`] in the issuer's metadata.
+    pub id: String,
+}
+
+/// A holder asks an issuer for credentials (DCP section 6.4, `POST
+/// /credentials` on the issuer's `IssuerService`). The issuer answers
+/// `201 Created` with a `Location` header for the request status, and
+/// delivers the credentials later to the holder's Storage API.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialRequestMessage {
+    /// JSON-LD context.
+    #[serde(rename = "@context")]
+    pub context: Context,
+    /// Always `CredentialRequestMessage`.
+    #[serde(rename = "type")]
+    pub kind: CredentialRequestType,
+    /// The holder's id for this request; the issuer echoes it in its
+    /// [`CredentialMessage`].
+    pub holder_pid: String,
+    /// The credentials asked for.
+    pub credentials: Vec<RequestedCredential>,
+}
+
+impl CredentialRequestMessage {
+    /// A request for the credentials with these metadata `ids`.
+    #[must_use]
+    pub fn new(holder_pid: String, ids: Vec<String>) -> Self {
+        let mut credentials = Vec::new();
+        for id in ids {
+            credentials.push(RequestedCredential { id });
+        }
+        Self {
+            context: Context::default(),
+            kind: CredentialRequestType,
+            holder_pid,
+            credentials,
+        }
+    }
+}
+
+/// Where a credential request stands (DCP section 6.8). A request starts
+/// `RECEIVED` and ends `ISSUED` or `REJECTED`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum RequestStatus {
+    /// The issuer has the request and has not decided yet.
+    Received,
+    /// The issuer refused the request.
+    Rejected,
+    /// The credentials were issued.
+    Issued,
+}
+
+impl RequestStatus {
+    /// The DCP name, as in the JSON: `RECEIVED`, `REJECTED` or `ISSUED`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Received => "RECEIVED",
+            Self::Rejected => "REJECTED",
+            Self::Issued => "ISSUED",
+        }
+    }
+
+    /// The status with this DCP name, if any.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "RECEIVED" => Some(Self::Received),
+            "REJECTED" => Some(Self::Rejected),
+            "ISSUED" => Some(Self::Issued),
+            _ => None,
+        }
+    }
+}
+
+/// An issuer's answer to a status request (DCP section 6.8, `GET
+/// /requests/{issuerPid}`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialStatus {
+    /// JSON-LD context.
+    #[serde(rename = "@context")]
+    pub context: Context,
+    /// Always `CredentialStatus`.
+    #[serde(rename = "type")]
+    pub kind: CredentialStatusType,
+    /// The issuer's id for the request.
+    pub issuer_pid: String,
+    /// The holder's id for the request.
+    pub holder_pid: String,
+    /// Where the request stands.
+    pub status: RequestStatus,
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -463,6 +571,40 @@ mod tests {
         }))
         .unwrap();
         assert!(!metadata.credentials_supported[0].is_sparse());
+    }
+
+    #[test]
+    fn credential_request_and_status_round_trip() {
+        let request = CredentialRequestMessage::new("h-1".to_owned(), vec!["m-1".to_owned()]);
+        let json = serde_json::to_value(&request).unwrap();
+        assert_eq!(
+            json,
+            json!({"@context": [CONTEXT], "type": "CredentialRequestMessage",
+                "holderPid": "h-1", "credentials": [{"id": "m-1"}]})
+        );
+        let status: CredentialStatus = serde_json::from_value(json!({
+            "@context": [CONTEXT], "type": "CredentialStatus",
+            "issuerPid": "i-1", "holderPid": "h-1", "status": "RECEIVED"
+        }))
+        .unwrap();
+        assert_eq!(status.status, RequestStatus::Received);
+        let unknown = json!({"@context": [CONTEXT], "type": "CredentialStatus",
+            "issuerPid": "i-1", "holderPid": "h-1", "status": "PENDING"});
+        assert!(serde_json::from_value::<CredentialStatus>(unknown).is_err());
+    }
+
+    #[test]
+    fn request_status_names_are_the_json_ones() {
+        for status in [
+            RequestStatus::Received,
+            RequestStatus::Rejected,
+            RequestStatus::Issued,
+        ] {
+            let json = serde_json::to_value(status).unwrap();
+            assert_eq!(json, status.as_str());
+            assert_eq!(RequestStatus::from_name(status.as_str()), Some(status));
+        }
+        assert_eq!(RequestStatus::from_name("received"), None);
     }
 
     #[test]

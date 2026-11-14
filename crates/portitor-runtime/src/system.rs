@@ -53,33 +53,37 @@ pub fn new_uuid() -> String {
     )
 }
 
+/// A random number in `0..bound` from the operating system's generator,
+/// each value equally likely (`bound` 0 gives 0). Used to pick status
+/// list positions: W3C Bitstring Status List v1.0, `statusListIndex`,
+/// "implementations SHOULD assign indexes randomly".
+#[must_use]
+pub fn random_below(bound: u64) -> u64 {
+    use ring::rand::SecureRandom as _;
+    if bound == 0 {
+        return 0;
+    }
+    // numbers at or above the largest multiple of `bound` are drawn
+    // again, so that `% bound` favours no value
+    let limit = u64::MAX - u64::MAX % bound;
+    let generator = ring::rand::SystemRandom::new();
+    loop {
+        let mut bytes = [0u8; 8];
+        // as in `new_uuid`: if the OS has no randomness, zeros are used
+        let _ = generator.fill(&mut bytes);
+        let drawn = u64::from_le_bytes(bytes);
+        if drawn < limit {
+            return drawn % bound;
+        }
+    }
+}
+
 /// Seconds since 1970 as XSD dateTime in UTC, for example
-/// `2026-11-12T12:00:00Z`.
-///
-/// The date uses Howard Hinnant's `civil_from_days` algorithm
-/// (<https://howardhinnant.github.io/date_algorithms.html#civil_from_days>),
-/// with his variable names: it counts in 400-year "eras" (146 097 days
-/// each) of years that start on 1 March, so the leap day is the last day
-/// of a year.
+/// `2026-11-12T12:00:00Z` (the pure function lives in `portitor-time`, so
+/// the domain crates can use it too).
 #[must_use]
 pub fn xsd_date_time(secs: u64) -> String {
-    let days = i64::try_from(secs / 86_400).unwrap_or(i64::MAX / 2);
-    let seconds_today = secs % 86_400;
-    let z = days + 719_468; // days since 0000-03-01
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097); // day of era, 0..=146096
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365; // year of era
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // day of year, from 1 March
-    let mp = (5 * doy + 2) / 153; // month, 0 = March
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
-        seconds_today / 3_600,
-        seconds_today % 3_600 / 60,
-        seconds_today % 60
-    )
+    portitor_time::xsd_date_time(secs)
 }
 
 #[cfg(test)]
@@ -101,6 +105,19 @@ mod tests {
         assert_eq!(a.len(), "urn:uuid:".len() + 36);
         assert_eq!(&a[9 + 14..9 + 15], "4");
         assert!(matches!(&a[9 + 19..9 + 20], "8" | "9" | "a" | "b"));
+    }
+
+    #[test]
+    fn random_numbers_stay_below_the_bound() {
+        assert_eq!(random_below(0), 0);
+        assert_eq!(random_below(1), 0);
+        let mut seen = [false; 4];
+        for _ in 0..200 {
+            let drawn = random_below(4);
+            assert!(drawn < 4);
+            seen[usize::try_from(drawn).unwrap_or_default()] = true;
+        }
+        assert_eq!(seen, [true; 4], "200 draws reach every value");
     }
 
     #[test]

@@ -21,8 +21,8 @@
 #![allow(clippy::unwrap_used, missing_docs)]
 
 use portitor_dcp::message::{
-    CredentialMessage, CredentialOfferMessage, IssuerMetadata, PresentationQueryMessage,
-    PresentationResponseMessage,
+    CredentialMessage, CredentialOfferMessage, CredentialRequestMessage, CredentialStatus,
+    IssuerMetadata, PresentationQueryMessage, PresentationResponseMessage,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -57,6 +57,14 @@ const SCHEMAS: &[(&str, &str)] = &[
     (
         "https://w3id.org/dspace-dcp/v1.0/issuance/issuer-metadata-schema.json",
         include_str!("schemas/issuer-metadata-schema.json"),
+    ),
+    (
+        "https://w3id.org/dspace-dcp/v1.0/issuance/credential-request-message-schema.json",
+        include_str!("schemas/credential-request-message-schema.json"),
+    ),
+    (
+        "https://w3id.org/dspace-dcp/v1.0/issuance/credential-status-schema.json",
+        include_str!("schemas/credential-status-schema.json"),
     ),
 ];
 
@@ -147,6 +155,18 @@ fn issuer_metadata() {
 }
 
 #[test]
+fn credential_request_and_status() {
+    check::<CredentialRequestMessage>(
+        "credential-request-message-schema.json",
+        &example("credential-request-message"),
+    );
+    check::<CredentialStatus>(
+        "credential-status-schema.json",
+        &example("credential-status"),
+    );
+}
+
+#[test]
 fn messages_portitor_builds_pass_the_schemas() {
     let query = PresentationQueryMessage::for_scopes(vec![
         "org.eclipse.dspace.dcp.vc.type:MembershipCredential".to_owned(),
@@ -157,4 +177,8 @@ fn messages_portitor_builds_pass_the_schemas() {
     let response = PresentationResponseMessage::with_jwts(vec!["a.b.c".to_owned()]);
     let json = serde_json::to_value(&response).unwrap();
     assert!(validator("presentation-response-message-schema.json").is_valid(&json));
+
+    let request = CredentialRequestMessage::new("h-1".to_owned(), vec!["m-1".to_owned()]);
+    let json = serde_json::to_value(&request).unwrap();
+    assert!(validator("credential-request-message-schema.json").is_valid(&json));
 }

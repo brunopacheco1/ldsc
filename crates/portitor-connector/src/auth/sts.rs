@@ -21,6 +21,7 @@
 use std::fmt::Write as _;
 use std::sync::Arc;
 
+use portitor_dcp::scope::merge_scopes;
 use portitor_runtime::http::HttpSender;
 use serde_json::Value;
 
@@ -155,7 +156,7 @@ fn form_encode(value: &str) -> String {
 
 /// Adapter: the [`Prover`] that gets a fresh token from our STS for each
 /// DSP request, letting the audience read `scopes` from our Credential
-/// Service.
+/// Service, and the scopes the request needs on top (ADR 0019).
 pub struct StsProver {
     sts: Arc<dyn SecureTokenService>,
     scopes: Vec<String>,
@@ -170,11 +171,16 @@ impl StsProver {
 }
 
 impl Prover for StsProver {
-    fn authorization<'a>(&'a self, audience: &'a str) -> BoxFuture<'a, Result<String, String>> {
+    fn authorization<'a>(
+        &'a self,
+        audience: &'a str,
+        scopes: &'a [String],
+    ) -> BoxFuture<'a, Result<String, String>> {
         Box::pin(async move {
+            let granted = merge_scopes(&self.scopes, scopes);
             let request = TokenRequest {
                 audience,
-                scopes: &self.scopes,
+                scopes: &granted,
                 access_token: None,
             };
             let token = self.sts.token(request).await?;
@@ -258,14 +264,25 @@ mod tests {
         let s = settings(format!("{base}/token"));
         let sts = Arc::new(StsClient::new(&s).unwrap());
         let prover = StsProver::new(sts, s.scopes.clone());
-        let header = prover.authorization("did:web:you").await.unwrap();
+        let header = prover.authorization("did:web:you", &[]).await.unwrap();
         assert!(header.starts_with("Bearer token-for:grant_type=client_credentials"));
         assert!(header.contains("audience=did%3Aweb%3Ayou"));
-        assert!(
-            header.contains(
-                "bearer_access_scope=org.eclipse.dspace.dcp.vc.type%3AMembershipCredential"
-            )
-        );
+        assert!(header.ends_with(
+            "&bearer_access_scope=org.eclipse.dspace.dcp.vc.type%3AMembershipCredential"
+        ));
+        // an offer's scopes are added, each once (ADR 0019)
+        let offer_scopes = vec![
+            "org.eclipse.dspace.dcp.vc.type:MembershipCredential".to_owned(),
+            "org.eclipse.dspace.dcp.vc.type:DataProcessorCredential:read".to_owned(),
+        ];
+        let header = prover
+            .authorization("did:web:you", &offer_scopes)
+            .await
+            .unwrap();
+        assert!(header.ends_with(
+            "&bearer_access_scope=org.eclipse.dspace.dcp.vc.type%3AMembershipCredential\
+             +org.eclipse.dspace.dcp.vc.type%3ADataProcessorCredential%3Aread"
+        ));
         let empty = StsClient::new(&settings(format!("{base}/empty"))).unwrap();
         let request = TokenRequest {
             audience: "did:web:you",

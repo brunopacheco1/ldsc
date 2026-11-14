@@ -21,6 +21,7 @@
 use std::sync::Arc;
 
 use portitor_dsp::guard::{Direction, MessageGuard};
+use portitor_dsp::policy::CredentialTypes;
 use serde_json::Value;
 
 use crate::auth::Prover;
@@ -28,12 +29,15 @@ use crate::http_client::Sender;
 use crate::ports::{Ports, Retry};
 
 /// What every adapter needs to send: the client, the source of our
-/// tokens, the dataspace's message rules, and the retry policy.
+/// tokens, the dataspace's message rules, the retry policy, and the
+/// credential types policies may use (for the scopes of our tokens, and
+/// of the credentials we ask a caller for; ADR 0019).
 pub(crate) struct Link {
     pub(crate) sender: Arc<dyn Sender>,
     pub(crate) prover: Arc<dyn Prover>,
     pub(crate) guard: Arc<dyn MessageGuard + Send + Sync>,
     pub(crate) retry: Retry,
+    pub(crate) credential_types: CredentialTypes,
 }
 
 impl Link {
@@ -43,6 +47,7 @@ impl Link {
             prover: Arc::clone(&ports.prover),
             guard: Arc::clone(&ports.guard),
             retry: ports.retry,
+            credential_types: ports.credential_types.clone(),
         }
     }
 }
@@ -113,6 +118,14 @@ pub(crate) trait Outbox: Send + Sync + 'static {
     /// How to send.
     fn link(&self) -> &Link;
 
+    /// The scopes, beyond the configured ones, that the counter-party may
+    /// read with the token sent with the message: those an offer's
+    /// credential constraints need (ADR 0019). None by default, so the
+    /// default does not look at the message (`_out`).
+    fn scopes(&self, _out: &Self::Out) -> Vec<String> {
+        Vec::new()
+    }
+
     /// The parts of `out` that sending needs.
     fn message(out: &Self::Out) -> Message<'_>;
 
@@ -132,15 +145,14 @@ pub(crate) trait Outbox: Send + Sync + 'static {
         answer: Option<&Value>,
     ) -> Result<Option<Self::Out>, Self::Failure>;
 
-    /// `out`, a first message, never arrived: end the process here. Only
-    /// a consumer sends first messages, so by default there is nothing to
-    /// do.
+    /// The message, a first message, never arrived: end the process here.
+    /// Only a consumer sends first messages, so by default there is
+    /// nothing to do (and the default does not look at `_out`).
     ///
     /// # Errors
     ///
     /// The store failed.
-    fn not_started(&self, out: &Self::Out) -> Result<(), Self::Failure> {
-        let _ = out;
+    fn not_started(&self, _out: &Self::Out) -> Result<(), Self::Failure> {
         Ok(())
     }
 
@@ -168,7 +180,9 @@ pub(crate) async fn deliver<O: Outbox>(outbox: Arc<O>, mut out: O::Out) {
     loop {
         let msg = O::message(&out);
         let (pid, first) = (msg.pid.to_owned(), msg.first);
-        let next = match attempt(outbox.link(), &msg, |state| O::reached(&out, state)).await {
+        let scopes = outbox.scopes(&out);
+        let reached = |state| O::reached(&out, state);
+        let next = match attempt(outbox.link(), &msg, &scopes, reached).await {
             Outcome::Acknowledged(answer) => outbox.delivered(&out, Some(&answer)),
             Outcome::ArrivedBefore | Outcome::TerminationUnanswered => outbox.delivered(&out, None),
             Outcome::NotStarted => outbox.not_started(&out).map(|()| None),
@@ -203,11 +217,17 @@ enum Outcome {
     Unreachable,
 }
 
-/// Sends `msg` and says what became of it. `reached` reads the
-/// counter-party's state; it is used only when the send failed.
-async fn attempt(link: &Link, msg: &Message<'_>, reached: impl FnOnce(Value) -> bool) -> Outcome {
+/// Sends `msg`, with a token that also grants `scopes`, and says what
+/// became of it. `reached` reads the counter-party's state; it is used
+/// only when the send failed.
+async fn attempt(
+    link: &Link,
+    msg: &Message<'_>,
+    scopes: &[String],
+    reached: impl FnOnce(Value) -> bool,
+) -> Outcome {
     let pid = msg.pid;
-    let error = match send(link, msg).await {
+    let error = match send(link, msg, scopes).await {
         Ok(answer) => return Outcome::Acknowledged(answer),
         Err(error) => error,
     };
@@ -238,7 +258,7 @@ pub(crate) async fn arrived(
     if status_url.is_empty() {
         return false;
     }
-    let authorization = match link.prover.authorization(audience).await {
+    let authorization = match link.prover.authorization(audience, &[]).await {
         Ok(authorization) => authorization,
         Err(error) => {
             tracing::warn!(%error, "no token to read the counter-party's state");
@@ -252,9 +272,10 @@ pub(crate) async fn arrived(
 }
 
 /// Checks the message's body with the guard, then POSTs it, retrying as
-/// the link's retry policy says. Each try gets a new token: a token is
-/// good for one request only. Returns the counter-party's answer.
-async fn send(link: &Link, msg: &Message<'_>) -> Result<Value, String> {
+/// the link's retry policy says. Each try gets a new token, which also
+/// grants `scopes`: a token is good for one request only. Returns the
+/// counter-party's answer.
+async fn send(link: &Link, msg: &Message<'_>, scopes: &[String]) -> Result<Value, String> {
     let (url, body) = (msg.url, msg.body);
     let message_type = body
         .get("@type")
@@ -270,7 +291,7 @@ async fn send(link: &Link, msg: &Message<'_>) -> Result<Value, String> {
             tokio::time::sleep(delay).await;
             delay = delay.saturating_mul(2);
         }
-        let authorization = match link.prover.authorization(msg.audience).await {
+        let authorization = match link.prover.authorization(msg.audience, scopes).await {
             Ok(authorization) => authorization,
             Err(e) => {
                 last = format!("no token: {e}");

@@ -10,9 +10,7 @@ path = [
     "Cargo.lock",
     "fuzz/Cargo.lock",
     "NOTICE",
-    # test-only key material: binary DER, and PEM such as the demo authority's
-    # key (crates/portitor-identity/tests/fixtures/test-only-demo-authority.pem,
-    # used by the test-issuer example, ADR 0015); never a real secret
+    # test-only key material (binary DER, and PEM); never a real secret
     "crates/*/tests/fixtures/**",
     # JSON has no comments
     "examples/*.json",

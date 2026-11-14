@@ -12,11 +12,91 @@ versions may change behaviour and configuration.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-14
+
 ### Added
 
-- C4 model diagrams (system context, containers, components of both
-  images, and the provider negotiation as code) in draw.io format, shown
-  in `docs/ARCHITECTURE.md`.
+- `portitor-issuer`, the issuer component and third image (ADR 0018),
+  run once per dataspace by its authority. Public port (8070): its
+  did:web document with an `IssuerService` entry; under
+  `PORTITOR_ISSUER_SERVICE_URL` the issuer metadata (`GET /metadata`),
+  credential requests (`POST /credentials`, `201 Created` with
+  `Location`) and their status (`GET /requests/{issuerPid}`), DCP 6.4,
+  6.7 and 6.8, and the status lists (`GET /status-lists/vc11`, `/vc20`).
+- `portitor-issuer`: only participants the authority registered may
+  call; anyone else gets 401 before its DID is resolved, and nothing is
+  stored. An unknown credential id ends `REJECTED`, and so does a request
+  beyond `PORTITOR_ISSUER_MAX_ACTIVE_PER_HOLDER` (default 10 active
+  credentials per holder and definition); a repeated `holderPid` of the
+  same holder is refused (409). Credential types come from
+  `PORTITOR_ISSUER_CREDENTIALS_FILE`, checked at start.
+- `portitor-issuer`: issued credentials go to the holder's Storage API in
+  one `CredentialMessage`, through an outbox, with a self-issued ID token
+  that carries back the holder's access token. No answer, 401, 408, 429
+  and 5xx are retried for about 8 hours; any other 4xx ends the delivery
+  `FAILED` at once. A request whose decision failed is decided again
+  within a minute.
+- `portitor-issuer`: one Bitstring Status List credential per profile
+  (131,072 entries, `revocation`), each credential at a random free
+  position, signed again on each revocation.
+- `portitor-issuer`: management API (8071, API key) for participants,
+  offers, issued credentials and revocation
+  (`docs/api/issuer-management-openapi.json`); the public port is
+  described in `docs/api/issuer-openapi.json`.
+- `portitor-identity` asks issuers for credentials (holder side of DCP
+  issuance, ADR 0018): `POST /v1/credential-requests` with
+  `credentialIds` finds the issuer's `IssuerService` in its DID document,
+  checks the ids against its metadata and sends a
+  `CredentialRequestMessage` (DCP 6.4) with a self-issued ID token that
+  carries an access token. `GET /v1/credential-requests` lists requests,
+  `GET /v1/credential-requests/{holderPid}` shows one with its status at
+  the issuer (DCP 6.8), and `POST /v1/offers/request` asks for what an
+  issuer offered (DCP 6.6). Only trusted issuers are asked; offers are
+  never answered by themselves. Without `credentialIds` the request is
+  only recorded, as before.
+- Credential constraints in ODRL policies (ADR 0019): an offer may
+  require a claim of the consumer's credentials, with the left operand
+  `<CredentialType>.<claim path>` and `eq`, `neq`, `isAnyOf` or
+  `isNoneOf`. A missing claim never grants access; anything else fails
+  closed. The provider asks the consumer's credential service for the
+  scopes the offer needs (with the access token the consumer sent) at the
+  contract request, and again at each transfer request, so a revoked
+  credential stops new transfers. As consumer, the connector grants those
+  scopes in its tokens.
+- Connector setting `PORTITOR_POLICY_CREDENTIALS`: the credential types
+  offers may use, with their scopes (`MembershipCredential` is always
+  there); an offer on another type stops the connector at start.
+- `portitor-dcp`: the DCP issuance messages `CredentialRequestMessage`
+  and `CredentialStatus` (DCP v1.0.1 sections 6.4 and 6.8), checked
+  against the official schemas; `RequestStatus::as_str` and `from_name`;
+  `issuance` signs credentials of any type and claims in both profiles,
+  status list credentials and the delivery token.
+- `portitor-runtime`: `caller` checks a DCP caller's self-issued token at
+  the HTTP edge, shared by the identity component and the issuer; so are
+  the component's own DID document (`did_document`), the base path of a
+  service URL (`settings::base_path`), `http::answered_status` and
+  `HttpSender::post_for_location` (the `Location` of a `201 Created`).
+- DCP TCK v1.2.1 issuer tests (41) in the `TCK` workflow against
+  `portitor-issuer` (`scripts/dcp-issuer-tck.sh`).
+- Release pipeline for the third image,
+  `ghcr.io/brunopacheco1/portitor-issuer`: a `portitor-issuer` target in
+  the `Dockerfile` (ports 8070 and 8071, `/data/portitor-issuer.db`),
+  built, signed, attested and released with an SBOM like the other two;
+  CI builds it on every pull request.
+- Demos with a second credential type (ADR 0019): `scripts/demo.sh` and
+  the Compose demo issue the consumer a `DataProcessorCredential`, its
+  `processing-records` offer checks it, and once the issuer revokes it a
+  new transfer request is refused. The example datasets add an offer for
+  members only (`MembershipCredential.memberOf`) and one that the demo
+  credentials do not meet. The demo credential definitions are in
+  `examples/issuer-credentials.json`.
+- ADR 0018 (issuer component) and ADR 0019 (credential constraints in
+  ODRL), both proposed.
+- Spike report `docs/spikes/0.6-shacl-engine.md` on the SHACL engine for
+  ADR 0005; the maintainer chose an own SHACL Core subset, built in 0.7.
+- C4 model diagrams in draw.io format (system context, containers,
+  components of the three images, and the provider negotiation as code),
+  shown in `docs/ARCHITECTURE.md`.
 - `docs/api/identity-openapi.json`: the identity's public interface (DID
   document, STS, DCP credential service); a test checks every route in it
   is served.
@@ -24,16 +104,85 @@ versions may change behaviour and configuration.
   image and only files and types that exist; every OpenAPI file has the
   workspace version.
 - A documentation review step for every release (`docs/RELEASING.md`).
+- `docs/DEPLOYING.md`: an issuer section (who runs it, order, key backup,
+  never on a participant's host); deployment order issuer, then identity,
+  then connector, also in `docs/ARCHITECTURE.md` and on the website.
+
+### Changed
+
+- Roadmap: the schema and vocabulary registry moves to 0.7, Gaia-X to
+  0.8, operations to 0.9 and hardening to 0.10; ARCHITECTURE,
+  SECURITY-ASSURANCE and the website follow.
+- `portitor-identity`: a delivery (`CredentialMessage`) for a request the
+  component sent to the issuer must carry back, in the issuer's ID token,
+  the access token sent with the request (DCP 6.1). Requests only
+  recorded need none, as before.
+- `portitor-identity`: a repeated delivery (same `issuerPid` and status
+  for a request it closed) is answered `200` and stores nothing, instead
+  of `400`. A credential request is withdrawn only when the issuer
+  refuses it with an HTTP 4xx (not 408 or 429); after a timeout, a
+  network error, 408, 429 or 5xx it stays open for a late delivery, and
+  the management API answers `202` with a `sendError`.
+- `portitor-identity` database: a forward-only migration adds the
+  request's credential ids, status URL, access token id, creation time,
+  `sendError` and `issuerPid`.
+- DEPLOYING: after a reissue, delete the revoked credential from the
+  identity (`DELETE /v1/credentials/{id}`); the identity does not read
+  status lists, and verifiers refuse a presentation that holds it.
+- Connector, DCP verifier: the log names a credential that fails its
+  checks and why (`credential refused`). Such a credential still makes
+  its presentation invalid and refuses the caller, also next to a valid
+  `MembershipCredential` (DCP v1.0.1, 5.4.3, step 8).
+- Connector: `auth::Caller` is a struct with the verified credentials;
+  `CallerVerifier` gets `credentials` (ask the caller for more scopes),
+  `Prover::authorization` takes the extra scopes to grant, and
+  `HeldAgreements` gets `agreement`.
+- `portitor-dsp::policy`: `validate`, `permissions_hold` and
+  `prepare_datasets` take the configured credential types and the
+  caller's credentials; the provider services take the caller's
+  credentials on a contract request, an acceptance and a transfer
+  request.
+- As consumer, the connector does not accept a provider's offer (DSP
+  `OFFERED`) that has credential constraints: it cannot check its own
+  credentials as the provider will.
+- The demos, `scripts/measure.sh`, `scripts/dev-identities.sh` and the EDC
+  interop test run `portitor-issuer` as the data space's authority: it
+  registers the participants, each identity asks it for its credentials
+  through its own management API, and revocation is
+  `POST /v1/credentials/{id}/revoke`. EDC IdentityHub v1.0.0-RC7 asks it
+  through its own Identity API. `scripts/demo.sh` and `scripts/measure.sh`
+  take the issuer binary as a third argument, `scripts/demo-compose.sh`
+  the issuer image (`PORTITOR_ISSUER_IMAGE`); `TEST_ISSUER` is gone. The
+  Compose demo's default images are 0.6.0.
+- The EDC interop test signs the IdentityHub's Identity API tokens itself
+  (a test-only RSA key per run, `openssl`).
+- Readability review, no behaviour change: clearer issuer names, one
+  `Directory` port and a typed `HttpError` in `portitor-runtime`, shared
+  `merge_scopes` and `HeldCredential::has_type`, shorter functions, and
+  more patterns explained in `docs/RUST-IDIOMS.md`.
+- Documentation review: the C4 diagrams show the identity's issuer
+  client and the issuer's modules; the OpenAPI files, README, TESTING,
+  SECURITY-ASSURANCE and the website match the release; the website
+  also publishes the issuer's management API description.
+
+### Removed
+
+- The test-only `test-issuer` example of `portitor-identity`, its
+  fixture key and its dev-dependencies (`hyper`, `http-body-util`)
+  (ADR 0018).
 
 ### Fixed
 
 - The CI check that domain crates have no I/O dependencies (ADR 0004) also
   refuses SQLite, TLS and low-level network crates; ADR 0004 records why
   `portitor-dcp` takes signing randomness from the operating system.
-- The website publishes the identity's OpenAPI descriptions next to the
-  connector's, and its API page links all of them.
+- The website publishes the identity's and the issuer's OpenAPI
+  descriptions next to the connector's, and its API page links all of
+  them.
 - `docs/ARCHITECTURE.md` no longer lists PostgreSQL as required: each
   image keeps its state in SQLite until the PostgreSQL adapter exists.
+- TESTING: the local DSP TCK run sets `PORTITOR_TCK_AUTHORIZATION`, as CI
+  does.
 
 ## [0.5.0] - 2026-11-13
 

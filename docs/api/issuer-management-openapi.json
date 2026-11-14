@@ -1,0 +1,550 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Portitor issuer management API",
+    "description": "Participants, offers, issued credentials and revocation of the dataspace authority's issuer. Served on its own port (PORTITOR_MANAGEMENT_BIND), never on the public port. Every call except this description needs the API key.",
+    "license": {
+      "name": "Apache-2.0",
+      "identifier": "Apache-2.0"
+    },
+    "version": "0.6.0"
+  },
+  "paths": {
+    "/v1/credentials": {
+      "get": {
+        "tags": [
+          "Credentials"
+        ],
+        "summary": "List the issued credentials, newest first.",
+        "operationId": "list_credentials",
+        "parameters": [
+          {
+            "name": "holder",
+            "in": "query",
+            "description": "Only the credentials of this holder (a DID).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The issued credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CredentialView"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong API key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/v1/credentials/{id}/revoke": {
+      "post": {
+        "tags": [
+          "Credentials"
+        ],
+        "summary": "Revoke an issued credential: its bit in the status list is set and\nthe list is signed again. Revocation cannot be undone; revoking again\nsigns the list again, so a call that failed with 500 after the\nrevocation was stored can simply be repeated.",
+        "operationId": "revoke",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The credential's id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Revoked (now or before)"
+          },
+          "401": {
+            "description": "Missing or wrong API key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such credential",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The revocation is stored but the status list was not signed again; repeat the call",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/v1/offers": {
+      "post": {
+        "tags": [
+          "Credentials"
+        ],
+        "summary": "Send a `CredentialOfferMessage` (DCP 6.6) to a registered\nparticipant's credential service, with the full credential objects of\nthe issuer metadata.",
+        "operationId": "send_offer",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewOffer"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "The participant's credential service took the offer"
+          },
+          "400": {
+            "description": "Invalid body, or an unknown credential id",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong API key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The participant is not registered",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The participant's credential service cannot be reached or refused",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/v1/participants": {
+      "get": {
+        "tags": [
+          "Participants"
+        ],
+        "summary": "List the registered participants.",
+        "operationId": "list_participants",
+        "responses": {
+          "200": {
+            "description": "The participants",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ParticipantView"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong API key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Participants"
+        ],
+        "summary": "Register a participant: from now on it may get credentials.",
+        "operationId": "create_participant",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewParticipant"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParticipantView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body, DID or claims",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong API key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The DID is registered already",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/v1/participants/{did}": {
+      "delete": {
+        "tags": [
+          "Participants"
+        ],
+        "summary": "Delete a registration: the participant gets no more credentials. What\nit was issued stays valid until revoked.",
+        "operationId": "delete_participant",
+        "parameters": [
+          {
+            "name": "did",
+            "in": "path",
+            "description": "The DID, percent-encoded as a whole",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "401": {
+            "description": "Missing or wrong API key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not registered",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CredentialView": {
+        "type": "object",
+        "description": "An issued credential.",
+        "required": [
+          "id",
+          "holder",
+          "definitionId",
+          "credentialType",
+          "profile",
+          "issuerPid",
+          "statusListCredential",
+          "statusListIndex",
+          "issued",
+          "expires",
+          "delivery"
+        ],
+        "properties": {
+          "credentialType": {
+            "type": "string",
+            "description": "Its type.",
+            "example": "MembershipCredential"
+          },
+          "definitionId": {
+            "type": "string",
+            "description": "The credential definition it was issued from.",
+            "example": "membership-vc20"
+          },
+          "delivery": {
+            "type": "string",
+            "description": "The delivery to the holder: `PENDING`, `DELIVERED` or `FAILED`.",
+            "example": "DELIVERED"
+          },
+          "expires": {
+            "type": "string",
+            "description": "Valid until (`xsd:dateTime`, UTC)."
+          },
+          "holder": {
+            "type": "string",
+            "description": "The holder's DID.",
+            "example": "did:web:provider.example"
+          },
+          "id": {
+            "type": "string",
+            "description": "The credential's id.",
+            "example": "urn:uuid:8247b87d-8d72-47e1-8128-9ce47e3d829d"
+          },
+          "issued": {
+            "type": "string",
+            "description": "Valid from (`xsd:dateTime`, UTC)."
+          },
+          "issuerPid": {
+            "type": "string",
+            "description": "The issuer's id of the request it answered."
+          },
+          "profile": {
+            "type": "string",
+            "description": "The DCP profile: `vc11-sl2021/jwt` or `vc20-bssl/jwt`.",
+            "example": "vc20-bssl/jwt"
+          },
+          "revoked": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When it was revoked, or null."
+          },
+          "statusListCredential": {
+            "type": "string",
+            "description": "The status list it is in."
+          },
+          "statusListIndex": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Its position in that list.",
+            "minimum": 0
+          }
+        }
+      },
+      "NewOffer": {
+        "type": "object",
+        "description": "Offer credentials to a registered participant.",
+        "required": [
+          "participantDid"
+        ],
+        "properties": {
+          "credentialIds": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "The ids of the credentials offered, as in the issuer metadata.\nEvery definition if left out.",
+            "example": [
+              "membership-vc20"
+            ]
+          },
+          "offerReason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why they are offered, for example `reissue` (DCP 6.6).",
+            "example": "reissue"
+          },
+          "participantDid": {
+            "type": "string",
+            "description": "The participant's DID; it must be registered.",
+            "example": "did:web:provider.example"
+          }
+        },
+        "additionalProperties": false
+      },
+      "NewParticipant": {
+        "type": "object",
+        "description": "Register a participant.",
+        "required": [
+          "did"
+        ],
+        "properties": {
+          "claims": {
+            "type": "object",
+            "description": "What the authority says about it. Each credential definition names\nthe claims copied into its `credentialSubject`. A claim may not be\nnamed `id`."
+          },
+          "did": {
+            "type": "string",
+            "description": "The participant's `did:web` DID.",
+            "example": "did:web:provider.example"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ParticipantView": {
+        "type": "object",
+        "description": "A registered participant.",
+        "required": [
+          "did",
+          "claims",
+          "registered"
+        ],
+        "properties": {
+          "claims": {
+            "type": "object",
+            "description": "Its claims."
+          },
+          "did": {
+            "type": "string",
+            "description": "The participant's DID.",
+            "example": "did:web:provider.example"
+          },
+          "registered": {
+            "type": "string",
+            "description": "When it was registered (`xsd:dateTime`, UTC).",
+            "example": "2026-11-14T12:00:00Z"
+          }
+        }
+      },
+      "Problem": {
+        "type": "object",
+        "description": "An error, as RFC 9457 problem details.",
+        "required": [
+          "title",
+          "status",
+          "detail"
+        ],
+        "properties": {
+          "detail": {
+            "type": "string",
+            "description": "What went wrong in this case."
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The HTTP status code.",
+            "minimum": 0
+          },
+          "title": {
+            "type": "string",
+            "description": "Short summary of the problem type."
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "api_key": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "The key from PORTITOR_MANAGEMENT_API_KEY_FILE: Authorization: Bearer <key>"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "Participants",
+      "description": "Who may get credentials, and what their credentials say"
+    },
+    {
+      "name": "Credentials",
+      "description": "Offers, issued credentials and revocation (DCP v1.0.1, Bitstring Status List)"
+    }
+  ]
+}

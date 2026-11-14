@@ -224,6 +224,7 @@ fn connector() -> Connector {
         db_file: "unused.db".into(),
         sources: std::collections::BTreeMap::new(),
         data_token_seconds: 3_600,
+        credential_types: portitor_dsp::policy::CredentialTypes::default(),
     };
     let (app, negotiator) = portitor_connector::build(&config, ports).unwrap();
     Connector {
@@ -539,6 +540,7 @@ async fn pending_messages_are_sent_after_a_restart() {
         db_file: path.clone(),
         sources: std::collections::BTreeMap::new(),
         data_token_seconds: 3_600,
+        credential_types: portitor_dsp::policy::CredentialTypes::default(),
     };
     let (app, negotiator) = portitor_connector::build(&config, ports).unwrap();
     assert_eq!(negotiator.resume().unwrap(), 2);
@@ -711,6 +713,7 @@ async fn other_participants_cannot_use_the_transfer_callback() {
         db_file: "unused.db".into(),
         sources: std::collections::BTreeMap::new(),
         data_token_seconds: 3_600,
+        credential_types: portitor_dsp::policy::CredentialTypes::default(),
     };
     let (app, _) = portitor_connector::build(&config, ports).unwrap();
     let base = "/dsp/2025-1/callback/transfers/urn:uuid:ct-1";

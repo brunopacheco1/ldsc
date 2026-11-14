@@ -9,6 +9,7 @@
 #![no_main]
 
 use portitor_dsp::catalog::{prepare_datasets, read_catalog_request};
+use portitor_dsp::policy::CredentialTypes;
 use portitor_dsp::{CatalogRequestMessage, Dataset};
 use libfuzzer_sys::fuzz_target;
 
@@ -27,7 +28,11 @@ fuzz_target!(|data: &[u8]| {
             serde_json::from_slice(&serde_json::to_vec(&datasets).expect("serialize"))
                 .expect("reparse");
         assert_eq!(datasets, again);
-        if let Ok(ready) = prepare_datasets(datasets, "https://p.example/dsp/2025-1") {
+        if let Ok(ready) = prepare_datasets(
+            datasets,
+            "https://p.example/dsp/2025-1",
+            &CredentialTypes::default(),
+        ) {
             assert!(
                 ready
                     .iter()

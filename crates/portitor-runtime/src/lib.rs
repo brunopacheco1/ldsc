@@ -2,10 +2,11 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Adapters shared by the Portitor binaries (the connector and the
-//! identity component): outbound HTTP, `did:web` resolution, the
-//! management API key, logging and shutdown, `SQLite` files, settings,
-//! and the system clock.
+//! Adapters shared by the Portitor binaries (the connector, the identity
+//! component and the issuer): outbound HTTP, `did:web` resolution and the
+//! directory of other parties' documents, the check of a DCP caller's
+//! token, the management API key, logging and shutdown, `SQLite` files,
+//! settings, and the system clock.
 //!
 //! The protocol crates (`portitor-dsp`, `portitor-dcp`) do no I/O; this
 //! crate is where I/O shared by more than one binary lives.
@@ -13,7 +14,10 @@
 use std::pin::Pin;
 
 pub mod api_key;
+pub mod caller;
 pub mod did;
+pub mod did_document;
+pub mod directory;
 pub mod http;
 pub mod serve;
 pub mod settings;
@@ -22,7 +26,7 @@ pub mod system;
 
 /// A task that finishes later with a `T`: what the async methods of
 /// Portitor's ports return (the [`http::Sender`], the connector's
-/// `CallerVerifier` and `Prover`, the identity component's `Directory`).
+/// `CallerVerifier` and `Prover`, the [`directory::Directory`]).
 ///
 /// A trait method cannot simply be `async fn` there, because the
 /// binaries keep their adapters as `Arc<dyn Port>` (any adapter, chosen

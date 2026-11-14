@@ -8,8 +8,14 @@ SPDX-License-Identifier: Apache-2.0
 
 A runbook for the team that deploys and runs Portitor. It covers
 `portitor-connector` and, from 0.5, `portitor-identity`, which runs next to
-it ([section 4](#4-run-the-identity-next-to-the-connector)).
-`portitor-issuer` will be added here when it ships (ADR 0003).
+it ([section 4](#4-run-the-identity-next-to-the-connector)). From 0.6 it
+also covers `portitor-issuer`, which only the dataspace authority runs
+([section 7](#7-run-the-issuer-dataspace-authority-only)).
+
+**Deployment order.** Once per dataspace, the authority deploys the
+issuer and registers each participant. Then each participant deploys its
+identity, asks the issuer for its membership credential, and deploys its
+connector ([ARCHITECTURE.md](ARCHITECTURE.md#deployment-order)).
 
 Portitor is a prototype (0.x). Read [Known limits](#known-limits) before you
 expose it to partners.
@@ -32,7 +38,8 @@ Check each item and keep the answers in your own runbook.
     gh attestation verify "oci://ghcr.io/brunopacheco1/$image:X.Y.Z" --repo brunopacheco1/portitor
   done
   ```
-  Deploy by digest (`ghcr.io/...@sha256:...`), not only by tag.
+  Deploy by digest (`ghcr.io/...@sha256:...`), not only by tag. The
+  dataspace authority checks `portitor-issuer` the same way.
 - [ ] **Participant id.** The DID your dataspace gave you
   (`PORTITOR_PARTICIPANT_ID`).
 - [ ] **Public URL.** The `https://` URL partners use to reach you
@@ -41,8 +48,10 @@ Check each item and keep the answers in your own runbook.
 - [ ] **Datasets file.** A JSON file with the datasets you offer (see the
   [README](../README.md#interface)). The connector refuses to start if a
   definition breaks a DSP rule or an offer uses a constraint it does not
-  understand (only `dateTime` for now, ADR 0009), so test the file before
-  a rollout.
+  understand (`dateTime`, ADR 0009, and credential claims of the types in
+  `PORTITOR_POLICY_CREDENTIALS`, ADR 0019; see
+  [Credential constraints](#credential-constraints)), so test the file
+  before a rollout.
 - [ ] **Data sources.** For each dataset you transfer, the URL the
   connector fetches its data from (`portitor:source` in the datasets file,
   see the README). Partners never see it. It must be reachable from the
@@ -94,9 +103,48 @@ All configuration is by environment variable. The full table is in the
 | `PORTITOR_STS_ALLOW_HTTP` | unset; `true` only when `PORTITOR_STS_URL` is plain `http://` on an internal network ([section 4](#endpoints)) |
 | `PORTITOR_STS_CLIENT_SECRET_FILE` | **required**: path of the mounted STS secret, the same file as the identity's |
 | `PORTITOR_STS_CLIENT_ID` | leave the default, `PORTITOR_PARTICIPANT_ID` |
-| `PORTITOR_TRUSTED_ISSUERS` | **required**: comma-separated DIDs trusted to issue `MembershipCredential` |
+| `PORTITOR_TRUSTED_ISSUERS` | **required**: comma-separated DIDs trusted to issue credentials (`MembershipCredential` and those of credential constraints) |
 | `PORTITOR_DCP_SCOPES` | leave the default, `org.eclipse.dspace.dcp.vc.type:MembershipCredential` (comma-separated). Each must be a DCP scope (`org.eclipse.dspace.dcp.vc.type:<Type>[:access]` or `org.eclipse.dspace.dcp.vc.id:<id>`); the type `VerifiableCredential` is refused, as it would let a partner read every credential. The connector does not start otherwise |
+| `PORTITOR_POLICY_CREDENTIALS` | unset, unless your offers constrain credential claims: the credential types they use, comma-separated, each `Type` or `Type=<scope>` (see [Credential constraints](#credential-constraints)) |
 | `RUST_LOG` | `info` (default); `debug` only while diagnosing |
+
+### Credential constraints
+
+An offer may admit only consumers with a credential claim (ADR 0019),
+for example only data processors in the EU:
+
+```json
+"permission": [{"action": "use", "constraint": [
+  {"leftOperand": "DataProcessorCredential.processing", "operator": "eq", "rightOperand": "eu"}
+]}]
+```
+
+- List each credential type your offers use in
+  `PORTITOR_POLICY_CREDENTIALS`, on the provider **and** on consumers:
+  `DataProcessorCredential` stands for the scope
+  `org.eclipse.dspace.dcp.vc.type:DataProcessorCredential:read`; write
+  `DataProcessorCredential=<scope>` for another one. The scope must ask
+  for that type. `MembershipCredential` is always there, with its scope
+  from `PORTITOR_DCP_SCOPES`.
+- The provider derives the scopes from the offer and asks the consumer's
+  credential service for them at the contract request, and again at each
+  transfer request, so a revoked credential stops new transfers. The
+  consumer's token must allow them: Portitor as consumer adds them itself.
+- Credentials must come from `PORTITOR_TRUSTED_ISSUERS`, as the
+  membership does. Operators: `eq`, `neq` (a text), `isAnyOf`, `isNoneOf`
+  (a list of texts); a claim that is missing or not text never grants
+  access.
+- An EDC participant needs the same mapping, per type, for example:
+
+  ```yaml
+  edc.iam.dcp.scopes.processor.id: "processor-scope"
+  edc.iam.dcp.scopes.processor.type: "POLICY"
+  edc.iam.dcp.scopes.processor.prefix-mapping: "DataProcessorCredential"
+  edc.iam.dcp.scopes.processor.value: "org.eclipse.dspace.dcp.vc.type:DataProcessorCredential:read"
+  ```
+
+  (as in the Minimum Viable Dataspace, commit 17bb5b8,
+  `k8s/provider/application/controlplane-config.yaml`).
 
 ### Private CAs
 
@@ -186,13 +234,14 @@ participant.
 - [ ] **Trusted issuers.** The DIDs whose credentials you accept
   (`PORTITOR_TRUSTED_ISSUERS`). Only these may deliver credentials
   (Storage API) or offers.
-- [ ] **Management API key.** As for the connector, if you record
-  credential requests or manage credentials.
+- [ ] **Management API key.** As for the connector, if you ask issuers
+  for credentials or manage credentials.
 - [ ] **Storage.** A persistent volume for `/data` (credentials, SQLite).
 - [ ] **Network.** Inbound from other participants, through your proxy:
   the DID document and the credential service. Inbound from your own
   connector only: the STS (`/sts/token`). Outbound: other participants'
-  DID documents (`https://`), and trusted issuers' metadata.
+  DID documents (`https://`), and trusted issuers' `IssuerService`
+  (metadata, credential requests, request status).
 
 ### Configuration
 
@@ -220,7 +269,7 @@ participant.
 | public | `POST <credential service>/presentations/query` | verifiers, with a self-issued ID token and an access token from your STS (DCP 5.4) |
 | public | `POST <credential service>/credentials`, `/offers` | trusted issuers (DCP 6.5, 6.6) |
 | public | `GET /health` | probes |
-| management | `POST /v1/credential-requests`, `GET /v1/credentials`, `DELETE /v1/credentials/{id}`, `GET /v1/offers`, `GET /v1/openapi.json` | operators ([OpenAPI](api/identity-management-openapi.json)) |
+| management | `POST`, `GET /v1/credential-requests`, `GET /v1/credential-requests/{holderPid}`, `GET /v1/credentials`, `DELETE /v1/credentials/{id}`, `GET /v1/offers`, `POST /v1/offers/request`, `GET /v1/openapi.json` | operators ([OpenAPI](api/identity-management-openapi.json)) |
 
 The public endpoints are described in
 [api/identity-openapi.json](api/identity-openapi.json).
@@ -235,7 +284,7 @@ and to check partners' credentials:
 | `PORTITOR_STS_ALLOW_HTTP` | `true` when `PORTITOR_STS_URL` is plain `http://`: allows plain HTTP for that URL only, nothing else (the connector refuses to start with an `http://` STS URL without it) |
 | `PORTITOR_STS_CLIENT_SECRET_FILE` | **required**: the same secret file as the identity's |
 | `PORTITOR_STS_CLIENT_ID` | leave the default, `PORTITOR_PARTICIPANT_ID` |
-| `PORTITOR_TRUSTED_ISSUERS` | **required**: DIDs trusted to issue `MembershipCredential` |
+| `PORTITOR_TRUSTED_ISSUERS` | **required**: DIDs trusted to issue credentials, usually the dataspace's `portitor-issuer` |
 | `PORTITOR_DCP_SCOPES` | leave the default, `org.eclipse.dspace.dcp.vc.type:MembershipCredential` |
 
 ### Ports
@@ -286,8 +335,83 @@ curl -sf https://identity.example.com/.well-known/did.json
 
 ### Getting a credential
 
-Until the issuer arrives (0.6), an issuer delivers credentials for a
-request recorded through the management API:
+The participant asks its issuer (for example the dataspace authority's
+`portitor-issuer`) for credentials through the management API. The
+issuer must be in `PORTITOR_TRUSTED_ISSUERS`, or nothing is sent.
+
+1. Find the ids of the credentials you want in the issuer's metadata
+   (DCP 6.7). The issuer's DID document names its `IssuerService` base
+   URL; the metadata is at `<IssuerService>/metadata`:
+
+   ```sh
+   curl -s https://authority.example.com/issuer/metadata
+   ```
+
+2. Ask for them:
+
+   ```sh
+   curl -X POST localhost:8091/v1/credential-requests \
+     -H "Authorization: Bearer $(cat /srv/portitor/identity-management-key)" \
+     -H 'Content-Type: application/json' \
+     -d '{"issuerDid": "did:web:authority.example.com", "credentialIds": ["membership-vc11"]}'
+   ```
+
+   The component resolves the issuer's DID, checks the ids against its
+   metadata, records the request (`holderPid`) and sends a
+   `CredentialRequestMessage` to `<IssuerService>/credentials` (DCP 6.4),
+   with a self-issued ID token that carries an access token. The answer
+   (`201`) gives the `holderPid` and the `statusUrl` where the issuer
+   reports the request. If the issuer refuses it (an HTTP 4xx, answered
+   `502`), nothing is kept: fix the cause and ask again. If its answer is
+   unknown (no answer in time, a network error, HTTP 408, 429 or 5xx),
+   the issuer may have taken the request: the answer is `202` with the
+   `holderPid` and a `sendError`, and the request stays `REQUESTED` so the
+   issuer's delivery is still accepted. If no delivery comes, ask again
+   with a new `holderPid`.
+
+3. Follow it: `GET /v1/credential-requests/{holderPid}` shows the local
+   state (`REQUESTED`, then `ISSUED` or `REJECTED`) and the issuer's
+   status, read from the `statusUrl` (DCP 6.8), plus `sendError` while
+   the issuer's answer to the request is unknown and `issuerPid` once it
+   delivered. `GET /v1/credential-requests` lists all requests. An issuer
+   such as `portitor-issuer` decides and delivers in the background, so
+   the request stays `REQUESTED` for a moment: poll until it is `ISSUED`
+   (`request_credentials` in `scripts/participants.sh` does).
+
+The issuer then sends its `CredentialMessage` with that `holderPid` to
+`<credential service>/credentials`. The component checks the issuer's
+token, that the issuer is trusted and matches the request, that the token
+carries back the access token sent with the request (it is valid 30
+days, so a later delivery is refused and you ask again), and each
+credential's signature, dates, type and subject (your DID). The issuer's
+answer (`ISSUED` or `REJECTED`) closes the request. The same message
+again (same `issuerPid` and status, for example when the issuer did not
+get our reply) is answered `200` and stores nothing; any other delivery
+for the same `holderPid` is refused, so a renewed credential needs a new
+request. Credentials are stored as received (JWT); `GET
+/v1/credentials` lists them and `DELETE /v1/credentials/{id}` removes one,
+after which it is no longer presented.
+
+**Revoked credentials.** The component does not read status lists, so it
+keeps presenting a credential its issuer revoked (DCP v1.0.1, 5.4.2: a
+presentation "SHOULD only include valid" credentials). After a reissue,
+delete the revoked credential from the identity with
+`DELETE /v1/credentials/{id}` once the new one is listed. Otherwise
+other participants refuse you: a presentation that holds a revoked
+credential is invalid (DCP v1.0.1, 5.4.3, step 8), so Portitor
+verifiers refuse it even with the new credential next to it, and EDC
+verifiers may too.
+
+**Offers.** An issuer may tell you that credentials are waiting (DCP
+6.6), for example before its key changes. `GET /v1/offers` lists the
+offers; nothing is asked for by itself. To ask for what an issuer
+offered: `POST /v1/offers/request` with `{"issuerDid": "..."}` (and
+`credentialIds` to ask for only some).
+
+**Issuers asked out of band.** For an issuer that is asked some other
+way (for example the DCP TCK), leave `credentialIds` out: the request is
+only recorded, so the Storage API accepts that issuer's delivery for the
+`holderPid` you give, without an access token:
 
 ```sh
 curl -X POST localhost:8091/v1/credential-requests \
@@ -295,16 +419,6 @@ curl -X POST localhost:8091/v1/credential-requests \
   -H 'Content-Type: application/json' \
   -d '{"issuerDid": "did:web:issuer.example", "holderPid": "membership-2026"}'
 ```
-
-The issuer then sends its `CredentialMessage` with that `holderPid` to
-`<credential service>/credentials`. The component checks the issuer's
-token, that the issuer is trusted and matches the request, and each
-credential's signature, dates, type and subject (your DID). The issuer's
-answer (`ISSUED` or `REJECTED`) closes the request: a second delivery for
-the same `holderPid` is refused, so a renewed credential needs a new
-request. Credentials are stored as received (JWT); `GET
-/v1/credentials` lists them and `DELETE /v1/credentials/{id}` removes one,
-after which it is no longer presented.
 
 ### Logs and operation
 
@@ -316,6 +430,11 @@ after which it is no longer presented.
 | `request refused` (INFO) | A caller's token was refused; `reason` says why (expired, replayed, wrong audience, untrusted issuer, ...). The caller only gets HTTP 401 |
 | `presentation sent` (INFO) | A verifier got a presentation; `credentials` is how many it held |
 | `issuance message refused` (INFO) | A `CredentialMessage` or offer was refused (HTTP 400); `reason` says why |
+| `credential request sent` (INFO) | The issuer took a credential request (`holderPid`) |
+| `credential request not sent` (INFO) | The issuer refused a request (HTTP 4xx), or it could not be signed; `reason` says why. Nothing was kept |
+| `credential request outcome unknown; kept open` (WARN) | No answer in time, a network error, or HTTP 408, 429 or 5xx from the issuer; the request stays open for a late delivery |
+| `repeated delivery acknowledged` (INFO) | The issuer sent an answer again that closed a request before; nothing was stored twice |
+| `the issuer gave no usable Location for the request` (WARN) | The issuer took the request but gave no status URL on its own host; the delivery is still accepted, only the issuer's status cannot be shown |
 | `identity store failed` (ERROR) | The SQLite file could not be read or written |
 
 Backup, restore, upgrade and rollback work as for the connector, with
@@ -338,8 +457,14 @@ DID, so usually not).
   credential service for its presentations, and accepts the caller only
   with a valid `MembershipCredential` from a DID in
   `PORTITOR_TRUSTED_ISSUERS` whose subject is the caller, not revoked or
-  suspended (the status list must be signed by the same issuer; when it
-  cannot be fetched or checked the caller is refused). Otherwise it
+  suspended (the status list must be signed by the same issuer). One
+  credential from a trusted issuer that fails its checks (revoked,
+  expired, bad signature, status list not readable, about someone else)
+  makes its presentation invalid and refuses the caller, even next to a
+  valid membership credential (DCP v1.0.1, 5.4.3, step 8); the log names
+  it (`credential refused`, INFO). So a participant must delete a revoked
+  credential once its reissued one arrives (section 4). Credentials from
+  other issuers are skipped. When refused it
   answers HTTP 401 with a DSP error that says only "unauthorized"; the
   reason is in the log. Each negotiation and transfer is bound to the DID
   that started it: another caller is told it does not exist. As
@@ -455,19 +580,153 @@ upgrade:
 The database needs no migration for this; a rollback to 0.4 works as
 above.
 
+## 7. Run the issuer (dataspace authority only)
+
+The issuer issues and revokes the dataspace's credentials with the
+Decentralized Claims Protocol v1.0.1, section 6 (ADR 0018): participants'
+identities ask it for credentials, it delivers them to their Storage API,
+and verifiers read its status lists. **One issuer per dataspace, run by
+the dataspace authority.** Participants do not run it; they only trust its
+DID.
+
+### Before the first deployment
+
+- [ ] **Host.** Never on a participant's host, next to a connector or an
+  identity: the issuer key admits anyone to the dataspace. Give it its
+  own host or cluster and network zone, reached only through your HTTPS
+  proxy.
+- [ ] **DID.** A `did:web` DID for the issuer, for example
+  `did:web:issuer.example.com`, whose document this component serves.
+  Every participant lists it in `PORTITOR_TRUSTED_ISSUERS` (connector and
+  identity).
+- [ ] **Key.** One P-256 private key, unencrypted PKCS#8 PEM, as for the
+  identity: `openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out issuer-key.pem`.
+  Mount it read-only. It signs every credential and status list of the
+  dataspace: it is the dataspace's root of trust.
+- [ ] **Key backup.** Keep an encrypted copy offline, apart from the
+  database backups, with access for at least two people. Without the key
+  the issuer can neither issue nor revoke, so a lost key means a new key
+  and new credentials for every participant. A leaked key lets anyone
+  issue credentials in the dataspace's name: replace it at once.
+- [ ] **Credential definitions.** A JSON file listing what the issuer can
+  issue (ADR 0018, "Credential definitions"); the issuer checks it at
+  start and refuses to start if it is wrong.
+- [ ] **Management API key.** As for the connector. It registers
+  participants and revokes credentials, so guard it like the issuer key.
+- [ ] **Storage.** A persistent volume for `/data`: participants,
+  requests, issued credentials, status lists and the outbox. Losing it
+  loses the revocation state; back it up.
+- [ ] **Network.** Inbound, through your proxy: the DID document, the
+  issuer service and the status lists. Management port: internal only.
+  Outbound: participants' DID documents and Storage APIs (`https://`).
+
+### Configuration
+
+| Variable | Default | Production value |
+|---|---|---|
+| `PORTITOR_PARTICIPANT_ID` | required | the issuer's `did:web` DID; its document is served at the path the DID gives |
+| `PORTITOR_ISSUER_SERVICE_URL` | required | public base URL of the issuer service, for example `https://issuer.example.com/issuer`; written into the DID document (`IssuerService`). The status lists are served under it (`/status-lists/vc11`, `/status-lists/vc20`) and every credential points there, so **never change it** once credentials are issued |
+| `PORTITOR_ISSUER_KEY_FILE` | required | path of the mounted PEM key |
+| `PORTITOR_ISSUER_CREDENTIALS_FILE` | required | path of the mounted credential definitions file |
+| `PORTITOR_BIND` | `0.0.0.0:8070` | keep |
+| `PORTITOR_DB_FILE` | `/data/portitor-issuer.db` | keep the image default |
+| `PORTITOR_MANAGEMENT_API_KEY_FILE` | unset (management API off) | path of the mounted key file |
+| `PORTITOR_MANAGEMENT_BIND` | `127.0.0.1:8071` | `0.0.0.0:8071` in a container, published only on an internal interface |
+| `PORTITOR_ALLOW_HTTP_CALLBACKS` | `false` | `false`; `true` only for local tests with plain-HTTP DIDs |
+| `PORTITOR_ISSUER_MAX_ACTIVE_PER_HOLDER` | `10` | keep; the most credentials of one definition a participant may hold that are neither revoked nor expired. A request beyond it ends `REJECTED`. It keeps one participant from filling a status list (131,072 positions) |
+| `RUST_LOG` | `info` | `info` |
+
+The credential definitions file (ADR 0018):
+
+```json
+[
+  {"id": "membership-vc20", "credentialType": "MembershipCredential",
+   "profile": "vc20-bssl/jwt", "validityDays": 365, "claims": ["role"]}
+]
+```
+
+`id` is what holders ask for (it appears in the issuer metadata), and must
+stay the same across restarts. `profile` is `vc11-sl2021/jwt` or
+`vc20-bssl/jwt`. `claims` names the participant claims copied into
+`credentialSubject`; a claim the participant lacks is left out.
+
+Management API (`Authorization: Bearer <key>`; described in
+[api/issuer-management-openapi.json](api/issuer-management-openapi.json)):
+
+| Call | Does |
+|---|---|
+| `POST /v1/participants` `{"did": ..., "claims": {...}}` | registers a participant (409 if registered) |
+| `GET /v1/participants` | lists them |
+| `DELETE /v1/participants/{did}` | removes a registration (the DID percent-encoded as a whole, for example `jq -rR @uri`); issued credentials stay valid until revoked |
+| `POST /v1/offers` `{"participantDid": ..., "credentialIds": [...]}` | sends a `CredentialOfferMessage` to the participant's credential service |
+| `GET /v1/credentials?holder={did}` | lists issued credentials, with their delivery state (`PENDING`, `DELIVERED`, `FAILED`) |
+| `POST /v1/credentials/{id}/revoke` | revokes one: its bit is set and the status list signed again. Revoking again signs the list again, so after a `500` simply repeat the call |
+
+Who gets what (ADR 0018, amended during the 0.6 review):
+
+- Only registered participants may call the issuer service: anyone else
+  gets `401`, before the issuer resolves its DID, and nothing is kept.
+  A participant whose registration is deleted gets `401` from then on;
+  a request it made before that is still waiting ends `REJECTED`.
+- A request for an id not in the metadata, beyond
+  `PORTITOR_ISSUER_MAX_ACTIVE_PER_HOLDER`, or when the profile's status
+  list is full, ends `REJECTED`; nothing is sent to the holder, which
+  reads the status.
+- Each credential gets a random free position in its status list (W3C
+  Bitstring Status List: "SHOULD assign indexes randomly").
+- A delivery that fails for a passing reason (no answer, the holder's
+  DID or credential service not found, HTTP 401, 408, 429 or 5xx) is
+  retried, waiting 1, 2, 4 ... seconds up to an hour, for about 8 hours.
+  Any other 4xx answer (400, 403, 404, ...) means the holder refuses the
+  message: it is not retried. Either way it is then `FAILED` in the list
+  and logged (`delivery given up`, or `delivery refused by the holder,
+  given up`); the credentials stay issued. Send the participant an offer
+  so that it asks again.
+- A request whose decision failed (for example the disk was full) stays
+  `RECEIVED` and is decided again within a minute.
+
+### Ports
+
+| Port | Serves | Reached by | Expose |
+|---|---|---|---|
+| 8070 | DID document, issuer metadata, credential requests and their status, status lists | participants' identities, verifiers | through your HTTPS reverse proxy |
+| 8071 | management API (participants, offers, revocation) | the authority's operators only | **never publicly** |
+
+The public endpoints are described in
+[api/issuer-openapi.json](api/issuer-openapi.json).
+
+### Order
+
+1. Create the key, the credential definitions and the management key;
+   start the issuer and check that its DID document resolves.
+2. Register each participant (its DID and claims) through the management
+   API. A DID that is not registered gets `401` from the issuer service.
+3. Give participants the issuer's DID; each adds it to
+   `PORTITOR_TRUSTED_ISSUERS` and asks for its credentials (or you send
+   it an offer).
+4. When a participant leaves, revoke its credentials. Revocation cannot
+   be undone.
+
+Backup, restore, upgrade and rollback work as for the connector, with
+`/data/portitor-issuer.db*`. Keep the key backup separate from them.
+
 ## Known limits
 
 In this version (see also [SECURITY-ASSURANCE.md](SECURITY-ASSURANCE.md)):
 
 - Partners are admitted by one credential type (`MembershipCredential`,
-  `PORTITOR_DCP_SCOPES`); no per-dataset credential policies yet.
-  Credential schemas (`credentialSchema`) are not checked.
+  `PORTITOR_DCP_SCOPES`); offers may add credential claims (ADR 0019),
+  but the catalog still shows every offer to every member. Credential
+  schemas (`credentialSchema`) are not checked.
 - STS tokens are not cached: each DSP request costs one STS call, and each
   incoming one a presentation query.
 - One replica per database file; no PostgreSQL adapter yet.
 - Internal callback addresses are not blocked.
-- Policies: only the `dateTime` constraint is understood; prohibitions
-  and duties are carried into agreements but not enforced (ADR 0009).
+- Policies: only `dateTime` and credential claims are understood;
+  prohibitions and duties are carried into agreements but not enforced
+  (ADR 0009). As consumer, the connector does not accept a provider's
+  offer (DSP `OFFERED`) that has credential constraints; requests it
+  sends itself are not affected.
 - No metrics endpoint yet.
 - Transfers: pull only. A data access token ends `PORTITOR_DATA_TOKEN_SECONDS`
   after the transfer starts and is not renewed; the consumer then asks for

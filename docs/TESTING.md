@@ -20,12 +20,12 @@ project checks every change. All commands run from the repository root.
 | Dependencies: advisories, licences, sources | `cargo deny check` | every PR |
 | Licence headers | `reuse lint` | every PR (`REUSE compliance`) |
 | DSP conformance (TCK) | see [below](#dsp-conformance-tck) | every PR (`TCK`) |
-| DCP conformance, identity component (TCK) | see [below](#dcp-conformance-tck) | every PR (`TCK`) |
+| DCP conformance: identity component, connector as verifier, issuer (TCK) | see [below](#dcp-conformance-tck) | every PR (`TCK`) |
 | Interoperability with EDC v1.0.0-RC7 | `scripts/edc-interop.sh`, see [below](#edc-interop-test) | PRs that touch `crates/`, `interop/edc/` or the script, and nightly (`EDC interop`) |
 | Fuzzing | see [below](#fuzzing) | every PR (short), weekly (long) |
 | Two participants authenticate with DCP, agree a contract and transfer a file | `scripts/demo.sh`, see [below](#two-connectors) | every PR (`CI`) |
 | The same in Docker Compose | `scripts/demo-compose.sh` | every PR (`CI`) |
-| Images build and start | `docker build --target portitor-connector` / `--target portitor-identity`; the connector refuses to start without its DCP settings, the identity serves its DID document | every PR (`CI`) |
+| Images build and start | `docker build --target portitor-connector` / `--target portitor-identity` / `--target portitor-issuer`; the connector and the issuer refuse to start without their settings, the identity serves its DID document | every PR (`CI`) |
 | Static analysis | CodeQL, OpenSSF Scorecard, ORT | every PR or on `main` |
 
 You need: Rust (the version in `.github/workflows/ci.yml`; at least the
@@ -66,8 +66,20 @@ Where the tests are:
   network needed). `tests/end_to_end.rs` runs two connectors in one
   process, joined by a fake network: the consumer negotiates, requests a
   transfer, fetches the data from the provider's built-in data plane and
-  completes the transfer. The SQLite store is tested on an in-memory
-  database and on a real file.
+  completes the transfer. `tests/credential_constraints.rs` does the same
+  with an offer that needs a credential claim (ADR 0019) and fake DCP
+  ports that stand for the credential services: a holder without the
+  claim is terminated, one with it gets an agreement and a transfer, and
+  once its credential is revoked a new transfer does not start; a
+  credential service that does not answer ends the negotiation, and an
+  offer from the provider with a credential constraint is not accepted.
+  Its last test gives the provider the real DCP verifier, against a
+  consumer identity and an issuer served on a local port: once the
+  issuer sets the membership credential's bit in its status list, a new
+  negotiation is refused, a reissued credential held next to the
+  revoked one is still refused (DCP 5.4.3, step 8), and once the revoked
+  one is deleted the consumer is admitted again. The
+  SQLite store is tested on an in-memory database and on a real file.
 - `tests/dsp_catalog.rs` also checks that every path in
   [docs/api/openapi.json](api/openapi.json) is served.
 - `tests/management_api.rs` tests the management API and checks that
@@ -125,9 +137,11 @@ curl -LO https://repo1.maven.org/maven2/org/eclipse/dataspacetck/dsp/dsp-tck/1.0
 curl -L https://repo1.maven.org/maven2/org/eclipse/dataspacetck/dsp/dsp-tck/1.0.2/dsp-tck-1.0.2-all.jar.sha1; echo
 sha1sum dsp-tck-1.0.2-all.jar
 
-# 2. Start Portitor with the TCK datasets
+# 2. Start Portitor with the TCK datasets; the tck build takes the TCK's
+#    fixed header instead of DCP (PORTITOR_TCK_AUTHORIZATION)
 cargo build -p portitor-connector --features tck
 PORTITOR_BIND=127.0.0.1:8080 PORTITOR_PUBLIC_URL=http://127.0.0.1:8080 \
+PORTITOR_PARTICIPANT_ID='did:web:localhost%3A8080' PORTITOR_TCK_AUTHORIZATION='Bearer dsp-tck-only' \
 PORTITOR_DATASETS_FILE=tck/datasets.json PORTITOR_ALLOW_HTTP_CALLBACKS=true \
 PORTITOR_DB_FILE=/tmp/portitor-tck.db target/debug/portitor-connector &
 
@@ -143,8 +157,9 @@ properties to `tck/dsp-tck.properties`, scripted behaviour (if any) to
 ## DCP conformance (TCK)
 
 The Eclipse DCP TCK v1.2.1 checks the identity component
-(`portitor-identity`) as a credential service: the presentation tests
-(DCP sections 4 and 5) and the holder side of issuance (Storage API and
+(`portitor-identity`) as a credential service, the connector as a
+verifier, and the issuer (below). For the identity component it runs the
+presentation tests (DCP sections 4 and 5) and the holder side of issuance (Storage API and
 credential offers, section 6), 54 tests. The TCK plays the verifier and
 the issuer, serves their DID documents itself, and gets its ID tokens from
 the identity component's STS. Before each test it delivers two test
@@ -190,26 +205,78 @@ DATASPACETCK_STS_CLIENT_SECRET=$(cat /tmp/id-sts.secret) \
 python3 scripts/dcp_tck_check.py dcp-tck.log
 ```
 
+### The verifier tests
+
+The same TCK checks the connector as a verifier (package
+`verification.presentation.verifier`, 22 tests): it plays the prover and
+the issuer, serves their DIDs itself, and starts each test with a catalog
+request carrying the prover's ID token; it expects 2xx when the caller
+should be admitted and 4xx otherwise. The connector's own identity is a
+`portitor-identity`: its STS signs the connector's presentation queries,
+which the TCK checks against that identity's DID document. The run uses
+`tck/dcp-verifier-tck.properties` and the normal connector build:
+
+```sh
+# the TCK jar as above; the identity component of step 2 on port 8090
+# (management API not needed), then the connector
+cargo build -p portitor-connector
+PORTITOR_PARTICIPANT_ID='did:web:localhost%3A8090' PORTITOR_TRUSTED_ISSUERS='did:web:127.0.0.1%3A8083:issuer' \
+PORTITOR_ALLOW_HTTP_CALLBACKS=true PORTITOR_BIND=127.0.0.1:8080 PORTITOR_PUBLIC_URL=http://127.0.0.1:8080 \
+PORTITOR_DATASETS_FILE=tck/datasets.json PORTITOR_DB_FILE=/tmp/portitor-verifier-tck.db \
+PORTITOR_STS_URL=http://localhost:8090/sts/token PORTITOR_STS_CLIENT_SECRET_FILE=/tmp/id-sts.secret \
+  target/debug/portitor-connector &
+java -jar dcp-tck-1.2.1-all.jar -config tck/dcp-verifier-tck.properties > dcp-verifier-tck.log
+python3 scripts/dcp_tck_check.py dcp-verifier-tck.log 22
+```
+
+### The issuer tests
+
+The same TCK checks `portitor-issuer` with its `issuance.issuer` package,
+41 tests: endpoint discovery, issuer metadata, credential requests and
+their status (with every token check of DCP 4.3), and what is delivered
+to the holder (one `CredentialMessage` per request, signed credentials,
+the holder's access token sent back). The TCK plays the holder
+(`did:web:127.0.0.1%3A8083:holder`) and receives the deliveries itself,
+so its DID is registered as a participant before the run (the issuer
+answers 401 to any other DID, which the TCK's "other holder" and
+"unresolvable subject" tests accept as the 4xx they expect). The TCK
+holder gets about twenty requests issued, so the script raises
+`PORTITOR_ISSUER_MAX_ACTIVE_PER_HOLDER` to 100. The issuer
+refuses a repeated `holderPid`, so `tck/dcp-issuer-tck.properties` gives
+each test that must be accepted its own. `tck/issuer-credentials.json`
+defines two `vc11-sl2021/jwt` credentials, as the TCK's test 6.4.1
+expects. One script does it all, locally and in CI:
+
+```sh
+# the TCK jar as above; uses ports 8070, 8071 and 8083 (ISSUER_PORT,
+# MANAGEMENT_PORT and TCK_PORT change them), and writes
+# dcp-issuer-tck.log and issuer.log in the current directory
+scripts/dcp-issuer-tck.sh dcp-tck-1.2.1-all.jar
+```
+
 ## EDC interop test
 
 `scripts/edc-interop.sh` runs a small data space in Docker Compose
 (`interop/edc/compose.yaml`): a Portitor participant (`portitor-connector`
 and `portitor-identity`) and an Eclipse Dataspace Components participant
 (control plane, data plane, and IdentityHub with its STS, all
-v1.0.0-RC7), both members by a `MembershipCredential` from a test-only
-demo authority. It checks, in this order:
+v1.0.0-RC7), both members by a `MembershipCredential` from the data
+space's `portitor-issuer`. It checks, in this order:
 
-1. Portitor's identity receives its credential the DCP way (a pending
-   request on its management API, then a `CredentialMessage` to its
-   Storage API);
+1. each identity asks the issuer for its credential through its own API,
+   and the issuer delivers it (DCP 6.4, 6.5): the IdentityHub through its
+   Identity API (`POST .../participants/{id}/credentials/request`, marked
+   unstable in RC7), Portitor's identity through its management API
+   (`POST /v1/credential-requests`); the issuer registered both first;
 2. EDC accepts Portitor's identity: the EDC provider's catalog, read with
    a token from Portitor's STS (EDC queries Portitor's credential service);
 3. Portitor consumer, EDC provider: negotiation, pull transfer, and the
    data fetched equals the published file;
 4. EDC consumer, Portitor provider: catalog, negotiation, pull transfer
    (EDC's data plane fetches from Portitor's), the same check;
-5. revocation both ways: once the authority revokes one participant's
-   credential, the other refuses it with 401.
+5. revocation both ways: once the issuer revokes one participant's
+   credential (`POST /v1/credentials/{id}/revoke`), the other refuses it
+   with 401.
 
 EDC always sends a `filter` in its `CatalogRequestMessage`: an EDC
 `QuerySpec` with no filter expressions (offset 0, limit 50). Portitor
@@ -220,10 +287,11 @@ treats such a filter as "no filter" and answers with the whole catalog.
 # images are built from interop/edc/runtimes (Maven Central, no EDC images
 # are published); needs docker compose, curl, jq and openssl
 mkdir -p dist/amd64
-cargo build --release --target x86_64-unknown-linux-musl -p portitor-connector -p portitor-identity
-cp target/x86_64-unknown-linux-musl/release/portitor-{connector,identity} dist/amd64/
+cargo build --release --target x86_64-unknown-linux-musl -p portitor-connector -p portitor-identity -p portitor-issuer
+cp target/x86_64-unknown-linux-musl/release/portitor-{connector,identity,issuer} dist/amd64/
 docker build --target portitor-connector -t portitor-connector:ci .
 docker build --target portitor-identity -t portitor-identity:ci .
+docker build --target portitor-issuer -t portitor-issuer:ci .
 scripts/edc-interop.sh            # KEEP=1 leaves it running; --no-build reuses the EDC images
 ```
 
@@ -236,8 +304,15 @@ EDC v1.0.0-RC7 sources):
   `org.eclipse.dspace.dcp.vc.type:MembershipCredential:read`
   (`edc.iam.dcp.scopes.*` in `config/edc-controlplane.properties`) and
   Portitor's `PORTITOR_DCP_SCOPES` is the same string.
-- **Trust.** `edc.iam.trustedissuer.authority.id=did:web:authority`, and
-  `PORTITOR_TRUSTED_ISSUERS` on both Portitor components.
+- **Trust.** `edc.iam.trustedissuer.authority.id=did:web:issuer%3A8070`
+  (the issuer), and `PORTITOR_TRUSTED_ISSUERS` on both Portitor
+  components.
+- **Credential request.** The IdentityHub sends the
+  `CredentialRequestMessage` with a token from its own STS, without a
+  `token` claim, and accepts the issuer's delivery only for a request it
+  sent to that issuer, with the type and profile it asked for
+  (`MembershipCredential`, `vc20-bssl/jwt`). It finds the issuer service
+  in the issuer's DID document (`IssuerService`).
 - **Status lists.** EDC needs an `id` on every `credentialStatus`, and
   reads status lists again after one second here
   (`edc.iam.credential.revocation.cache.validity`), so the revocation
@@ -257,34 +332,11 @@ EDC v1.0.0-RC7 sources):
   docker run --rm -v "$PWD/interop/edc/runtimes:/src" -w /src \
     gradle:9.8.2-jdk21 gradle --no-daemon --write-verification-metadata sha256 shadowJar
   ```
-- **IdentityHub admin.** The Identity API takes a JWT signed by the demo
-  authority (`test-issuer admin-token --scope identity-api:admin`), checked
-  against the authority's JWKS.
-
-### The demo authority (`test-issuer`)
-
-Until Portitor has an issuer, a test-only example of `portitor-identity`
-signs the credentials (ADR 0015, "Credentials before the issuer
-exists"). It is never part of a release build or image; its key is
-`crates/portitor-identity/tests/fixtures/test-only-demo-authority.pem`.
-
-```sh
-cargo build -p portitor-identity --example test-issuer
-T=target/debug/examples/test-issuer
-K="--key crates/portitor-identity/tests/fixtures/test-only-demo-authority.pem --did did:web:authority"
-# the DID document, JWKS and an all-clear 16 KiB status list, for a static web server
-$T init $K --site site/ --status-list-url http://authority/status/membership
-# a MembershipCredential (vc20-bssl/jwt or vc11-sl2021/jwt), printed
-$T issue $K --holder did:web:holder.example --profile vc20-bssl/jwt \
-  --status-list-url http://authority/status/membership --status-index 1
-# the same, delivered to a Portitor identity component
-$T deliver $K --holder did:web:holder.example --profile vc20-bssl/jwt \
-  --status-list-url http://authority/status/membership --status-index 1 \
-  --management http://127.0.0.1:8091 --api-key-file id-api.key \
-  --credential-service http://127.0.0.1:8090/cs --allow-http
-# revoke: set bit 1 and sign the list again
-$T revoke $K --site site/ --status-list-url http://authority/status/membership --status-index 1
-```
+- **IdentityHub admin.** The Identity API (the IdentityHub's "oauth2"
+  variant) takes a JWT checked against a key set. The script makes a
+  test-only RSA key for each run, signs five-minute RS256 tokens with
+  `openssl` (`identity_api_token` in `scripts/edc-interop.sh`), and
+  serves the key set from the `identity-api-jwks` web server.
 
 ## Fuzzing
 
@@ -374,30 +426,50 @@ provider sends the `FINALIZED` event. `GET
 
 `scripts/demo.sh` does all of this in one go, with DCP, and checks the
 result. Each participant (provider and consumer) is a connector and its
-own `portitor-identity`. The demo authority (the `test-issuer` example,
-[above](#the-demo-authority-test-issuer)) publishes its DID document and
-status list on a local `python3 -m http.server`, and delivers each
-identity its `MembershipCredential` the DCP way. Then the checks
+own `portitor-identity`; a `portitor-issuer` with a new key is the data
+space's authority (credential definitions in
+`examples/issuer-credentials.json`). The script registers both
+participants at the issuer (claims: `memberOf`, and `processing: "eu"`
+for the consumer), and each identity asks the issuer for its credentials
+through its own management API (`POST /v1/credential-requests`); the
+script waits until the request is `ISSUED`, since the issuer decides and
+delivers in the background. The provider gets a `MembershipCredential`,
+the consumer also a `DataProcessorCredential`. Then the checks
 (`scripts/demo-steps.sh`): a catalog request without a token is refused
 (401), one with a token from the consumer's STS is answered; the
 `air-quality` offer copied from the catalog negotiates to `FINALIZED`, the
-same offer id without its constraint is `TERMINATED`. It requests a
+same offer id without its constraint is `TERMINATED`. The
+`member-directory` offer for members (the `memberOf` claim of the demo
+`MembershipCredential`, ADR 0019) is `FINALIZED`; its offer for auditors,
+a `role` claim the demo credential does not have, is `TERMINATED`. It requests a
 transfer under the agreement, fetches the file with the token, checks it
 equals `examples/data/air-quality.csv`, completes the transfer and checks
-that the token is refused afterwards. It needs `curl`, `jq`, `openssl` and
+that the token is refused afterwards. Last, a second credential type
+(ADR 0019): the `processing-records` offer checks the consumer's
+`DataProcessorCredential` (both connectors set
+`PORTITOR_POLICY_CREDENTIALS=DataProcessorCredential`); it negotiates to
+`FINALIZED` and a transfer starts; the issuer revokes that credential
+(`POST /v1/credentials/{id}/revoke`), and a new transfer request under
+the same agreement is `TERMINATED`. It needs `curl`, `jq`, `openssl` and
 Python 3.
 
 ```sh
-scripts/demo.sh                      # builds the debug binaries and test-issuer
-TEST_ISSUER=target/debug/examples/test-issuer \
-  scripts/demo.sh <portitor-connector> [<portitor-identity>]
+scripts/demo.sh                      # builds the debug binaries
+scripts/demo.sh <portitor-connector> [<portitor-identity> [<portitor-issuer>]]
 ```
 
-`scripts/demo-compose.sh [connector image [identity image]]` runs the same
-checks against the services in `examples/compose/compose.yaml`, with the
-released images or the ones you name; it writes the keys, secrets and the
-authority's site into `examples/compose/run/` first, and `KEEP=1` leaves
-everything running. CI runs both on every pull request, with the binaries
+A demo step that needs another claim registers the participant with it
+(`register` in `scripts/participants.sh`); the credential definitions
+copy `memberOf` and `role` into the `MembershipCredential`, and
+`processing` into the `DataProcessorCredential`.
+
+`scripts/demo-compose.sh [connector image [identity image [issuer image]]]`
+runs the same checks against the services in
+`examples/compose/compose.yaml`, with the released images or the ones
+you name; it writes the keys and secrets into `examples/compose/run/`
+first, and `KEEP=1` leaves everything running (the issuer's management
+API is then on `127.0.0.1:18071`, with the key in
+`examples/compose/run/issuer/management.key`). CI runs both on every pull request, with the binaries
 and images it has just built.
 
 By hand, a provider and a consumer with their identities: start the
@@ -430,8 +502,10 @@ when VS Code asks. Then open Run and Debug, pick a configuration and press F5.
 Every connector needs its identity component, a credential and a
 trusted issuer (DCP, ADR 0016). The task **portitor: identities**
 (`scripts/dev-identities.sh`) provides them, as `scripts/demo.sh` does:
-it publishes the demo authority on `127.0.0.1:9100` and starts two
-`portitor-identity` processes, each with its `MembershipCredential`:
+it starts a `portitor-issuer` on `127.0.0.1:9100` (management
+`127.0.0.1:9104`, key in `target/vscode-dcp/issuer/management.key`) and
+two `portitor-identity` processes, each with a `MembershipCredential` it
+asked the issuer for:
 
 | Participant | DID | Identity (DID document, STS, credential service) | Identity management |
 |---|---|---|---|
@@ -479,7 +553,9 @@ Fuzz targets need a nightly toolchain and are not in `launch.json`.
 `scripts/measure.sh` measures size, start time, memory and latency
 against the targets in ADR 0002, and what DCP costs per DSP request
 (ADR 0016). It starts a provider (connector and identity) and a
-consumer identity with the demo authority, as `scripts/demo.sh` does.
+consumer identity, with credentials from a `portitor-issuer`, as
+`scripts/demo.sh` does; it reports the issuer's binary size and memory
+too.
 The load tool is the `dsp-load` example of the connector: it sends
 catalog requests from 50 clients, each with a fresh token from the
 consumer's STS (a general load tool cannot, since a DCP token may be used
@@ -491,7 +567,7 @@ bounded; it needs `curl`, `openssl` and Python 3.
 scripts/measure.sh                   # builds the release binaries and the tools
 cargo build --release -p portitor-connector --features tck
 cp target/release/portitor-connector /tmp/portitor-connector-tck
-cargo build --release -p portitor-connector -p portitor-identity
+cargo build --release -p portitor-connector -p portitor-identity -p portitor-issuer
 TCK_CONNECTOR=/tmp/portitor-connector-tck \
   scripts/measure.sh target/release/portitor-connector
 ```

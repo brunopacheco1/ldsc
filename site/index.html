@@ -107,17 +107,17 @@ so visitors' browsers never contact third-party services.
           <table>
             <thead><tr><th scope="col">Image</th><th scope="col">Does</th><th scope="col">Who runs it</th></tr></thead>
             <tbody>
-              <tr><td><code>portitor-connector</code></td><td>Catalog, contract negotiation, transfer and data plane; checks partners' credentials</td><td>Every participant</td></tr>
-              <tr><td><code>portitor-identity</code></td><td>Holds the participant's identity, keys and credentials; answers credential requests</td><td>Every participant using DCP (optional with an external wallet)</td></tr>
-              <tr><td><code>portitor-issuer</code></td><td>Issues and revokes credentials</td><td>The dataspace authority only</td></tr>
+              <tr><td><code>portitor-connector</code></td><td>Catalog, contract negotiation, transfer and data plane; checks partners' credentials, also against offers that ask for credential claims</td><td>Every participant</td></tr>
+              <tr><td><code>portitor-identity</code></td><td>Holds the participant's identity, keys and credentials; asks the issuer for credentials and presents them to verifiers</td><td>Every participant using DCP (optional with an external wallet)</td></tr>
+              <tr><td><code>portitor-issuer</code></td><td>Issues and revokes credentials, such as membership, and publishes their status lists</td><td>The dataspace authority only: one per dataspace</td></tr>
             </tbody>
           </table>
         </div>
         <h3>Deployment order</h3>
         <ol class="steps">
-          <li>PostgreSQL.</li>
-          <li><code>portitor-identity</code>: publish the <code>did:web</code> document over HTTPS.</li>
-          <li>The dataspace authority issues a membership credential (and, for Gaia-X, the participant obtains a compliance credential).</li>
+          <li><code>portitor-issuer</code>, once per dataspace, by the dataspace authority: publish its <code>did:web</code> document and register the participants.</li>
+          <li>For each participant, storage: a volume for each image's database file.</li>
+          <li><code>portitor-identity</code>: publish the <code>did:web</code> document over HTTPS and get a membership credential from the issuer (and, for Gaia-X, a compliance credential).</li>
           <li><code>portitor-connector</code>, pointed at the identity and the database.</li>
         </ol>
       </div>
@@ -134,10 +134,11 @@ so visitors' browsers never contact third-party services.
           <li class="done"><span>0.3</span> Contract negotiation</li>
           <li class="done"><span>0.4</span> Transfer process and HTTP data plane</li>
           <li class="done"><span>0.5</span> DCP identity and presentation; EDC interoperability test; Simpl-Open spike</li>
-          <li class="now"><span>0.6</span> Credential issuance and credential-based policies</li>
-          <li><span>0.7</span> Gaia-X Trust Framework (Danube)</li>
-          <li><span>0.8</span> Operations: health checks, logs, metrics (OpenTelemetry), a two-participant demo dataspace</li>
-          <li><span>0.9</span> Hardening and release candidate for 1.0</li>
+          <li class="done"><span>0.6</span> Credential issuance (<code>portitor-issuer</code>) and policies that check credential claims</li>
+          <li class="now"><span>0.7</span> Schema and vocabulary registry: the authority's signed shapes check datasets and messages</li>
+          <li><span>0.8</span> Gaia-X Trust Framework (Danube)</li>
+          <li><span>0.9</span> Operations: health checks, logs, metrics (OpenTelemetry), a two-participant demo dataspace</li>
+          <li><span>0.10</span> Hardening and release candidate for 1.0</li>
         </ol>
       </div>
     </section>

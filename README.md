@@ -84,8 +84,9 @@ Configuration (environment variables):
 | `PORTITOR_STS_ALLOW_HTTP` | unset | `true` allows a plain-HTTP `PORTITOR_STS_URL` (the STS on an internal network), and nothing else |
 | `PORTITOR_STS_CLIENT_ID` | `PORTITOR_PARTICIPANT_ID` | Client id at the STS |
 | `PORTITOR_STS_CLIENT_SECRET_FILE` | none (**required**) | File with the STS client secret |
-| `PORTITOR_TRUSTED_ISSUERS` | none (**required**) | Comma-separated DIDs trusted to issue `MembershipCredential` |
+| `PORTITOR_TRUSTED_ISSUERS` | none (**required**) | Comma-separated DIDs trusted to issue credentials: the `MembershipCredential` and those of credential constraints |
 | `PORTITOR_DCP_SCOPES` | `org.eclipse.dspace.dcp.vc.type:MembershipCredential` | Comma-separated scopes asked from callers' credential services, and granted to the counter-party in our tokens |
+| `PORTITOR_POLICY_CREDENTIALS` | none (`MembershipCredential` only) | Comma-separated credential types that offers may constrain, each `Type` (scope `org.eclipse.dspace.dcp.vc.type:<Type>:read`) or `Type=<scope>` ([ADR 0019](docs/adr/0019-credential-constraints.md)) |
 
 As provider, the connector agrees to a request for an offer in its
 catalog, then finalizes once the consumer verifies. It sends its messages
@@ -111,20 +112,36 @@ while the transfer is started and for `PORTITOR_DATA_TOKEN_SECONDS` after
 the start; the connector then streams the source's answer (2xx only, with
 its `Content-Type`). A request for a dataset without a source is refused.
 
-Policies (minimal ODRL, [ADR 0009](docs/adr/0009-minimal-odrl-policies.md)):
-- A permission without constraints permits. One constraint is understood:
-  `dateTime` (when the action is exercised) with `eq`, `neq`, `lt`,
-  `lteq`, `gt` or `gteq`, and a date (`2030-12-31`, the whole day) or a
-  date and time with a time zone (`2030-12-31T23:59:59Z`). `and`,
-  `andSequence`, `or` and `xone` combine them.
+Policies (minimal ODRL, [ADR 0009](docs/adr/0009-minimal-odrl-policies.md),
+[ADR 0019](docs/adr/0019-credential-constraints.md)):
+- A permission without constraints permits. Two kinds of constraint are
+  understood:
+  - `dateTime` (when the action is exercised) with `eq`, `neq`, `lt`,
+    `lteq`, `gt` or `gteq`, and a date (`2030-12-31`, the whole day) or a
+    date and time with a time zone (`2030-12-31T23:59:59Z`);
+  - a credential claim, `<CredentialType>.<claim path>` (for example
+    `MembershipCredential.role` or `DataProcessorCredential.level.name`),
+    with `eq` or `neq` and a text, or `isAnyOf` or `isNoneOf` and a list
+    of texts. The type must be in `PORTITOR_POLICY_CREDENTIALS` (or be
+    `MembershipCredential`). It holds if one of the consumer's verified
+    credentials of that type has the claim, as text, and the comparison is
+    true; a missing claim never grants access.
+
+  `and`, `andSequence`, `or` and `xone` combine them.
 - Anything else is refused (fail closed): a datasets file that uses it
   stops the connector at start.
 - As provider, the connector agrees only if the requested offer has the
   same terms as the catalog offer with that `@id`, and its constraints
-  hold now. Otherwise it terminates the negotiation, saying why.
-- As consumer, it accepts a provider's offer only if its constraints hold
-  now, and verifies an agreement only if it has the terms it asked for or
-  accepted.
+  hold now for the consumer's credentials. For credential constraints it
+  asks the consumer's credential service for the types the offer names.
+  Otherwise it terminates the negotiation, saying why. It checks the
+  agreement again, with fresh credentials, at each transfer request.
+- As consumer, it grants the provider, in its token, the scopes the
+  offer's credential constraints need. It accepts a provider's offer only
+  if its constraints hold now (an offer with credential constraints is not
+  accepted: the consumer cannot check its own credentials as the provider
+  will), and verifies an agreement only if it has the terms it asked for
+  or accepted.
 - Prohibitions and duties are carried into the agreement but not enforced
   yet.
 
@@ -198,7 +215,9 @@ the host in the callback address; certificate checks cannot be turned off.
 
 Known gaps in this version:
 - Callers are admitted by one credential type, `MembershipCredential` from
-  a trusted issuer (ADR 0016); no per-dataset credential policies yet.
+  a trusted issuer (ADR 0016). Offers may also ask for credential claims
+  (ADR 0019), compared as text only, but the catalog still shows every
+  offer to every member.
 - The callback address is chosen by the consumer. Only `https://` is
   allowed by default, but internal addresses are not blocked yet; put the
   connector where it cannot reach services it should not call.
@@ -214,22 +233,24 @@ validate them yet. See
 [examples/datasets.json](examples/datasets.json).
 
 To see two participants agree a contract and transfer a file, run the demo
-in Docker Compose (needs Docker, `curl`, `jq`, `openssl` and Rust, to build
-the demo authority):
+in Docker Compose (needs Docker, `curl`, `jq` and `openssl`):
 
 ```sh
 scripts/demo-compose.sh
 ```
 
-It starts a provider and a consumer, each a connector with its identity
-component, a small web server that holds the provider's data and the site
-of a test-only demo authority ([examples/compose](examples/compose)). The
-authority delivers each identity a `MembershipCredential`. Then it checks
-that the provider refuses a catalog request without a DCP token, reads the
-catalog with a token from the consumer's STS, agrees a contract, checks
-that changed terms are refused, transfers
+It starts the data space's issuer (`portitor-issuer`), a provider and a
+consumer, each a connector with its identity component, and a small web
+server that holds the provider's data ([examples/compose](examples/compose)).
+The issuer registers both participants, and each identity asks it for its
+credentials. Then it checks that the provider refuses a catalog request
+without a DCP token, reads the catalog with a token from the consumer's
+STS, agrees a contract, checks that changed terms are refused, checks
+offers that ask for credential claims, transfers
 [examples/data/air-quality.csv](examples/data/air-quality.csv), fetches it
-with the token and completes the transfer. It stops everything at the end;
+with the token and completes the transfer; last, once the issuer revokes
+the consumer's `DataProcessorCredential`, a new transfer that needs it is
+refused. It stops everything at the end;
 `KEEP=1` leaves it running. `scripts/demo.sh` does the same without Docker
 (needs Python 3 as well).
 
@@ -237,6 +258,10 @@ A connector does not run alone: it needs its participant's identity
 component for DCP (`PORTITOR_STS_URL`, `PORTITOR_STS_CLIENT_SECRET_FILE`,
 `PORTITOR_TRUSTED_ISSUERS`), and refuses to start without it.
 [examples/compose/compose.yaml](examples/compose/compose.yaml) shows both
-wired together; [docs/DEPLOYING.md](docs/DEPLOYING.md) is the runbook.
+wired together; [docs/DEPLOYING.md](docs/DEPLOYING.md) is the runbook. The
+identity component and the issuer (`portitor-issuer`, run once per
+dataspace by its authority) have their own settings and APIs: see
+DEPLOYING sections 4 and 7, and their OpenAPI files in
+[docs/api/](docs/api/).
 
 Licensed under [Apache-2.0](LICENSE) ([ADR 0010](docs/adr/0010-licence.md)).

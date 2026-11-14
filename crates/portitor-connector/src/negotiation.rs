@@ -14,6 +14,7 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use portitor_dsp::Offer;
 use portitor_dsp::guard::Direction;
 use portitor_dsp::negotiation::provider::{
     Failure, Negotiation, NegotiationStore, Outgoing, ProviderService, StoreError,
@@ -21,13 +22,14 @@ use portitor_dsp::negotiation::provider::{
 use portitor_dsp::negotiation::{
     ContractAgreementVerificationMessage, ContractNegotiation, ContractNegotiationError,
     ContractNegotiationEventMessage, ContractNegotiationTerminationMessage, ContractRequestMessage,
-    Transition,
+    NegotiationEvent, Transition,
 };
+use portitor_dsp::policy::{CallerCredentials, credential_scopes};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::InMemoryDatasets;
-use crate::auth::Caller;
+use crate::auth::{AnyVerifier, Caller, credentials_for};
 use crate::http_client::outbound_url_allowed;
 use crate::outbox::{self, Link, Message, Outbox};
 use crate::ports::{AnyDecider, AnyStore, Ports};
@@ -87,6 +89,8 @@ type Service = ProviderService<AnyStore, AnyDecider, InMemoryDatasets, SystemEnv
 pub(crate) struct Provider {
     service: Service,
     link: Link,
+    /// Asks a caller for more credentials when an offer needs them.
+    verifier: AnyVerifier,
     allow_http: bool,
 }
 
@@ -99,6 +103,7 @@ impl Provider {
     ) -> Self {
         Self {
             link: Link::new(&ports),
+            verifier: Arc::clone(&ports.verifier),
             service: ProviderService::new(
                 ports.store,
                 ports.decider,
@@ -129,6 +134,14 @@ impl Provider {
             .map_err(|r| Box::new(invalid(provider_pid, &consumer_pid, &r.to_string())))?;
         serde_json::from_value(value)
             .map_err(|e| Box::new(invalid(provider_pid, &consumer_pid, &e.to_string())))
+    }
+
+    /// The caller's verified credentials for the credential constraints of
+    /// `offer` (ADR 0019).
+    async fn credentials(&self, caller: &Caller, offer: &Offer) -> CallerCredentials {
+        let types = &self.link.credential_types;
+        let scopes = credential_scopes(offer, types);
+        credentials_for(&*self.verifier, types, caller, &scopes).await
     }
 
     /// Sends every message saved as pending, for example after a
@@ -221,10 +234,10 @@ pub(crate) fn failed(failure: Failure) -> Response {
 /// `GET /negotiations/{providerPid}`.
 pub(crate) async fn get(
     State(provider): State<Arc<Provider>>,
-    Extension(Caller(caller)): Extension<Caller>,
+    Extension(caller): Extension<Caller>,
     Path(pid): Path<String>,
 ) -> Response {
-    match provider.service.get(&pid, &caller) {
+    match provider.service.get(&pid, &caller.id) {
         Ok(ack) => Json(ack).into_response(),
         Err(f) => failed(f),
     }
@@ -233,7 +246,7 @@ pub(crate) async fn get(
 /// `POST /negotiations/request`.
 pub(crate) async fn request_new(
     State(provider): State<Arc<Provider>>,
-    Extension(Caller(caller)): Extension<Caller>,
+    Extension(caller): Extension<Caller>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
     let msg: ContractRequestMessage = match provider.read(body, "ContractRequestMessage", "") {
@@ -248,14 +261,17 @@ pub(crate) async fn request_new(
             "callbackAddress must be an https URL",
         ));
     }
-    let handled = provider.service.request(None, msg, &caller);
+    let credentials = provider.credentials(&caller, &msg.offer).await;
+    let handled = provider
+        .service
+        .request(None, msg, &caller.id, &credentials);
     finish(&provider, handled, StatusCode::CREATED)
 }
 
 /// `POST /negotiations/{providerPid}/request`.
 pub(crate) async fn request_counter(
     State(provider): State<Arc<Provider>>,
-    Extension(Caller(caller)): Extension<Caller>,
+    Extension(caller): Extension<Caller>,
     Path(pid): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
@@ -263,14 +279,17 @@ pub(crate) async fn request_counter(
         Ok(m) => m,
         Err(e) => return bad_request(*e),
     };
-    let handled = provider.service.request(Some(&pid), msg, &caller);
+    let credentials = provider.credentials(&caller, &msg.offer).await;
+    let handled = provider
+        .service
+        .request(Some(&pid), msg, &caller.id, &credentials);
     finish(&provider, handled, StatusCode::OK)
 }
 
 /// `POST /negotiations/{providerPid}/events`.
 pub(crate) async fn event(
     State(provider): State<Arc<Provider>>,
-    Extension(Caller(caller)): Extension<Caller>,
+    Extension(caller): Extension<Caller>,
     Path(pid): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
@@ -279,14 +298,40 @@ pub(crate) async fn event(
             Ok(m) => m,
             Err(e) => return bad_request(*e),
         };
-    let handled = provider.service.event(&pid, &msg, &caller);
+    let credentials = credentials_for_event(&provider, &caller, &pid, msg.event_type).await;
+    let handled = provider.service.event(&pid, &msg, &caller.id, &credentials);
     finish(&provider, handled, StatusCode::OK)
+}
+
+/// The caller's credentials that an event on negotiation `pid` needs.
+/// Only an acceptance may lead to an agreement, so only then are the
+/// credentials of the offer's constraints asked for (ADR 0019).
+///
+/// When the offer cannot be read (an unknown negotiation, another
+/// consumer's, or a store failure), the answer is "no credentials":
+/// `service.event` then reads the negotiation itself and answers that
+/// error, and with no credentials a credential constraint can only fail
+/// (fail closed).
+async fn credentials_for_event(
+    provider: &Provider,
+    caller: &Caller,
+    pid: &str,
+    event: NegotiationEvent,
+) -> CallerCredentials {
+    match event {
+        NegotiationEvent::Accepted => {}
+        NegotiationEvent::Finalized => return CallerCredentials::default(),
+    }
+    match provider.service.offer_under_negotiation(pid, &caller.id) {
+        Ok(offer) => provider.credentials(caller, &offer).await,
+        Err(_) => CallerCredentials::default(),
+    }
 }
 
 /// `POST /negotiations/{providerPid}/agreement/verification`.
 pub(crate) async fn verify(
     State(provider): State<Arc<Provider>>,
-    Extension(Caller(caller)): Extension<Caller>,
+    Extension(caller): Extension<Caller>,
     Path(pid): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
@@ -295,14 +340,14 @@ pub(crate) async fn verify(
             Ok(m) => m,
             Err(e) => return bad_request(*e),
         };
-    let handled = provider.service.verify(&pid, &msg, &caller);
+    let handled = provider.service.verify(&pid, &msg, &caller.id);
     finish(&provider, handled, StatusCode::OK)
 }
 
 /// `POST /negotiations/{providerPid}/termination`.
 pub(crate) async fn terminate(
     State(provider): State<Arc<Provider>>,
-    Extension(Caller(caller)): Extension<Caller>,
+    Extension(caller): Extension<Caller>,
     Path(pid): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
@@ -311,7 +356,7 @@ pub(crate) async fn terminate(
             Ok(m) => m,
             Err(e) => return bad_request(*e),
         };
-    let handled = provider.service.terminate(&pid, &msg, &caller);
+    let handled = provider.service.terminate(&pid, &msg, &caller.id);
     finish(&provider, handled, StatusCode::OK)
 }
 
@@ -401,7 +446,11 @@ mod tests {
     struct FixedToken;
 
     impl Prover for FixedToken {
-        fn authorization<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<String, String>> {
+        fn authorization<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a [String],
+        ) -> BoxFuture<'a, Result<String, String>> {
             Box::pin(async { Ok("Bearer t".to_owned()) })
         }
     }
