@@ -20,6 +20,7 @@ use portitor_dsp::negotiation::consumer::{
 use portitor_dsp::negotiation::provider::{
     Decider, Decision, Negotiation, NegotiationStore, StoreError,
 };
+use portitor_dsp::policy::CredentialTypes;
 use portitor_dsp::transfer::DataAddress;
 use portitor_dsp::transfer::consumer::{
     AgreementProvider, ConsumerTransfer, ConsumerTransferDecider, ConsumerTransferDecision,
@@ -87,6 +88,10 @@ pub struct Ports {
     /// the `data-plane` feature) the connector runs its HTTP pull data
     /// plane and uses it for transfers; `None` keeps `transfers.flows`.
     pub flow_store: Option<AnyFlowStore>,
+    /// The credential types that policies may use (ADR 0019): which scopes
+    /// to ask for, and grant, for an offer's credential constraints.
+    /// [`crate::build`] sets it from [`crate::Config::credential_types`].
+    pub(crate) credential_types: CredentialTypes,
 }
 
 impl std::fmt::Debug for Ports {
@@ -122,6 +127,7 @@ impl Ports {
             consumer_transfers: ConsumerTransferPorts::in_memory(consumer_negotiations.clone()),
             consumer_store: Shared(Arc::new(consumer_negotiations)),
             consumer_decider: default_consumer_decider(),
+            credential_types: CredentialTypes::default(),
         }
     }
 }
@@ -430,6 +436,9 @@ impl ConsumerTransferDecider for AnyConsumerTransferDecider {
 impl HeldAgreements for AnyHeldAgreements {
     fn provider_of(&self, agreement_id: &str) -> Result<Option<AgreementProvider>, StoreError> {
         self.0.provider_of(agreement_id)
+    }
+    fn agreement(&self, agreement_id: &str) -> Result<Option<Agreement>, StoreError> {
+        self.0.agreement(agreement_id)
     }
 }
 

@@ -90,8 +90,34 @@ impl Agreements for Agreed {
             "a1" => Some(agreement(id, CONSUMER, use_it)),
             "a-other" => Some(agreement(id, "did:web:someone-else", use_it)),
             "a-expired" => Some(agreement(id, CONSUMER, until_january)),
+            "a-members" => Some(agreement(id, CONSUMER, members_only())),
             _ => None,
         })
+    }
+}
+
+/// Only for callers with a `MembershipCredential` at level `gold`
+/// (ADR 0019).
+fn members_only() -> Rule {
+    serde_json::from_value(json!({"action": "use", "constraint": [
+        {"leftOperand": "MembershipCredential.level", "operator": "isAnyOf",
+         "rightOperand": ["gold"]}]}))
+    .unwrap()
+}
+
+/// A caller with a membership at `level`.
+fn member_at(level: &str) -> CallerCredentials {
+    CallerCredentials {
+        understood: crate::policy::CredentialTypes::default(),
+        held: vec![crate::policy::HeldCredential {
+            types: vec!["MembershipCredential".to_owned()],
+            subjects: vec![
+                json!({"id": CONSUMER, "level": level})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ],
+        }],
     }
 }
 
@@ -239,7 +265,11 @@ fn reason(failure: &Failure) -> String {
 fn started<'a>(store: &'a Store, flows: &'a Flows) -> Service<'a> {
     let s = service(store, flows, TransferDecision::Start);
     let (_, out) = s
-        .request(&request("a1", "HttpData-PULL"), CONSUMER)
+        .request(
+            &request("a1", "HttpData-PULL"),
+            CONSUMER,
+            &CallerCredentials::default(),
+        )
         .unwrap();
     s.delivered(&out.unwrap()).unwrap();
     s
@@ -254,7 +284,11 @@ fn a_valid_request_starts_the_data_flow_and_sends_its_address() {
     let (store, flows) = (Store::default(), Flows::default());
     let s = service(&store, &flows, TransferDecision::Start);
     let (ack, out) = s
-        .request(&request("a1", "HttpData-PULL"), CONSUMER)
+        .request(
+            &request("a1", "HttpData-PULL"),
+            CONSUMER,
+            &CallerCredentials::default(),
+        )
         .unwrap();
     assert_eq!(ack.state, TransferState::Requested);
     assert_eq!(flows.calls(), ["start urn:uuid:1"]);
@@ -299,7 +333,11 @@ fn requests_that_break_a_rule_are_refused_before_anything_starts() {
         let (store, flows) = (Store::default(), Flows::default());
         let s = service(&store, &flows, TransferDecision::Start);
         let failure = s
-            .request(&request(agreement_id, format), CONSUMER)
+            .request(
+                &request(agreement_id, format),
+                CONSUMER,
+                &CallerCredentials::default(),
+            )
             .unwrap_err();
         assert!(matches!(failure, Failure::BadRequest(_)), "{agreement_id}");
         assert!(
@@ -322,10 +360,22 @@ fn push_requests_and_missing_callbacks_are_refused() {
         ))
         .unwrap(),
     );
-    assert!(reason(&s.request(&push, CONSUMER).unwrap_err()).contains("push"));
+    assert!(
+        reason(
+            &s.request(&push, CONSUMER, &CallerCredentials::default())
+                .unwrap_err()
+        )
+        .contains("push")
+    );
     let mut no_callback = request("a1", "HttpData-PULL");
     no_callback.callback_address.clear();
-    assert!(reason(&s.request(&no_callback, CONSUMER).unwrap_err()).contains("callbackAddress"));
+    assert!(
+        reason(
+            &s.request(&no_callback, CONSUMER, &CallerCredentials::default())
+                .unwrap_err()
+        )
+        .contains("callbackAddress")
+    );
 }
 
 #[test]
@@ -334,7 +384,11 @@ fn a_refusing_data_plane_ends_the_transfer() {
     flows.1.set(true);
     let s = service(&store, &flows, TransferDecision::Start);
     let (_, out) = s
-        .request(&request("a1", "HttpData-PULL"), CONSUMER)
+        .request(
+            &request("a1", "HttpData-PULL"),
+            CONSUMER,
+            &CallerCredentials::default(),
+        )
         .unwrap();
     let out = out.unwrap();
     assert_eq!(out.transition, Transition::Terminate);
@@ -347,7 +401,11 @@ fn a_failed_save_ends_the_started_data_flow() {
     store.1.set(true);
     let s = service(&store, &flows, TransferDecision::Start);
     let failure = s
-        .request(&request("a1", "HttpData-PULL"), CONSUMER)
+        .request(
+            &request("a1", "HttpData-PULL"),
+            CONSUMER,
+            &CallerCredentials::default(),
+        )
         .unwrap_err();
     assert!(matches!(failure, Failure::Store(_)));
     assert_eq!(flows.calls(), ["start urn:uuid:1", "terminate urn:uuid:1"]);
@@ -358,7 +416,11 @@ fn the_decider_may_wait_or_terminate() {
     let (store, flows) = (Store::default(), Flows::default());
     let s = service(&store, &flows, TransferDecision::Wait);
     let (_, out) = s
-        .request(&request("a1", "HttpData-PULL"), CONSUMER)
+        .request(
+            &request("a1", "HttpData-PULL"),
+            CONSUMER,
+            &CallerCredentials::default(),
+        )
         .unwrap();
     assert!(out.is_none());
     assert!(flows.calls().is_empty());
@@ -366,7 +428,11 @@ fn the_decider_may_wait_or_terminate() {
     let (store, flows) = (Store::default(), Flows::default());
     let s = service(&store, &flows, TransferDecision::Terminate);
     let (_, out) = s
-        .request(&request("a1", "HttpData-PULL"), CONSUMER)
+        .request(
+            &request("a1", "HttpData-PULL"),
+            CONSUMER,
+            &CallerCredentials::default(),
+        )
         .unwrap();
     assert_eq!(out.unwrap().transition, Transition::Terminate);
     // nothing started; ending it anyway is harmless
@@ -393,7 +459,11 @@ fn provider_steps(store: &Store, flows: &Flows, steps: Vec<TransferDecision>) ->
     let steps = Steps(RefCell::new(steps));
     let s = TransferService::new(store, Agreed, flows, &steps, Catalog, Env::default());
     let (_, out) = s
-        .request(&request("a1", "HttpData-PULL"), CONSUMER)
+        .request(
+            &request("a1", "HttpData-PULL"),
+            CONSUMER,
+            &CallerCredentials::default(),
+        )
         .unwrap();
     let mut sent = Vec::new();
     let mut next = out;
@@ -468,7 +538,11 @@ fn a_data_plane_failure_on_a_provider_step_ends_the_transfer() {
     let steps = Steps(RefCell::new(vec![Start, Suspend]));
     let s = TransferService::new(&store, Agreed, &flows, &steps, Catalog, Env::default());
     let (_, out) = s
-        .request(&request("a1", "HttpData-PULL"), CONSUMER)
+        .request(
+            &request("a1", "HttpData-PULL"),
+            CONSUMER,
+            &CallerCredentials::default(),
+        )
         .unwrap();
     flows.1.set(true);
     let next = s.delivered(&out.unwrap()).unwrap().unwrap();
@@ -508,8 +582,12 @@ fn a_consumer_message_proves_our_start_arrived() {
     // recorded: it could not suspend otherwise, so both apply
     let (store, flows) = (Store::default(), Flows::default());
     let s = service(&store, &flows, TransferDecision::Start);
-    s.request(&request("a1", "HttpData-PULL"), CONSUMER)
-        .unwrap();
+    s.request(
+        &request("a1", "HttpData-PULL"),
+        CONSUMER,
+        &CallerCredentials::default(),
+    )
+    .unwrap();
     let (ack, _) = s.suspend(PID, IDS, CONSUMER).unwrap();
     assert_eq!(ack.state, TransferState::Suspended);
     assert!(store.0.borrow()[PID].pending.is_none());
@@ -519,8 +597,12 @@ fn a_consumer_message_proves_our_start_arrived() {
 fn consumer_termination_of_a_requested_transfer_drops_our_start() {
     let (store, flows) = (Store::default(), Flows::default());
     let s = service(&store, &flows, TransferDecision::Start);
-    s.request(&request("a1", "HttpData-PULL"), CONSUMER)
-        .unwrap();
+    s.request(
+        &request("a1", "HttpData-PULL"),
+        CONSUMER,
+        &CallerCredentials::default(),
+    )
+    .unwrap();
     let (ack, _) = s.terminate(PID, IDS, CONSUMER).unwrap();
     assert_eq!(ack.state, TransferState::Terminated);
     assert!(store.0.borrow()[PID].pending.is_none());
@@ -533,8 +615,12 @@ fn consumer_termination_of_a_requested_transfer_drops_our_start() {
 fn messages_that_do_not_fit_the_state_change_nothing() {
     let (store, flows) = (Store::default(), Flows::default());
     let s = service(&store, &flows, TransferDecision::Wait);
-    s.request(&request("a1", "HttpData-PULL"), CONSUMER)
-        .unwrap();
+    s.request(
+        &request("a1", "HttpData-PULL"),
+        CONSUMER,
+        &CallerCredentials::default(),
+    )
+    .unwrap();
     assert!(s.complete(PID, IDS, CONSUMER).is_err());
     assert!(s.suspend(PID, IDS, CONSUMER).is_err());
     assert_eq!(state(&store), TransferState::Requested);
@@ -585,7 +671,11 @@ fn an_undeliverable_start_ends_the_data_flow_and_the_transfer() {
     let (store, flows) = (Store::default(), Flows::default());
     let s = service(&store, &flows, TransferDecision::Start);
     let (_, out) = s
-        .request(&request("a1", "HttpData-PULL"), CONSUMER)
+        .request(
+            &request("a1", "HttpData-PULL"),
+            CONSUMER,
+            &CallerCredentials::default(),
+        )
         .unwrap();
     let out = out.unwrap();
     assert_eq!(s.pending().unwrap(), std::slice::from_ref(&out));
@@ -612,4 +702,30 @@ fn concurrent_writes_are_retried() {
     );
     store.2.set(3);
     assert!(reason(&s.terminate(PID, IDS, CONSUMER).unwrap_err()).contains("concurrently"));
+}
+
+/// ADR 0019: the agreement is evaluated again at each new transfer, with
+/// the credentials verified for that request; a credential the caller no
+/// longer has (revoked, expired) stops the transfer before the data plane
+/// is told.
+#[test]
+fn a_transfer_starts_only_while_the_caller_meets_the_agreement() {
+    let (store, flows) = (Store::default(), Flows::default());
+    let s = service(&store, &flows, TransferDecision::Start);
+    let msg = request("a-members", "HttpData-PULL");
+    for credentials in [member_at("silver"), CallerCredentials::default()] {
+        let failure = s.request(&msg, CONSUMER, &credentials).unwrap_err();
+        assert!(
+            reason(&failure).contains("does not allow it now"),
+            "{failure:?}"
+        );
+        assert!(flows.calls().is_empty());
+    }
+    let (ack, out) = s.request(&msg, CONSUMER, &member_at("gold")).unwrap();
+    assert_eq!(ack.state, TransferState::Requested);
+    assert_eq!(out.unwrap().to, TransferState::Started);
+    // the agreement, for the adapter to derive scopes from
+    assert!(s.agreement("a-members", CONSUMER).unwrap().is_some());
+    assert!(s.agreement("a-other", CONSUMER).unwrap().is_none());
+    assert!(s.agreement("unknown", CONSUMER).unwrap().is_none());
 }

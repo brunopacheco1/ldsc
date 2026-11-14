@@ -22,6 +22,20 @@ versions may change behaviour and configuration.
   against the official schemas.
 - `portitor-issuer`: new crate for the issuer component (work in
   progress).
+- Credential constraints in ODRL policies (ADR 0019): an offer may
+  require a claim of the consumer's credentials, with the left operand
+  `<CredentialType>.<claim path>` and `eq`, `neq`, `isAnyOf` or
+  `isNoneOf`. A missing claim never grants access; anything else fails
+  closed. The provider asks the consumer's credential service for the
+  scopes the offer needs (with the access token the consumer sent) at the
+  contract request, and again at each transfer request, so a revoked
+  credential stops new transfers. As consumer, the connector grants those
+  scopes in its tokens. New setting `PORTITOR_POLICY_CREDENTIALS` (the
+  credential types offers may use, with their scopes; `MembershipCredential`
+  is always there); an offer on another type stops the connector at
+  start. The example datasets and the demo add an offer for members only
+  (`MembershipCredential.memberOf`) and one for auditors, which the demo
+  credential does not meet.
 
 - C4 model diagrams (system context, containers, components of both
   images, and the provider negotiation as code) in draw.io format, shown
@@ -33,6 +47,20 @@ versions may change behaviour and configuration.
   image and only files and types that exist; every OpenAPI file has the
   workspace version.
 - A documentation review step for every release (`docs/RELEASING.md`).
+
+### Changed
+
+- `portitor-dsp::policy`: `validate`, `permissions_hold` and
+  `prepare_datasets` take the configured credential types and the caller's
+  credentials; the provider services take the caller's credentials on a
+  contract request, an acceptance and a transfer request.
+- Connector: `auth::Caller` is a struct with the verified credentials;
+  `CallerVerifier` gets `credentials` (ask the caller for more scopes),
+  and `Prover::authorization` takes the extra scopes to grant.
+  `HeldAgreements` gets `agreement`.
+- As consumer, the connector does not accept a provider's offer (DSP
+  `OFFERED`) that has credential constraints: it cannot check its own
+  credentials as the provider will.
 
 ### Fixed
 

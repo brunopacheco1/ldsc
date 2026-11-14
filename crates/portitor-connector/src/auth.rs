@@ -6,15 +6,20 @@
 //!
 //! Two ports, so tests and the TCK build can swap the adapters:
 //!
-//! - [`CallerVerifier`]: who is calling? Every DSP endpoint (provider
-//!   endpoints and consumer callbacks; not `/.well-known/dspace-version`,
-//!   not the data plane) runs it through [`require_caller`] before the
-//!   handler. The adapter [`dcp::DcpVerifier`] follows DCP v1.0.1: it
-//!   checks the caller's self-issued ID token and asks the caller's
-//!   Credential Service for a `MembershipCredential`.
+//! - [`CallerVerifier`]: who is calling, and with which credentials?
+//!   Every DSP endpoint (provider endpoints and consumer callbacks; not
+//!   `/.well-known/dspace-version`, not the data plane) runs it through
+//!   [`require_caller`] before the handler. The adapter
+//!   [`dcp::DcpVerifier`] follows DCP v1.0.1: it checks the caller's
+//!   self-issued ID token and asks the caller's Credential Service for a
+//!   `MembershipCredential`. When an offer or agreement has credential
+//!   constraints (ADR 0019), the handler asks it again, with more scopes,
+//!   through [`CallerVerifier::credentials`].
 //! - [`Prover`]: the `Authorization` header for each DSP request we send.
 //!   The adapter [`sts::StsProver`] asks our identity's Secure Token
-//!   Service for a fresh token for each request.
+//!   Service for a fresh token for each request, letting the
+//!   counter-party read the configured credentials, and those an offer's
+//!   constraints need.
 //!
 //! [`AuthSettings`] reads the configuration and [`dcp_adapters`] builds
 //! both adapters.
@@ -30,6 +35,7 @@ use axum::response::{IntoResponse, Response};
 use portitor_dcp::scope::Scope;
 use portitor_dsp::CatalogError;
 use portitor_dsp::negotiation::ContractNegotiationError;
+use portitor_dsp::policy::{CallerCredentials, CredentialTypes, HeldCredential, MEMBERSHIP};
 use portitor_dsp::transfer::TransferError;
 use portitor_runtime::BoxFuture;
 use portitor_runtime::settings::comma_list;
@@ -41,15 +47,71 @@ pub mod sts;
 /// public name of this crate; new code writes `BoxFuture`.
 pub type AuthFuture<'a, T> = BoxFuture<'a, T>;
 
-/// The proven participant id (DID) of a DSP request's caller. The
-/// handlers take it from the request, where [`require_caller`] put it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Caller(pub String);
+/// A DSP request's caller, as [`require_caller`] proved it. The handlers
+/// take it from the request.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Caller {
+    /// The proven participant id (DID).
+    pub id: String,
+    /// The caller's credentials that the check verified (trusted issuer,
+    /// about the caller, valid now, not revoked): those of the configured
+    /// scopes.
+    pub credentials: Vec<HeldCredential>,
+    /// The access token from the caller's ID token, which lets us query its
+    /// Credential Service again (ADR 0019); `None` when there is none.
+    access_token: Option<String>,
+}
+
+impl Caller {
+    /// A caller known by `id` only, with no credentials and no access
+    /// token (tests, and the TCK's fixed header).
+    #[must_use]
+    pub fn new(id: &str) -> Self {
+        Self::with_credentials(id, Vec::new())
+    }
+
+    /// A caller with verified `credentials`, but no access token to ask
+    /// for more.
+    #[must_use]
+    pub fn with_credentials(id: &str, credentials: Vec<HeldCredential>) -> Self {
+        Self {
+            id: id.to_owned(),
+            credentials,
+            access_token: None,
+        }
+    }
+
+    /// The same caller, with `access_token` for its Credential Service
+    /// (for adapters other than [`dcp::DcpVerifier`], and tests).
+    #[must_use]
+    pub fn with_access_token(self, access_token: &str) -> Self {
+        Self {
+            access_token: Some(access_token.to_owned()),
+            ..self
+        }
+    }
+
+    /// The access token for the caller's Credential Service, if any.
+    #[must_use]
+    pub fn access_token(&self) -> Option<&str> {
+        self.access_token.as_deref()
+    }
+}
+
+impl std::fmt::Debug for Caller {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // never the access token
+        f.debug_struct("Caller")
+            .field("id", &self.id)
+            .field("credentials", &self.credentials.len())
+            .finish_non_exhaustive()
+    }
+}
 
 /// Port: who sent a DSP request.
 pub trait CallerVerifier: Send + Sync {
     /// Checks `authorization`, the request's `Authorization` header, and
-    /// returns the caller's participant id.
+    /// returns the caller, with its verified credentials.
     ///
     /// # Errors
     ///
@@ -59,17 +121,69 @@ pub trait CallerVerifier: Send + Sync {
         &'a self,
         authorization: Option<&'a str>,
     ) -> BoxFuture<'a, Result<Caller, String>>;
+
+    /// The caller's verified credentials for `scopes` as well as the
+    /// configured ones (ADR 0019): the credentials of `caller` when they
+    /// cover `scopes` already, otherwise a new query of the caller's
+    /// Credential Service with the access token it sent, checked like the
+    /// first.
+    ///
+    /// # Errors
+    ///
+    /// The query failed or a credential did not pass the checks. The text
+    /// goes to the log.
+    fn credentials<'a>(
+        &'a self,
+        caller: &'a Caller,
+        scopes: &'a [String],
+    ) -> BoxFuture<'a, Result<Vec<HeldCredential>, String>>;
 }
 
 /// Port: how we authenticate ourselves on a DSP request.
 pub trait Prover: Send + Sync {
     /// The `Authorization` header value for one request to the participant
-    /// `audience` (its DID), for example `Bearer <token>`.
+    /// `audience` (its DID), for example `Bearer <token>`. The token lets
+    /// `audience` read the configured scopes from our Credential Service,
+    /// and `scopes` as well (the scopes an offer's credential constraints
+    /// need, ADR 0019; usually none).
     ///
     /// # Errors
     ///
     /// No token could be had; the request is not sent.
-    fn authorization<'a>(&'a self, audience: &'a str) -> BoxFuture<'a, Result<String, String>>;
+    fn authorization<'a>(
+        &'a self,
+        audience: &'a str,
+        scopes: &'a [String],
+    ) -> BoxFuture<'a, Result<String, String>>;
+}
+
+/// What the domain evaluates a policy against for `caller` (ADR 0019):
+/// the configured `types`, and the caller's verified credentials for
+/// `scopes`, the scopes that policy needs ([`portitor_dsp::policy::credential_scopes`]).
+/// Without scopes, the credentials of the check on the HTTP edge. A query
+/// that fails gives no credentials, so every credential constraint fails
+/// (closed); the reason goes to the log.
+pub async fn credentials_for(
+    verifier: &dyn CallerVerifier,
+    types: &CredentialTypes,
+    caller: &Caller,
+    scopes: &[String],
+) -> CallerCredentials {
+    let held = if scopes.is_empty() {
+        caller.credentials.clone()
+    } else {
+        match verifier.credentials(caller, scopes).await {
+            Ok(held) => held,
+            Err(reason) => {
+                tracing::warn!(caller = %caller.id, %reason, "the caller's credentials for a policy could not be read");
+                Vec::new()
+            }
+        }
+    };
+    CallerCredentials {
+        understood: types.clone(),
+        held,
+    }
 }
 
 /// Adapter: refuses every caller. What [`crate::Ports::new`] starts with,
@@ -81,6 +195,14 @@ impl CallerVerifier for RefuseAll {
     fn verify<'a>(&'a self, _: Option<&'a str>) -> BoxFuture<'a, Result<Caller, String>> {
         Box::pin(async { Err("no caller verifier configured".to_owned()) })
     }
+
+    fn credentials<'a>(
+        &'a self,
+        _: &'a Caller,
+        _: &'a [String],
+    ) -> BoxFuture<'a, Result<Vec<HeldCredential>, String>> {
+        Box::pin(async { Err("no caller verifier configured".to_owned()) })
+    }
 }
 
 /// Adapter: has no tokens, so nothing is sent. What
@@ -89,7 +211,11 @@ impl CallerVerifier for RefuseAll {
 pub struct NoTokens;
 
 impl Prover for NoTokens {
-    fn authorization<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<String, String>> {
+    fn authorization<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a [String],
+    ) -> BoxFuture<'a, Result<String, String>> {
         Box::pin(async { Err("no token source configured".to_owned()) })
     }
 }
@@ -141,7 +267,72 @@ fn unauthorized(path: &str) -> Response {
 /// The scope asked for when `PORTITOR_DCP_SCOPES` is not set: the DCP
 /// alias for "credentials of type `MembershipCredential`", the DCP TCK's
 /// default too.
-pub const DEFAULT_SCOPE: &str = "org.eclipse.dspace.dcp.vc.type:MembershipCredential";
+pub const DEFAULT_SCOPE: &str = portitor_dsp::policy::DEFAULT_MEMBERSHIP_SCOPE;
+
+/// The DCP alias for "credentials of this type", followed by `:`.
+const VC_TYPE_PREFIX: &str = "org.eclipse.dspace.dcp.vc.type:";
+
+/// Reads `PORTITOR_POLICY_CREDENTIALS` (ADR 0019): the credential types
+/// that policies may use, comma-separated, each `Type` or `Type=scope`. A
+/// type alone gets the scope `org.eclipse.dspace.dcp.vc.type:<Type>:read`.
+/// `MembershipCredential` is always there; unless listed, its scope is
+/// the `MembershipCredential` scope of `PORTITOR_DCP_SCOPES` (default
+/// [`DEFAULT_SCOPE`]), which every query asks for anyway.
+///
+/// # Errors
+///
+/// An entry with an empty or odd type (it must not hold `.`, `:`, `/` or
+/// spaces), a type listed twice, or a scope that is not a DCP scope by
+/// that same type.
+pub fn policy_credentials(
+    var: impl Fn(&str) -> Option<OsString>,
+) -> Result<CredentialTypes, String> {
+    let text = |name: &str| var(name).map(|v| v.to_string_lossy().trim().to_owned());
+    let dcp_scopes = text("PORTITOR_DCP_SCOPES").map(|scopes| comma_list(&scopes));
+    let membership_scope = dcp_scopes
+        .unwrap_or_default()
+        .into_iter()
+        .find(|scope| scope_type(scope).as_deref() == Some(MEMBERSHIP))
+        .unwrap_or_else(|| DEFAULT_SCOPE.to_owned());
+    let mut types = CredentialTypes::new(&membership_scope);
+    let mut listed: Vec<String> = Vec::new();
+    for entry in comma_list(&text("PORTITOR_POLICY_CREDENTIALS").unwrap_or_default()) {
+        let (credential_type, scope) = match entry.split_once('=') {
+            Some((credential_type, scope)) => (credential_type.trim(), scope.trim().to_owned()),
+            None => (entry.as_str(), format!("{VC_TYPE_PREFIX}{entry}:read")),
+        };
+        let odd = |c: char| c == '.' || c == ':' || c == '/' || c.is_whitespace();
+        if credential_type.is_empty() || credential_type.contains(odd) {
+            return Err(format!(
+                "PORTITOR_POLICY_CREDENTIALS: {entry:?} is not Type or Type=scope"
+            ));
+        }
+        if listed.iter().any(|t| t == credential_type) {
+            return Err(format!(
+                "PORTITOR_POLICY_CREDENTIALS lists {credential_type} twice"
+            ));
+        }
+        if scope_type(&scope).as_deref() != Some(credential_type) {
+            return Err(format!(
+                "PORTITOR_POLICY_CREDENTIALS: the scope {scope:?} is not a DCP scope for credentials of type {credential_type}"
+            ));
+        }
+        types.add(credential_type, &scope);
+        listed.push(credential_type.to_owned());
+    }
+    Ok(types)
+}
+
+/// The credential type a DCP "by type" scope asks for; `None` for any
+/// other scope.
+fn scope_type(scope: &str) -> Option<String> {
+    match Scope::parse(scope, &[]) {
+        Ok(Scope::ByType {
+            credential_type, ..
+        }) => Some(credential_type),
+        _ => None,
+    }
+}
 
 /// The connector's DCP settings (ADR 0016).
 #[derive(Clone)]
@@ -452,6 +643,65 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[test]
+    fn policy_credentials_are_read_and_checked() {
+        let types = policy_credentials(vars(&[])).unwrap();
+        assert_eq!(types, CredentialTypes::default());
+        let types = policy_credentials(vars(&[
+            (
+                "PORTITOR_POLICY_CREDENTIALS",
+                " DataProcessorCredential , Other=org.eclipse.dspace.dcp.vc.type:Other",
+            ),
+            (
+                "PORTITOR_DCP_SCOPES",
+                "org.eclipse.dspace.dcp.vc.id:x,org.eclipse.dspace.dcp.vc.type:MembershipCredential:read",
+            ),
+        ]))
+        .unwrap();
+        let listed: Vec<(&str, &str)> = types.iter().collect();
+        assert_eq!(
+            listed,
+            [
+                (
+                    "DataProcessorCredential",
+                    "org.eclipse.dspace.dcp.vc.type:DataProcessorCredential:read"
+                ),
+                (
+                    "MembershipCredential",
+                    "org.eclipse.dspace.dcp.vc.type:MembershipCredential:read"
+                ),
+                ("Other", "org.eclipse.dspace.dcp.vc.type:Other"),
+            ]
+        );
+        // the membership's scope may be set here too
+        let types = policy_credentials(vars(&[(
+            "PORTITOR_POLICY_CREDENTIALS",
+            "MembershipCredential=org.eclipse.dspace.dcp.vc.type:MembershipCredential:read",
+        )]))
+        .unwrap();
+        assert_eq!(
+            types.scope("MembershipCredential"),
+            Some("org.eclipse.dspace.dcp.vc.type:MembershipCredential:read")
+        );
+        for (value, reason) in [
+            ("A.b", "not Type or Type=scope"),
+            (
+                "=org.eclipse.dspace.dcp.vc.type:A",
+                "not Type or Type=scope",
+            ),
+            ("ex:A", "not Type or Type=scope"),
+            ("A,A", "twice"),
+            ("A=org.eclipse.dspace.dcp.vc.type:B", "not a DCP scope"),
+            ("A=org.eclipse.dspace.dcp.vc.id:A", "not a DCP scope"),
+            ("A=com.example:A", "not a DCP scope"),
+            ("VerifiableCredential", "not a DCP scope"),
+        ] {
+            let err =
+                policy_credentials(vars(&[("PORTITOR_POLICY_CREDENTIALS", value)])).unwrap_err();
+            assert!(err.contains(reason), "{value}: {err}");
+        }
+    }
+
     #[tokio::test]
     async fn refusals_have_the_endpoint_error_type() {
         for (path, kind) in [
@@ -476,6 +726,8 @@ mod tests {
     #[tokio::test]
     async fn the_defaults_refuse() {
         assert!(RefuseAll.verify(Some("Bearer x")).await.is_err());
-        assert!(NoTokens.authorization("did:web:x").await.is_err());
+        assert!(NoTokens.authorization("did:web:x", &[]).await.is_err());
+        let caller = Caller::new("did:web:x");
+        assert!(RefuseAll.credentials(&caller, &[]).await.is_err());
     }
 }

@@ -105,6 +105,8 @@ struct World {
     status_lists: BTreeMap<String, String>,
     /// The `Authorization` headers the Credential Service got.
     queries: Vec<String>,
+    /// The scopes of each query the Credential Service got.
+    scopes: Vec<Vec<String>>,
     /// Every DID document and status list asked for, by path.
     fetched: Vec<String>,
 }
@@ -126,9 +128,17 @@ async fn did_document(
 async fn presentation_query(
     State(world): State<Shared>,
     headers: HeaderMap,
+    axum::Json(query): axum::Json<Value>,
 ) -> axum::response::Response {
     let (answer, delay) = {
         let mut world = world.lock().unwrap();
+        let scopes = query["scope"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|scope| scope.as_str().map(str::to_owned))
+            .collect();
+        world.scopes.push(scopes);
         let auth = headers
             .get("authorization")
             .and_then(|v| v.to_str().ok())
@@ -434,7 +444,10 @@ async fn a_member_is_let_in_and_its_credential_service_gets_our_token() {
     let ds = dataspace().await;
     ds.answer_member(&json!({}));
     let caller = ds.verify(&ds.header()).await.unwrap();
-    assert_eq!(caller, Caller(ds.holder.did.clone()));
+    assert_eq!(caller.id, ds.holder.did);
+    assert_eq!(caller.access_token(), Some("access-1"));
+    assert_eq!(caller.credentials.len(), 1);
+    assert!(caller.credentials[0].types.iter().any(|t| t == MEMBERSHIP));
     // our query carried our token for the holder, with its access token
     let query = ds.world.lock().unwrap().queries.pop().unwrap();
     let token = query.strip_prefix("Bearer ").unwrap();
@@ -786,8 +799,8 @@ async fn vc20_and_enveloped_presentations_are_checked() {
         present(member20(&json!({})));
         let caller = ds.verify(&ds.header()).await;
         assert_eq!(
-            caller,
-            Ok(Caller(holder.to_owned())),
+            caller.map(|caller| caller.id),
+            Ok(holder.to_owned()),
             "enveloped: {enveloped}"
         );
 
@@ -958,4 +971,62 @@ fn reads_bearer_headers() {
     ] {
         assert!(bearer(bad).is_err(), "{bad:?}");
     }
+}
+
+/// ADR 0019: more scopes mean a second query with the caller's access
+/// token, checked like the first; scopes already asked for need none.
+#[tokio::test]
+async fn more_credentials_are_asked_for_with_the_callers_access_token() {
+    let ds = dataspace().await;
+    let holder = ds.holder.did.as_str();
+    let member = Dataspace::credential(&ds.issuer, MEMBERSHIP, holder, &json!({}));
+    let processor = Dataspace::credential(
+        &ds.issuer,
+        "DataProcessorCredential",
+        holder,
+        &json!({"credentialSubject": {"id": holder, "processing": "eu"}}),
+    );
+    ds.answer(&[ds.presentation(&ds.holder, std::slice::from_ref(&member))]);
+    let caller = ds.verify(&ds.header()).await.unwrap();
+
+    // the configured scope only: the credentials of the first check
+    let configured = vec![super::super::DEFAULT_SCOPE.to_owned()];
+    let again = ds.verifier.credentials(&caller, &configured).await.unwrap();
+    assert_eq!(again, caller.credentials);
+    assert_eq!(ds.world.lock().unwrap().scopes.len(), 1);
+
+    // one more scope: a new query for both, with the same access token
+    let extra = vec!["org.eclipse.dspace.dcp.vc.type:DataProcessorCredential:read".to_owned()];
+    ds.answer(&[ds.presentation(&ds.holder, &[member.clone(), processor])]);
+    let more = ds.verifier.credentials(&caller, &extra).await.unwrap();
+    assert_eq!(more.len(), 2);
+    assert_eq!(more[1].subjects[0]["processing"], "eu");
+    let (scopes, query) = {
+        let mut world = ds.world.lock().unwrap();
+        (world.scopes.pop().unwrap(), world.queries.pop().unwrap())
+    };
+    assert_eq!(scopes, [configured[0].clone(), extra[0].clone()]);
+    let claims = unverified_claims(query.strip_prefix("Bearer ").unwrap()).unwrap();
+    assert_eq!(claims.token.as_deref(), Some("access-1"));
+
+    // a revoked credential in the second answer: nothing is returned
+    ds.publish_status_list(&ds.issuer, &[3]);
+    let revoked = Dataspace::credential(
+        &ds.issuer,
+        "DataProcessorCredential",
+        holder,
+        &ds.status_entry("3"),
+    );
+    ds.answer(&[ds.presentation(&ds.holder, &[member, revoked])]);
+    let err = ds.verifier.credentials(&caller, &extra).await.unwrap_err();
+    assert!(err.contains("revoked"), "{err}");
+
+    // a caller without an access token cannot be asked again
+    let anonymous = Caller::new(holder);
+    let err = ds
+        .verifier
+        .credentials(&anonymous, &extra)
+        .await
+        .unwrap_err();
+    assert!(err.contains("no access token"), "{err}");
 }

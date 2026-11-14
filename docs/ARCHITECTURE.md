@@ -186,13 +186,20 @@ adapters in `auth/dcp.rs` and `auth/sts.rs`:
   presentation and credential (both profiles), fetches and verifies each
   status list credential (signed by the credential's issuer, fail closed),
   and requires a `MembershipCredential` from a trusted issuer about the
-  caller. The verified DID goes to the handler as `Caller`; a refusal is
-  HTTP 401 with a DSP error and no detail.
+  caller. The verified DID and credentials go to the handler as `Caller`;
+  a refusal is HTTP 401 with a DSP error and no detail. When an offer or
+  agreement has credential constraints (ADR 0019), the provider's handler
+  derives their scopes (`portitor_dsp::policy::credential_scopes`) and
+  asks the verifier again (`CallerVerifier::credentials`): a second query,
+  with the access token the caller sent; the domain evaluates the policy
+  with the result.
 - `Prover`, used by the outbox before each outgoing DSP request: a fresh
   token from our STS with `aud` = the counter-party's DID (stored with the
   negotiation or transfer when it started, never taken from an incoming
-  message) and `bearer_access_scope` = `PORTITOR_DCP_SCOPES`. Tokens are not
-  cached: each `jti` is accepted once.
+  message) and `bearer_access_scope` = `PORTITOR_DCP_SCOPES`, plus, for a
+  contract request, an acceptance or a transfer request, the scopes of the
+  offer's or agreement's credential constraints. Tokens are not cached:
+  each `jti` is accepted once.
 
 The domain binds each negotiation and transfer to its counter-party: as
 provider, only the DID that started it may send to or read it; as
