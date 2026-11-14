@@ -67,8 +67,13 @@ pub const MAX_PATH_LEN: usize = 200;
 /// The longest bundle version, in bytes.
 pub const MAX_VERSION_LEN: usize = 64;
 
-/// The largest `manifest.json` (and `manifest.jws`) read, in bytes.
+/// The largest `manifest.json` read, in bytes (1 MiB).
 pub const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
+
+/// The largest `manifest.jws` read, in bytes: twice
+/// [`MAX_MANIFEST_BYTES`], because the JWS holds the manifest in base64
+/// (4 characters for every 3 bytes) plus a header and a signature.
+pub const MAX_SIGNATURE_BYTES: usize = MAX_MANIFEST_BYTES * 2;
 
 /// The largest file of a bundle, in bytes (64 MiB). The build tool
 /// refuses larger files, and a connector does not download them. Code
@@ -90,7 +95,7 @@ pub enum BundleError {
         /// The path as written.
         path: String,
         /// Why it is refused.
-        reason: &'static str,
+        reason: String,
     },
     /// The JWS cannot be read, or its signature does not verify.
     #[error("bundle signature: {0}")]
@@ -104,7 +109,9 @@ pub enum BundleError {
     WrongType,
     /// The JWS has no `kid`, or a `kid` that is not the bundle key of the
     /// expected authority (`<authority>#bundle-key`).
-    #[error("bundle signature: key {kid:?} is not the bundle key {authority}#{BUNDLE_KEY_FRAGMENT}")]
+    #[error(
+        "bundle signature: key {kid:?} is not the bundle key {authority}#{BUNDLE_KEY_FRAGMENT}"
+    )]
     WrongSigner {
         /// The `kid` of the JWS (empty if there is none).
         kid: String,
@@ -237,33 +244,6 @@ pub enum Role {
     },
 }
 
-/// The kind of a [`Role`], without its details: what
-/// [`VerifiedBundle::files_with_role`] selects on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RoleKind {
-    /// [`Role::Datasets`].
-    Datasets,
-    /// [`Role::Messages`].
-    Messages,
-    /// [`Role::Vocabulary`].
-    Vocabulary,
-    /// [`Role::Context`].
-    Context,
-}
-
-impl Role {
-    /// The kind of this role.
-    #[must_use]
-    pub const fn kind(&self) -> RoleKind {
-        match self {
-            Self::Datasets { .. } => RoleKind::Datasets,
-            Self::Messages {} => RoleKind::Messages,
-            Self::Vocabulary {} => RoleKind::Vocabulary,
-            Self::Context { .. } => RoleKind::Context,
-        }
-    }
-}
-
 impl Manifest {
     /// Reads `manifest.json` strictly (unknown or repeated fields are
     /// refused) and checks it with [`Manifest::check`].
@@ -272,7 +252,9 @@ impl Manifest {
     /// Not such a manifest.
     pub fn parse(bytes: &[u8]) -> Result<Self, BundleError> {
         if bytes.len() > MAX_MANIFEST_BYTES {
-            return Err(BundleError::Manifest("larger than 1 MiB".to_owned()));
+            return Err(BundleError::Manifest(format!(
+                "larger than {MAX_MANIFEST_BYTES} bytes"
+            )));
         }
         let manifest: Self =
             serde_json::from_slice(bytes).map_err(|e| BundleError::Manifest(e.to_string()))?;
@@ -301,7 +283,9 @@ impl Manifest {
             return Err(manifest_error("no files"));
         }
         if self.files.len() > MAX_FILES {
-            return Err(manifest_error("more than 1000 files"));
+            return Err(BundleError::Manifest(format!(
+                "more than {MAX_FILES} files"
+            )));
         }
         let mut paths = BTreeSet::new();
         let mut context_urls = BTreeSet::new();
@@ -352,7 +336,8 @@ fn is_safe_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')
 }
 
-/// A version is also a folder and URL segment: 1 to 64 letters, digits,
+/// A version is also a folder and URL segment: 1 to [`MAX_VERSION_LEN`]
+/// letters, digits,
 /// `.`, `_` or `-`, not starting with `.`.
 ///
 /// # Errors
@@ -365,9 +350,10 @@ pub fn check_version(version: &str) -> Result<(), BundleError> {
     if fits {
         Ok(())
     } else {
-        Err(manifest_error(
-            "version must be 1 to 64 letters, digits, '.', '_' or '-', not starting with '.'",
-        ))
+        Err(BundleError::Manifest(format!(
+            "version must be 1 to {MAX_VERSION_LEN} letters, digits, '.', '_' or '-', \
+             not starting with '.'"
+        )))
     }
 }
 
@@ -380,14 +366,14 @@ pub fn check_version(version: &str) -> Result<(), BundleError> {
 /// # Errors
 /// The path breaks one of these rules.
 pub fn check_path(path: &str) -> Result<(), BundleError> {
-    let refuse = |reason| {
+    let refuse = |reason: &str| {
         Err(BundleError::Path {
             path: path.to_owned(),
-            reason,
+            reason: reason.to_owned(),
         })
     };
     if path.is_empty() || path.len() > MAX_PATH_LEN {
-        return refuse("empty or longer than 200 bytes");
+        return refuse(&format!("empty or longer than {MAX_PATH_LEN} bytes"));
     }
     if path.starts_with('/') {
         return refuse("absolute");
@@ -449,7 +435,8 @@ fn check_entry(entry: &FileEntry) -> Result<(), BundleError> {
 }
 
 /// The SHA-256 of `bytes`, as 64 lowercase hex digits (the form the
-/// manifest uses).
+/// manifest uses). The one SHA-256 helper of the workspace: other crates
+/// call this one rather than writing their own.
 #[must_use]
 pub fn sha256_hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
@@ -541,7 +528,7 @@ fn check_kid(kid: &str, authority: &str) -> Result<(), BundleError> {
 fn check_alg(parsed: &Jws<'_>) -> Result<(), BundleError> {
     match parsed.alg() {
         Alg::ES256 => Ok(()),
-        other => Err(BundleError::WrongAlgorithm(other)),
+        Alg::PS256 => Err(BundleError::WrongAlgorithm(Alg::PS256)),
     }
 }
 
@@ -589,7 +576,7 @@ pub fn verify(
     key: &Jwk,
     expected: Expected<'_>,
 ) -> Result<Manifest, BundleError> {
-    if jws.len() > MAX_MANIFEST_BYTES * 2 {
+    if jws.len() > MAX_SIGNATURE_BYTES {
         return Err(BundleError::Signature(Error::Malformed("too large")));
     }
     let parsed = Jws::parse(jws)?;
@@ -673,12 +660,6 @@ pub struct BundleFile<'a> {
 }
 
 impl VerifiedBundle {
-    /// The manifest.
-    #[must_use]
-    pub fn manifest(&self) -> &Manifest {
-        &self.manifest
-    }
-
     /// The bundle version.
     #[must_use]
     pub fn version(&self) -> &str {
@@ -702,12 +683,6 @@ impl VerifiedBundle {
     #[must_use]
     pub fn files(&self) -> Vec<BundleFile<'_>> {
         self.select(|_| true)
-    }
-
-    /// The files whose role is of `kind`, in manifest order.
-    #[must_use]
-    pub fn files_with_role(&self, kind: RoleKind) -> Vec<BundleFile<'_>> {
-        self.select(|entry| entry.role.kind() == kind)
     }
 
     /// The dataset shapes for datasets whose `dct:accessRights` is
@@ -736,13 +711,13 @@ impl VerifiedBundle {
     /// The shapes for DSP messages.
     #[must_use]
     pub fn messages_files(&self) -> Vec<BundleFile<'_>> {
-        self.files_with_role(RoleKind::Messages)
+        self.select(|entry| matches!(entry.role, Role::Messages {}))
     }
 
     /// The vocabularies (ontologies and code lists).
     #[must_use]
     pub fn vocabulary_files(&self) -> Vec<BundleFile<'_>> {
-        self.files_with_role(RoleKind::Vocabulary)
+        self.select(|entry| matches!(entry.role, Role::Vocabulary {}))
     }
 
     /// The JSON-LD contexts, by the URL each stands for. A JSON-LD reader
@@ -750,7 +725,7 @@ impl VerifiedBundle {
     #[must_use]
     pub fn contexts(&self) -> BTreeMap<&str, &[u8]> {
         let mut found = BTreeMap::new();
-        for file in self.files_with_role(RoleKind::Context) {
+        for file in self.files() {
             if let Role::Context { url } = &file.entry.role {
                 found.insert(url.as_str(), file.bytes);
             }
@@ -1032,8 +1007,8 @@ mod tests {
         ));
         // the bundle key of the same document is accepted
         let jws = sign_manifest(&bytes, &bundle_key, &kid()).unwrap();
-        let jwk = key_from_document(&doc, &signing_kid(&jws, AUTHORITY).unwrap(), AUTHORITY)
-            .unwrap();
+        let jwk =
+            key_from_document(&doc, &signing_kid(&jws, AUTHORITY).unwrap(), AUTHORITY).unwrap();
         assert!(verify(&bytes, &jws, jwk, expected()).is_ok());
     }
 
