@@ -21,7 +21,7 @@ project checks every change. All commands run from the repository root.
 | Licence headers | `reuse lint` | every PR (`REUSE compliance`) |
 | DSP conformance (TCK) | see [below](#dsp-conformance-tck) | every PR (`TCK`) |
 | DCP conformance: identity component, connector as verifier, issuer (TCK) | see [below](#dcp-conformance-tck) | every PR (`TCK`) |
-| Interoperability with EDC v1.0.0-RC7 | `scripts/edc-interop.sh`, see [below](#edc-interop-test) | PRs that touch `crates/`, `interop/edc/` or the script, and nightly (`EDC interop`) |
+| Interoperability with EDC v1.0.0-RC7 | `scripts/edc-interop.sh`, see [below](#edc-interop-test) | PRs that touch `crates/`, `Cargo.lock`, the `Dockerfile`, `interop/edc/`, the script or its workflow, and nightly (`EDC interop`) |
 | Fuzzing | see [below](#fuzzing) | every PR (short), weekly (long) |
 | Two participants authenticate with DCP, agree a contract and transfer a file | `scripts/demo.sh`, see [below](#two-connectors) | every PR (`CI`) |
 | The same in Docker Compose | `scripts/demo-compose.sh` | every PR (`CI`) |
@@ -86,6 +86,28 @@ Where the tests are:
   [docs/api/management-openapi.json](api/management-openapi.json) is the
   description the code generates. After changing the API, regenerate it:
   `PORTITOR_UPDATE_OPENAPI=1 cargo test -p portitor-connector --test management_api`.
+- **DCP crate** (`crates/portitor-dcp`): `tests/spec.rs` parses the DCP
+  v1.0.1 examples into the Portitor types and checks what Portitor writes
+  back against the official JSON Schemas; `tests/gaia_x_ps256.rs` checks
+  PS256 signatures as Gaia-X uses them.
+- **Identity** (`crates/portitor-identity`), the same in-memory router
+  tests: `tests/credential_service.rs` (DID document, STS, presentation
+  API, Storage API and offers; every path in
+  [docs/api/identity-openapi.json](api/identity-openapi.json) is served),
+  `tests/issuance.rs` (the holder side of issuance against a fake issuer),
+  and `tests/management_api.rs` (API key, credential requests and
+  credentials; also checks
+  [identity-management-openapi.json](api/identity-management-openapi.json),
+  regenerated the same way as the connector's).
+- **Issuer** (`crates/portitor-issuer`): `tests/issuer.rs` runs the issuer
+  end to end with fake neighbours (DID documents from memory, what it sends
+  to holders recorded): requests, decisions, delivery, offers, revocation
+  and status lists, and the paths of
+  [issuer-openapi.json](api/issuer-openapi.json). Regenerate
+  [issuer-management-openapi.json](api/issuer-management-openapi.json)
+  with `cargo test -p portitor-issuer --test issuer -- --ignored write_management_description`.
+- **Runtime and time** (`crates/portitor-runtime`, `crates/portitor-time`):
+  unit tests next to the code (`cargo test -p portitor-runtime --lib`).
 
 Rules for new tests:
 

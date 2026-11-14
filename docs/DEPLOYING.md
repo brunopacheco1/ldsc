@@ -166,8 +166,16 @@ docker run -d --name portitor-connector --restart unless-stopped \
   -e PORTITOR_PARTICIPANT_ID=did:web:connector.example.com \
   -e PORTITOR_PUBLIC_URL=https://connector.example.com \
   -e PORTITOR_DATASETS_FILE=/datasets.json \
+  -v /srv/portitor/sts-client-secret:/run/secrets/sts-client-secret:ro \
+  -e PORTITOR_STS_URL=http://identity:8090/sts/token -e PORTITOR_STS_ALLOW_HTTP=true \
+  -e PORTITOR_STS_CLIENT_SECRET_FILE=/run/secrets/sts-client-secret \
+  -e PORTITOR_TRUSTED_ISSUERS=did:web:issuer.example.com \
   ghcr.io/brunopacheco1/portitor-connector@sha256:<digest>
 ```
+
+The STS lines point at the identity component of
+[section 4](#4-run-the-identity-next-to-the-connector), reached on an
+internal network as `identity`; without them the connector does not start.
 
 With the management API, add (the key file must be readable by user
 `65532`; the port is published on the host's loopback only):
@@ -240,8 +248,8 @@ participant.
 - [ ] **Network.** Inbound from other participants, through your proxy:
   the DID document and the credential service. Inbound from your own
   connector only: the STS (`/sts/token`). Outbound: other participants'
-  DID documents (`https://`), and trusted issuers' `IssuerService`
-  (metadata, credential requests, request status).
+  and trusted issuers' DID documents (`https://`), and the issuers'
+  `IssuerService` (metadata, credential requests, request status).
 
 ### Configuration
 
@@ -281,7 +289,7 @@ and to check partners' credentials:
 |---|---|
 | `PORTITOR_PARTICIPANT_ID` | the identity's DID |
 | `PORTITOR_STS_URL` | **required**: the identity's STS token endpoint on the internal network, for example `http://identity:8090/sts/token` |
-| `PORTITOR_STS_ALLOW_HTTP` | `true` when `PORTITOR_STS_URL` is plain `http://`: allows plain HTTP for that URL only, nothing else (the connector refuses to start with an `http://` STS URL without it) |
+| `PORTITOR_STS_ALLOW_HTTP` | `true` when `PORTITOR_STS_URL` is plain `http://`: allows plain HTTP for that URL only, nothing else (the connector refuses to start with an `http://` STS URL unless this or `PORTITOR_ALLOW_HTTP_CALLBACKS` is `true`) |
 | `PORTITOR_STS_CLIENT_SECRET_FILE` | **required**: the same secret file as the identity's |
 | `PORTITOR_STS_CLIENT_ID` | leave the default, `PORTITOR_PARTICIPANT_ID` |
 | `PORTITOR_TRUSTED_ISSUERS` | **required**: DIDs trusted to issue credentials, usually the dataspace's `portitor-issuer` |
@@ -311,7 +319,7 @@ docker run -d --name portitor-identity --restart unless-stopped \
   -e PORTITOR_IDENTITY_KEY_FILE=/run/secrets/identity-key.pem \
   -e PORTITOR_CREDENTIAL_SERVICE_URL=https://identity.example.com/cs \
   -e PORTITOR_STS_CLIENT_SECRET_FILE=/run/secrets/sts-client-secret \
-  -e PORTITOR_TRUSTED_ISSUERS=did:web:authority.example.com \
+  -e PORTITOR_TRUSTED_ISSUERS=did:web:issuer.example.com \
   -e PORTITOR_MANAGEMENT_API_KEY_FILE=/run/secrets/identity-management-key \
   -e PORTITOR_MANAGEMENT_BIND=0.0.0.0:8091 \
   ghcr.io/brunopacheco1/portitor-identity@sha256:<digest>
@@ -344,7 +352,7 @@ issuer must be in `PORTITOR_TRUSTED_ISSUERS`, or nothing is sent.
    URL; the metadata is at `<IssuerService>/metadata`:
 
    ```sh
-   curl -s https://authority.example.com/issuer/metadata
+   curl -s https://issuer.example.com/issuer/metadata
    ```
 
 2. Ask for them:
@@ -353,7 +361,7 @@ issuer must be in `PORTITOR_TRUSTED_ISSUERS`, or nothing is sent.
    curl -X POST localhost:8091/v1/credential-requests \
      -H "Authorization: Bearer $(cat /srv/portitor/identity-management-key)" \
      -H 'Content-Type: application/json' \
-     -d '{"issuerDid": "did:web:authority.example.com", "credentialIds": ["membership-vc11"]}'
+     -d '{"issuerDid": "did:web:issuer.example.com", "credentialIds": ["membership-vc11"]}'
    ```
 
    The component resolves the issuer's DID, checks the ids against its
@@ -441,7 +449,7 @@ Backup, restore, upgrade and rollback work as for the connector, with
 `/data/portitor-identity.db*`. Used token ids (`jti`) are kept in memory
 until their token expires (ADR 0016), so one replica per database file.
 
-**Key rotation** is manual in 0.5: there is one key at a time, and its
+**Key rotation** is manual (0.6): there is one key at a time, and its
 id is its thumbprint, so a new key file gives a new key id. Tokens and
 presentations signed with the old key stop verifying once verifiers
 reload the DID document (they cache it, Portitor for 5 minutes). Change
@@ -513,12 +521,12 @@ DID, so usually not).
 
 | Log message (level) | Meaning | What to do |
 |---|---|---|
-| `consumer not reachable; terminating` or `provider not reachable; terminating` (WARN) | A message to a partner failed after 4 tries (0.5 s, 1 s, 2 s apart) and the partner's state does not show it arrived; the negotiation is terminated | Check the partner's address, DNS, TLS trust and your egress rules |
+| `counter-party not reachable; terminating` (WARN) | A message to a partner failed after 4 tries (0.5 s, 1 s, 2 s apart) and the partner's state does not show it arrived; the negotiation or transfer is terminated | Check the partner's address, DNS, TLS trust and your egress rules |
 | `message had arrived before` (INFO) | A send failed, but the partner's state shows it had received the message (a lost answer, or a resend after a restart); the negotiation goes on | Nothing |
 | `sending pending negotiation messages again` (INFO, at start) | Messages saved but not acknowledged before the last stop are being sent | Nothing |
-| `provider not reachable; negotiation not started` (WARN) | The first request of a negotiation we started as consumer failed after 4 tries; it ends without a message, as the provider never knew it | Same as above |
+| `counter-party not reachable; process not started` (WARN) | The first request of a negotiation or transfer we started as consumer failed after 4 tries; it ends without a message, as the provider never knew it | Same as above |
 | `termination not acknowledged` (WARN) | The partner did not take a termination; DSP allows this, the negotiation is terminated anyway | Nothing, unless it repeats for one partner |
-| `no CA certificates: https callbacks will fail` (WARN, at start) | The CA bundle was not found (for example `SSL_CERT_DIR` points to an empty folder) | Fix the mount or the variable |
+| `no CA certificates: https calls will fail` (WARN, at start) | The CA bundle was not found (for example `SSL_CERT_DIR` points to an empty folder) | Fix the mount or the variable |
 | `negotiation store failed` (ERROR) | The SQLite file could not be read or written; partners get HTTP 500 | Check disk space and the `/data` volume |
 | `DSP request refused: caller not authenticated` (WARN) | A DSP request got HTTP 401; `reason` says why (token, presentation, credential or status list) | If a partner should be admitted: check its credential, its issuer against `PORTITOR_TRUSTED_ISSUERS`, and clock skew (60 s allowed) |
 | `no token: ...` in a send failure (WARN) | The STS did not give a token for an outgoing DSP request | Check the identity component, `PORTITOR_STS_URL` and the shared secret |
@@ -580,6 +588,23 @@ upgrade:
 The database needs no migration for this; a rollback to 0.4 works as
 above.
 
+#### From 0.5 to 0.6
+
+0.6 adds the issuer, `portitor-issuer`
+([section 7](#7-run-the-issuer-dataspace-authority-only)). Credentials
+issued before stay valid. Before you upgrade:
+
+1. Back up `/data/portitor-identity.db*`. The identity's database is
+   migrated forward at start (credential requests get new columns), so a
+   rollback of the identity to 0.5 needs that backup. The connector's
+   database is unchanged.
+2. `PORTITOR_POLICY_CREDENTIALS` is new and optional. Set it, on providers
+   and consumers alike, only when offers use credential constraints
+   (ADR 0019).
+3. The test-only `test-issuer` tool is gone: get credentials from your
+   dataspace's issuer ([section 4](#4-run-the-identity-next-to-the-connector),
+   "Getting a credential").
+
 ## 7. Run the issuer (dataspace authority only)
 
 The issuer issues and revokes the dataspace's credentials with the
@@ -632,7 +657,7 @@ DID.
 | `PORTITOR_DB_FILE` | `/data/portitor-issuer.db` | keep the image default |
 | `PORTITOR_MANAGEMENT_API_KEY_FILE` | unset (management API off) | path of the mounted key file |
 | `PORTITOR_MANAGEMENT_BIND` | `127.0.0.1:8071` | `0.0.0.0:8071` in a container, published only on an internal interface |
-| `PORTITOR_ALLOW_HTTP_CALLBACKS` | `false` | `false`; `true` only for local tests with plain-HTTP DIDs |
+| `PORTITOR_ALLOW_HTTP_CALLBACKS` | unset | **unset**; `true` only for local tests with plain-HTTP DIDs |
 | `PORTITOR_ISSUER_MAX_ACTIVE_PER_HOLDER` | `10` | keep; the most credentials of one definition a participant may hold that are neither revoked nor expired. A request beyond it ends `REJECTED`. It keeps one participant from filling a status list (131,072 positions) |
 | `RUST_LOG` | `info` | `info` |
 
@@ -694,6 +719,17 @@ Who gets what (ADR 0018, amended during the 0.6 review):
 
 The public endpoints are described in
 [api/issuer-openapi.json](api/issuer-openapi.json).
+
+Check after start: `curl -sf https://issuer.example.com/.well-known/did.json`
+and `curl -sf https://issuer.example.com/issuer/metadata`.
+
+| Log message (level) | Meaning |
+|---|---|
+| `portitor-issuer listening` (INFO, at start) | Started; shows the DID, key id, issuer service URL and database |
+| `credential offer sent` (INFO) / `credential offer not taken` (WARN) | An offer (`POST /v1/offers`) reached the holder, or not (the call answers 502) |
+| `credential request refused` (INFO) | A credential request was malformed and answered 400; `reason` says why |
+| `request refused` (INFO) | A caller's token was refused (401), for example a DID that is not registered |
+| `delivery given up`, `delivery refused by the holder, given up` | See "Who gets what" above |
 
 ### Order
 

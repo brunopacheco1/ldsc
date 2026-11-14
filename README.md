@@ -26,7 +26,7 @@ Website: <https://brunopacheco1.github.io/portitor/> (objectives, minimum functi
 - Plan: [docs/ROADMAP.md](docs/ROADMAP.md); decisions: [docs/adr/](docs/adr/)
 - Deploying and operating: [docs/DEPLOYING.md](docs/DEPLOYING.md); testing: [docs/TESTING.md](docs/TESTING.md)
 - Reading the Rust code: [docs/RUST-IDIOMS.md](docs/RUST-IDIOMS.md)
-- HTTP interface: [docs/api/openapi.json](docs/api/openapi.json) (OpenAPI 3.1)
+- HTTP interfaces: [docs/api/](docs/api/) (OpenAPI 3.1: connector, management, identity, issuer)
 - Security: [SECURITY.md](SECURITY.md), [docs/SECURITY-ASSURANCE.md](docs/SECURITY-ASSURANCE.md)
 - Contributing: [CONTRIBUTING.md](CONTRIBUTING.md), [GOVERNANCE.md](GOVERNANCE.md),
   [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
@@ -35,7 +35,7 @@ Website: <https://brunopacheco1.github.io/portitor/> (objectives, minimum functi
 
 `portitor-connector` serves HTTP on `PORTITOR_BIND` (default `0.0.0.0:8080`).
 The DSP endpoints follow the HTTPS bindings of
-[DSP 2025-1](https://eclipse-dataspace-protocol-base.github.io/DataspaceProtocol/2025-1-err1/).
+[DSP 2025-1](https://eclipse-dataspace-protocol-base.github.io/DataspaceProtocol/2025-1-err2/).
 
 | Method and path | What it does |
 |---|---|
@@ -78,7 +78,7 @@ Configuration (environment variables):
 | `PORTITOR_DB_FILE` | `portitor.db` (`/data/portitor.db` in the image) | SQLite file that keeps negotiations; one connector per file |
 | `PORTITOR_MANAGEMENT_API_KEY_FILE` | none (management API off) | File with the management API key (at least 32 characters, for example `openssl rand -hex 32`) |
 | `PORTITOR_MANAGEMENT_BIND` | `127.0.0.1:8081` | Address of the management API |
-| `PORTITOR_ALLOW_HTTP_CALLBACKS` | `false` | `true` allows `http://` addresses for consumers' callbacks and for providers; development and tests only |
+| `PORTITOR_ALLOW_HTTP_CALLBACKS` | `false` | `true` allows plain `http://` for consumers' callbacks, providers, partners' `did:web` DIDs and credential services, status lists and the STS; development and tests only |
 | `PORTITOR_DATA_TOKEN_SECONDS` | `3600` | How long a data access token is valid after the transfer starts |
 | `PORTITOR_STS_URL` | none (**required**) | Token endpoint of the participant's STS (`portitor-identity`: `<base URL>/sts/token`); every DSP request is authenticated with DCP (ADR 0016) |
 | `PORTITOR_STS_ALLOW_HTTP` | unset | `true` allows a plain-HTTP `PORTITOR_STS_URL` (the STS on an internal network), and nothing else |
@@ -170,9 +170,10 @@ is set. Every call needs `Authorization: Bearer <key>`.
 | `POST /v1/transfers/{consumerPid}/completion` | Completes a started transfer (you have the data) |
 | `POST /v1/transfers/{consumerPid}/termination` | Ends a transfer |
 | `GET /v1/openapi.json` | The OpenAPI description (no key needed); also in [docs/api/management-openapi.json](docs/api/management-openapi.json) |
+| `GET /health` | Answers `ok` (no key needed) |
 
 For example, with an offer copied unchanged from the provider's catalog
-(the provider agrees only to the catalog's terms, see below):
+(the provider agrees only to the catalog's terms, see above):
 
 ```sh
 curl -s -X POST localhost:8081/v1/negotiations \
@@ -242,8 +243,8 @@ scripts/demo-compose.sh
 It starts the data space's issuer (`portitor-issuer`), a provider and a
 consumer, each a connector with its identity component, and a small web
 server that holds the provider's data ([examples/compose](examples/compose)).
-The issuer registers both participants, and each identity asks it for its
-credentials. Then it checks that the provider refuses a catalog request
+The script registers both participants at the issuer, and each identity
+asks it for its credentials. Then it checks that the provider refuses a catalog request
 without a DCP token, reads the catalog with a token from the consumer's
 STS, agrees a contract, checks that changed terms are refused, checks
 offers that ask for credential claims, transfers

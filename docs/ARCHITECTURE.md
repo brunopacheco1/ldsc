@@ -11,7 +11,7 @@ Status: **draft for review**. Language: Rust ([ADR 0002](adr/0002-technology-sta
 ## Goal
 
 A small and fast connector that speaks the Dataspace
-Protocol (DSP 2025-1) and the Decentralized Claims Protocol (DCP 1.0), with
+Protocol (DSP 2025-1) and the Decentralized Claims Protocol (DCP v1.0.1), with
 few components and a simple deployment order.
 
 ## Architecture principles
@@ -48,9 +48,11 @@ judged against it.
    config files or images, an allow-list of signature algorithms (`ES256`,
    `PS256`), non-root and read-only containers. *Check:* OpenSSF Baseline
    level 1 and Scorecard in CI.
-8. **Stateless processes, state in PostgreSQL.** Any instance can serve
-   any request; restarts lose nothing. *Check:* tests restart the
-   connector in the middle of a negotiation.
+8. **Stateless processes, state in a database.** The target is that any
+   instance serves any request (PostgreSQL, ADR 0006); until that adapter
+   exists, each image keeps its state in one SQLite file, with one replica
+   per file. Restarts lose nothing. *Check:* tests restart the connector in
+   the middle of a negotiation.
 9. **Seams where specs are still moving.** Code that depends on a draft
    spec (Data Plane Signaling) sits behind an interface shaped like that
    spec, so it can be split out or updated without touching protocol code.
@@ -101,14 +103,43 @@ with the files they live in:
 
 ![C3 Components of portitor-issuer](diagrams/c3-issuer-components.drawio.svg)
 
-**C4 Code**: one flow, the provider side of contract negotiation, as a
-hexagon: the domain service, the ports (traits) it uses and the adapters
-behind them. The other flows (consumer negotiation, transfers) follow the
-same pattern, with their ports in `portitor-dsp` and adapters in
-`portitor-connector`; C4 level 4 is optional in the model, so only this
-one is drawn.
+**C4 Code**: five flows, each drawn as a hexagon: the domain service or
+function in the middle, the ports (traits, dashed yellow) it uses, the
+adapters behind them, and the HTTP edge that calls it. The names are the
+real type, trait, function and file names, so you can search the code
+for them. Consumer negotiation and consumer transfers follow the same
+pattern and are not drawn.
+
+The provider side of contract negotiation: `ProviderService` in
+`portitor-dsp`, behind the DSP handlers of `portitor-connector`.
 
 ![C4 Code: provider contract negotiation](diagrams/c4-negotiation-code.drawio.svg)
+
+The provider side of a transfer: `TransferService` checks the agreement,
+then starts the data flow through Data Plane Signaling (`portitor-dps`)
+on the built-in data plane, which gives the consumer a data address with
+a bearer token.
+
+![C4 Code: provider transfer process](diagrams/c4-transfer-code.drawio.svg)
+
+How the connector checks who calls a DSP endpoint with DCP (the caller's
+token, its presentations, trusted issuers, status lists), and how a
+policy with credential constraints gets the caller's credentials
+([ADR 0016](adr/0016-dsp-caller-authentication.md),
+[ADR 0019](adr/0019-credential-constraints.md)).
+
+![C4 Code: DSP caller authentication with DCP](diagrams/c4-caller-auth-code.drawio.svg)
+
+How the issuer takes a credential request, decides it, stores it and
+delivers the credentials to the holder through its outbox, and how it
+signs its status lists ([ADR 0018](adr/0018-issuer-component.md)).
+
+![C4 Code: credential issuance in portitor-issuer](diagrams/c4-issuance-code.drawio.svg)
+
+How the identity component signs tokens for its own connector (STS) and
+answers another participant's presentation query.
+
+![C4 Code: STS tokens and presentations in portitor-identity](diagrams/c4-presentation-code.drawio.svg)
 
 ## Components
 
@@ -164,10 +195,12 @@ image keeps its state in its own SQLite file under `/data`.
                           portitor-runtime
    portitor-identity  --> portitor-dcp, portitor-runtime
    portitor-issuer    --> portitor-dcp, portitor-runtime
-   portitor-runtime   --> portitor-dcp          (adapters: HTTP client,
+   portitor-runtime   --> portitor-dcp, portitor-time
+                                                (adapters: HTTP client,
                                                  did:web resolver, API key,
                                                  logging, shutdown)
-   portitor-dsp, portitor-dps, portitor-dcp --> portitor-time
+   portitor-dps       --> portitor-dsp          (DataAddress)
+   portitor-dsp, portitor-dcp --> portitor-time
                                                 (domain crates: no I/O)
 ```
 

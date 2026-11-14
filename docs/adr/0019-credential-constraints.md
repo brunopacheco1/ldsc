@@ -6,7 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # ADR 0019: Credential constraints in ODRL policies
 
-- Status: **Proposed**
+- Status: **Accepted** (2026-11-14, by the maintainer)
 - Date: 2026-11-14
 - Scope: release 0.6. Extends ADR 0009 (minimal ODRL: `dateTime` only,
   fail closed) and ADR 0016 (DSP caller authentication with DCP).

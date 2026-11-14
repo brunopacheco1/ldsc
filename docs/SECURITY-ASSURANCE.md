@@ -28,7 +28,7 @@ dataspace participants over HTTPS.
 - **Strict token checks:** DCP self-issued tokens are accepted only with
   `ES256` or `PS256` (never `none`), a key from the issuer's DID document
   with the `capabilityInvocation` relationship, matching `iss`/`sub`/`aud`,
-  valid `exp`/`iat`, and a `jti` not seen before (DCP 1.0.1).
+  valid `exp`/`iat`, and a `jti` not seen before (DCP v1.0.1).
 - **Small attack surface:** a static binary on an empty (`scratch`) image,
   running as a non-root user, with no shell.
 - **Authentic releases:** from 0.1.0, images are signed with cosign

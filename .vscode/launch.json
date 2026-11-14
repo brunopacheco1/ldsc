@@ -325,6 +325,136 @@
         "group": "2-test",
         "order": 16
       }
+    },
+    {
+      "name": "Tests: portitor-connector credential_constraints",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": ["test", "-p", "portitor-connector", "--test", "credential_constraints"]
+      },
+      "args": [],
+      "presentation": {
+        "group": "2-test",
+        "order": 17
+      }
+    },
+    {
+      "name": "Tests: portitor-dcp spec",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": ["test", "-p", "portitor-dcp", "--test", "spec"]
+      },
+      "args": [],
+      "presentation": {
+        "group": "2-test",
+        "order": 18
+      }
+    },
+    {
+      "name": "Tests: portitor-runtime (unit)",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": ["test", "-p", "portitor-runtime", "--lib"]
+      },
+      "args": [],
+      "presentation": {
+        "group": "2-test",
+        "order": 19
+      }
+    },
+    {
+      "name": "Tests: portitor-time (unit)",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": ["test", "-p", "portitor-time", "--lib"]
+      },
+      "args": [],
+      "presentation": {
+        "group": "2-test",
+        "order": 20
+      }
+    },
+    {
+      "name": "Tests: portitor-identity (unit)",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": ["test", "-p", "portitor-identity", "--lib"]
+      },
+      "args": [],
+      "presentation": {
+        "group": "2-test",
+        "order": 21
+      }
+    },
+    {
+      "name": "Tests: portitor-identity credential_service",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": ["test", "-p", "portitor-identity", "--test", "credential_service"]
+      },
+      "args": [],
+      "presentation": {
+        "group": "2-test",
+        "order": 22
+      }
+    },
+    {
+      "name": "Tests: portitor-identity issuance",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": ["test", "-p", "portitor-identity", "--test", "issuance"]
+      },
+      "args": [],
+      "presentation": {
+        "group": "2-test",
+        "order": 23
+      }
+    },
+    {
+      "name": "Tests: portitor-identity management_api",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": ["test", "-p", "portitor-identity", "--test", "management_api"]
+      },
+      "args": [],
+      "presentation": {
+        "group": "2-test",
+        "order": 24
+      }
+    },
+    {
+      "name": "Tests: portitor-issuer (unit)",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": ["test", "-p", "portitor-issuer", "--lib"]
+      },
+      "args": [],
+      "presentation": {
+        "group": "2-test",
+        "order": 25
+      }
+    },
+    {
+      "name": "Tests: portitor-issuer issuer",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": ["test", "-p", "portitor-issuer", "--test", "issuer"]
+      },
+      "args": [],
+      "presentation": {
+        "group": "2-test",
+        "order": 26
+      }
     }
   ],
   "compounds": [

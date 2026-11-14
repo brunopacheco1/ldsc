@@ -12,7 +12,7 @@ so visitors' browsers never contact third-party services.
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Portitor: a data space connector</title>
-  <meta name="description" content="Portitor is a small and fast open-source connector. It implements the Eclipse Dataspace Protocol and the Decentralized Claims Protocol, and interoperates with Eclipse EDC and Simpl-Open.">
+  <meta name="description" content="Portitor is a small and fast open-source connector. It implements the Eclipse Dataspace Protocol and the Decentralized Claims Protocol, and is tested against Eclipse EDC; Simpl-Open is planned.">
   <meta property="og:title" content="Portitor: a data space connector">
   <meta property="og:description" content="A small, fast, open-source dataspace connector: Dataspace Protocol, Decentralized Claims Protocol, Gaia-X.">
   <meta property="og:type" content="website">
@@ -74,8 +74,8 @@ so visitors' browsers never contact third-party services.
       <div class="wrap">
         <h2>Objectives</h2>
         <ul class="cards">
-          <li><h3>Standards first</h3><p>Behaviour comes from the specifications (DSP 2025-1, DCP 1.0, Gaia-X Danube), checked against their official conformance kits.</p></li>
-          <li><h3>Interoperable</h3><p>Talks to Eclipse EDC and Simpl-Open connectors; interoperability is tested, not assumed.</p></li>
+          <li><h3>Standards first</h3><p>Behaviour comes from the specifications (DSP 2025-1, DCP v1.0.1, Gaia-X Danube), checked against their official conformance kits.</p></li>
+          <li><h3>Interoperable</h3><p>Talks to Eclipse EDC connectors, tested in CI; Simpl-Open is planned. Interoperability is tested, not assumed.</p></li>
           <li><h3>Small and predictable</h3><p>Static binaries in empty images of a few megabytes, starting in milliseconds and using a few megabytes of memory.</p></li>
           <li><h3>Secure by default</h3><p>Strict message parsing, a short list of signature algorithms, keys kept out of the internet-facing service, signed releases.</p></li>
           <li><h3>Simple to run</h3><p>Few components, one version for all of them, configuration through environment variables.</p></li>
@@ -118,7 +118,7 @@ so visitors' browsers never contact third-party services.
           <li><code>portitor-issuer</code>, once per dataspace, by the dataspace authority: publish its <code>did:web</code> document and register the participants.</li>
           <li>For each participant, storage: a volume for each image's database file.</li>
           <li><code>portitor-identity</code>: publish the <code>did:web</code> document over HTTPS and get a membership credential from the issuer (and, for Gaia-X, a compliance credential).</li>
-          <li><code>portitor-connector</code>, pointed at the identity and the database.</li>
+          <li><code>portitor-connector</code>, pointed at the identity and the database, trusting the issuer's DID.</li>
         </ol>
       </div>
     </section>
