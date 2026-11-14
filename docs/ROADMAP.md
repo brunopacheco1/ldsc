@@ -310,6 +310,15 @@ registry moved to 0.7, so each release has one main risk (maintainer,
   explicitly exempted; CI fails on an unaudited change. Deferred from 0.1
   (decided 2026-11-11) because it turns each dependency bump into review work.
 - Interoperability tests against Eclipse EDC and Simpl-Open (with Gaia-X).
+- Cache status list credentials in the connector's DCP verifier
+  (maintainer, 2026-11-14): `PORTITOR_STATUS_LIST_CACHE_SECONDS`, default
+  300 (5 minutes), 0 checks on every request, at most 3600; only lists
+  that were fetched and verified are cached, never longer than the list's
+  own expiry. Trade-off documented in DEPLOYING: a revocation takes up to
+  that long to be seen. EDC v1.0.0-RC7 caches for 15 minutes by default
+  (`edc.iam.credential.revocation.cache.validity`). Demos, the EDC test
+  and the TCK runs use 0. Amends ADR 0016 ("Presentations are not
+  cached").
 - API and config freeze, upgrade notes, documentation review.
 - Exit: Scorecard at least 8/10; no open high findings in Sonar or CodeQL.
 
