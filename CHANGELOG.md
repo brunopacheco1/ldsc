@@ -22,6 +22,17 @@ versions may change behaviour and configuration.
   against the official schemas.
 - `portitor-issuer`: new crate for the issuer component (work in
   progress).
+- Release pipeline for a third image, `ghcr.io/brunopacheco1/portitor-issuer`
+  (ADR 0018): a `portitor-issuer` target in the `Dockerfile` (ports 8070
+  and 8071, `/data/portitor-issuer.db`), built, signed, attested and
+  released with an SBOM like the other two; CI builds the image on every
+  pull request; the website publishes `docs/api/issuer-openapi.json`.
+- C4 diagrams: the system context and containers show the issuer, run by
+  the dataspace authority, one per dataspace; a new component diagram
+  `c3-issuer-components.drawio.svg` shows its planned parts.
+- `docs/DEPLOYING.md`: an issuer section (who runs it, order, key backup,
+  never on a participant's host); `docs/ARCHITECTURE.md` and the website:
+  deployment order issuer, then identity, then connector.
 
 - C4 model diagrams (system context, containers, components of both
   images, and the provider negotiation as code) in draw.io format, shown
@@ -33,6 +44,13 @@ versions may change behaviour and configuration.
   image and only files and types that exist; every OpenAPI file has the
   workspace version.
 - A documentation review step for every release (`docs/RELEASING.md`).
+
+### Changed
+
+- Living documents (ARCHITECTURE, SECURITY-ASSURANCE, the website's
+  roadmap) follow the new release numbers: schema and vocabulary registry
+  0.7, Gaia-X 0.8, operations 0.9, hardening 0.10 (with the OpenSSF
+  Baseline self-assessment and cargo-vet).
 
 ### Fixed
 

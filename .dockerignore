@@ -5,3 +5,4 @@
 *
 !dist/*/portitor-connector
 !dist/*/portitor-identity
+!dist/*/portitor-issuer

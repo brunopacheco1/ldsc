@@ -27,8 +27,7 @@ env:
   RUST_TOOLCHAIN: "1.97.0"
   CARGO_TERM_COLOR: always
   # One entry per image (ADR 0003), and a build target of the same name in the Dockerfile.
-  # portitor-issuer joins in 0.6.
-  COMPONENTS: portitor-connector portitor-identity
+  COMPONENTS: portitor-connector portitor-identity portitor-issuer
 
 jobs:
   verify:

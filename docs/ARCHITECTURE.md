@@ -79,12 +79,13 @@ CI) checks that they still match the code: every crate and image is
 drawn, every Rust file and type they name exists. Each release reviews
 them ([RELEASING.md](RELEASING.md), "Documentation review").
 
-**C1 System context**: who and what one participant's Portitor talks to.
+**C1 System context**: who and what one participant's Portitor talks to,
+and the issuer its dataspace authority runs.
 
 ![C1 System context](diagrams/c1-system-context.drawio.svg)
 
-**C2 Containers**: the two images one participant runs, and what they
-keep.
+**C2 Containers**: the two images each participant runs, the issuer
+its dataspace authority runs, and what they keep.
 
 ![C2 Containers](diagrams/c2-containers.drawio.svg)
 
@@ -94,6 +95,12 @@ domain crates ([ADR 0004](adr/0004-hexagonal-architecture.md)).
 ![C3 Components of portitor-connector](diagrams/c3-connector-components.drawio.svg)
 
 ![C3 Components of portitor-identity](diagrams/c3-identity-components.drawio.svg)
+
+The issuer's components are drawn as planned in
+[ADR 0018](adr/0018-issuer-component.md); the boxes name what each part
+does, and the files they live in are added once the code exists.
+
+![C3 Components of portitor-issuer](diagrams/c3-issuer-components.drawio.svg)
 
 **C4 Code**: one flow, the provider side of contract negotiation, as a
 hexagon: the domain service, the ports (traits) it uses and the adapters
@@ -118,13 +125,13 @@ ports.
 | # | Component (image) | Role | Mandatory? | Protocols |
 |---|---|---|---|---|
 | 1 | Database: one SQLite file per image today; PostgreSQL (external, not built by Portitor) later | State of negotiations, transfers, credentials | Mandatory | — |
-| 2 | `portitor-identity` | Holds the participant's DID, keys and credentials (including Gaia-X credentials from 0.7); answers presentation queries | Mandatory for each participant, unless an external DCP wallet is used, or the participant uses Simpl-Open x509 only | DCP (credential service) |
+| 2 | `portitor-identity` | Holds the participant's DID, keys and credentials (including Gaia-X credentials from 0.8); asks issuers for credentials; answers presentation queries | Mandatory for each participant, unless an external DCP wallet is used, or the participant uses Simpl-Open x509 only | DCP (credential service) |
 | 3 | `portitor-connector` | Control plane: catalog, contract negotiation, transfer; verifies DCP presentations. The data plane is its own module, linked into the connector for 0.x (see below) | Mandatory | DSP, DCP (verifier) |
-| 4 | `portitor-issuer` (planned for 0.6; until then a test-only tool) | Issues and revokes credentials (for example membership); builds and signs the schema and vocabulary bundle ([ADR 0005](adr/0005-schema-and-vocabulary-registry.md), proposed) | Optional: one per dataspace, run by the dataspace authority | DCP (issuance) |
+| 4 | `portitor-issuer` (from 0.6, [ADR 0018](adr/0018-issuer-component.md)) | Issues and revokes credentials (for example membership) to the participants the authority registered; publishes their status lists. Whether it also signs the schema and vocabulary bundle is decided in 0.7 ([ADR 0005](adr/0005-schema-and-vocabulary-registry.md), proposed) | Optional: one per dataspace, run by the dataspace authority, never on a participant's host | DCP (issuance) |
 
-### Images and crates in 0.5
+### Images and crates in 0.6
 
-Release 0.5 ships two images, built from one `Dockerfile` (one build
+Release 0.6 ships three images, built from one `Dockerfile` (one build
 target per image) and released, signed and attested together
 ([RELEASING.md](RELEASING.md)). Until the PostgreSQL adapter exists, each
 image keeps its state in its own SQLite file under `/data`.
@@ -142,11 +149,22 @@ image keeps its state in its own SQLite file under `/data`.
           v                                        ^ (3) DID document,
    partner's connector ----------------------------+     presentation query
 
+ the dataspace authority runs one, for all participants:
+
+   +----------------------------------+
+   | portitor-issuer                  |  identities ask it for credentials
+   | 8070 DID document, DCP issuer    |  (DCP issuance) and it delivers them
+   |      service, status lists       |  to their Storage API; verifiers
+   | 8071 management API              |  read its DID document and status
+   | /data/portitor-issuer.db         |  lists
+   +----------------------------------+
+
  crates (-> means "uses"):
 
    portitor-connector --> portitor-dsp, portitor-dps, portitor-dcp,
                           portitor-runtime
    portitor-identity  --> portitor-dcp, portitor-runtime
+   portitor-issuer    --> portitor-dcp, portitor-runtime
    portitor-runtime   --> portitor-dcp          (adapters: HTTP client,
                                                  did:web resolver, API key,
                                                  logging, shutdown)
@@ -159,7 +177,10 @@ image keeps its state in its own SQLite file under `/data`.
   and signs its own (ADR 0016).
 - `portitor-identity`: binary; the participant's DID document, STS,
   credential service and management API (ADR 0015).
-- `portitor-runtime`: library of adapters both binaries share, so they are
+- `portitor-issuer`: binary; the dataspace authority's DID document, DCP
+  issuer service (metadata, credential requests and their status),
+  delivery outbox, status lists and management API (ADR 0018).
+- `portitor-runtime`: library of adapters the binaries share, so they are
   not copied.
 - `portitor-dsp`, `portitor-dps`, `portitor-dcp`, `portitor-time`: domain
   crates (ADR 0004); CI checks they have no I/O dependency.
@@ -206,12 +227,21 @@ by participants.
 
 ## Deployment order
 
-1. Storage: a volume for each image's SQLite file (PostgreSQL later).
-2. Identity: publish the `did:web` document over HTTPS.
-3. Issuer (only the dataspace authority): issue a membership credential to
-   the participant's identity. For Gaia-X, the participant also obtains a
-   Compliance credential from a Gaia-X Digital Clearing House.
-4. Connector: point it at the identity and the database.
+Once per dataspace, by the dataspace authority:
+
+1. Issuer (`portitor-issuer`): its own volume, key and `did:web`
+   document; its credential definitions; then register each participant
+   (DID and claims) through its management API.
+
+Then for each participant:
+
+2. Storage: a volume for each image's SQLite file (PostgreSQL later).
+3. Identity (`portitor-identity`): publish the `did:web` document over
+   HTTPS, then ask the issuer for a membership credential (DCP issuance).
+   For Gaia-X (from 0.8), the participant also obtains a Compliance
+   credential from a Gaia-X Digital Clearing House.
+4. Connector (`portitor-connector`): point it at the identity and the
+   database, and trust the issuer's DID.
 
 ## Data plane: inside the connector or separate?
 
