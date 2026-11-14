@@ -46,7 +46,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let settings = AuthSettings::from_env(&config.participant_id, config.allow_http_callbacks)?;
     (ports.verifier, ports.prover) = auth_adapters(settings).await?;
     // the authority's signed shapes bundle (ADR 0005); none configured: None,
-    // and nothing changes (no SHACL checks, the plain DSP @context)
+    // and nothing changes (no SHACL checks, no message guard)
     let bundle_config = BundleConfig::from_env(&config.db_file, config.allow_http_callbacks)?;
     if let Some(bundle) = load_bundle(bundle_config).await? {
         // shapes that cannot be loaded stop the start, like a bad signature

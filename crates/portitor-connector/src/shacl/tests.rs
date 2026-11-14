@@ -119,59 +119,46 @@ fn title_rules() -> BundleRules {
 }
 
 #[test]
-fn the_served_context_takes_simple_prefixes_only() {
-    let first = json!({"@context": {
-        "@version": 1.1,
-        "healthdcatap": "http://healthdataportal.eu/ns/health#",
-        "cv": "http://data.europa.eu/m8g/",
-        "dct": "http://purl.org/dc/terms/",
-        "dcat": "https://not-dcat.example/",
-        "@vocab": "https://vocab.example/",
-        "title": {"@id": "dct:title", "@language": "en"},
-        "relative": "not-an-iri",
-        "ex:term": "https://example.org/term"
-    }});
-    let second = json!({"@context": [
-        "https://elsewhere.example/context.jsonld",
-        {"cv": "https://other-cv.example/", "foaf": "http://xmlns.com/foaf/0.1/"}
-    ]});
+fn a_bundle_context_for_a_dsp_url_is_not_used() {
     let rules = BundleRules::from_bundle(&bundle_of(vec![
         datasets("public.ttl", TITLE_SHAPES, &[PUBLIC]),
-        context("a.jsonld", "https://contexts.example/a", &first),
-        context("b.jsonld", "https://contexts.example/b", &second),
+        context(
+            "a.jsonld",
+            "https://contexts.example/a",
+            &json!({"@context": {"ex": "https://example.org/"}}),
+        ),
         context("dsp.jsonld", CONTEXT, &json!({"@context": {"x": "urn:x:"}})),
     ]))
     .unwrap();
-    let served = serde_json::to_value(rules.context()).unwrap();
     assert_eq!(
-        served,
-        json!([CONTEXT, {
-            "cv": "http://data.europa.eu/m8g/",
-            "foaf": "http://xmlns.com/foaf/0.1/",
-            "healthdcatap": "http://healthdataportal.eu/ns/health#"
-        }])
+        rules.context_notes(),
+        [
+            "the bundle's context for https://w3id.org/dspace/2025/1/context.jsonld is not used: the connector has its own copy of the DSP 2025-1 context"
+        ]
     );
-    let notes = rules.context_notes().join("\n");
-    for expected in [
-        "the bundle's context for https://w3id.org/dspace/2025/1/context.jsonld is not used",
-        "prefix dcat in the context for https://contexts.example/a would redefine a term of the DSP 2025-1 context",
-        "@vocab in the context for https://contexts.example/a is not a simple prefix",
-        "title in the context for https://contexts.example/a is not a simple prefix",
-        "relative in the context for https://contexts.example/a is not a simple prefix",
-        "ex:term in the context for https://contexts.example/a is not a simple prefix",
-        "the context for https://contexts.example/b refers to https://elsewhere.example/context.jsonld",
-        "prefix cv is http://data.europa.eu/m8g/ in the context for https://contexts.example/a and https://other-cv.example/ in the context for https://contexts.example/b; the first is used",
-    ] {
-        assert!(notes.contains(expected), "{expected:?} not in\n{notes}");
-    }
-    // dct has the same IRI as in the DSP context: nothing to note
-    assert!(!notes.contains("prefix dct"), "{notes}");
-    assert!(!notes.contains("@version"), "{notes}");
 }
 
 #[test]
-fn without_context_files_the_served_context_is_the_plain_dsp_one() {
-    assert_eq!(title_rules().context(), &Context::default());
+fn an_entry_is_read_with_the_dsp_context_only() {
+    // a bundle context file defines `ex`; the dataset check does not use
+    // it, so `ex:title` is not dct:title and the title shape fails
+    let rules = BundleRules::from_bundle(&bundle_of(vec![
+        datasets("public.ttl", TITLE_SHAPES, &[PUBLIC]),
+        context(
+            "a.jsonld",
+            "https://contexts.example/a",
+            &json!({"@context": {"ex": "http://purl.org/dc/terms/"}}),
+        ),
+    ]))
+    .unwrap();
+    let check = rules.dataset_check().unwrap();
+    let mut prefixed = entry("https://p.example/d1", Some(PUBLIC), false);
+    prefixed["ex:title"] = json!("A title");
+    assert!(check.check(&prefixed).is_err());
+    // the full IRI is understood
+    let mut full = entry("https://p.example/d1", Some(PUBLIC), false);
+    full["http://purl.org/dc/terms/title"] = json!("A title");
+    assert!(check.check(&full).is_ok());
 }
 
 #[test]
@@ -185,6 +172,16 @@ fn a_context_file_that_is_not_a_context_stops_the_start() {
     assert_eq!(
         error.to_string(),
         "bundle context for https://contexts.example/a: no @context object"
+    );
+    let error = BundleRules::from_bundle(&bundle_of(vec![context(
+        "a.jsonld",
+        "https://contexts.example/a",
+        &json!({"@context": [1]}),
+    )]))
+    .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "bundle context for https://contexts.example/a: an entry of @context is neither an object nor a URL"
     );
 }
 
