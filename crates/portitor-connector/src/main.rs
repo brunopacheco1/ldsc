@@ -43,7 +43,20 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     ports.use_sqlite(&store);
     let settings = AuthSettings::from_env(&config.participant_id, config.allow_http_callbacks)?;
     (ports.verifier, ports.prover) = auth_adapters(settings).await?;
+    if let Some(file) = &config.datasets_file {
+        tracing::info!(
+            file = %file.display(),
+            interval_seconds = config.harvest_interval_seconds,
+            "harvesting datasets"
+        );
+    }
     let (app, negotiator) = portitor_connector::build(&config, ports)?;
+    let every = std::time::Duration::from_secs(config.harvest_interval_seconds);
+    if negotiator.schedule_harvest(every).is_none() {
+        tracing::info!(
+            "datasets are harvested only at start (PORTITOR_HARVEST_INTERVAL_SECONDS=0)"
+        );
+    }
     // messages saved but not acknowledged before the last stop
     match negotiator.resume() {
         Ok(0) => {}
@@ -59,7 +72,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             let listener = bind_management(&settings.bind).await?;
             Some((
                 listener,
-                portitor_connector::management::router(negotiator, key),
+                portitor_connector::management::router(negotiator.clone(), key),
             ))
         } else {
             tracing::info!("management API off (PORTITOR_MANAGEMENT_API_KEY_FILE not set)");
@@ -67,7 +80,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         };
     tracing::info!(
         %bind,
-        datasets = config.datasets.len(),
+        datasets = negotiator.catalog_size(),
         db = %config.db_file.display(),
         "portitor-connector listening"
     );

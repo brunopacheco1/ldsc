@@ -10,7 +10,7 @@
 //! refuses because the flow is already where the signal leads counts as
 //! done, and so does ending a flow that never started.
 
-use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use portitor_dps::message::{DataFlowBaseMessage, DataFlowStartMessage, HTTP_PULL, ReasonMessage};
 use portitor_dps::port::{DataPlane, SignalError};
@@ -18,6 +18,7 @@ use portitor_dps::state::DataFlowState;
 use portitor_dsp::transfer::DataAddress;
 use portitor_dsp::transfer::provider::{DataFlows, Transfer};
 
+use crate::data_plane::UpstreamSources;
 use crate::system::new_uuid;
 
 /// The DSP formats the built-in data plane serves, with the Data Plane
@@ -51,30 +52,40 @@ impl NewAddress for crate::data_plane::HttpDataPlane {
 }
 
 /// Adapter: [`DataFlows`] over a Data Plane Signaling [`DataPlane`].
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SignalingDataFlows<P> {
     plane: P,
     participant_id: String,
     dataspace_context: String,
-    /// The datasets the data plane has data for.
-    datasets: BTreeSet<String>,
+    /// Where the data plane fetches each dataset's data: the datasets with
+    /// an upstream URL are the ones it can serve.
+    sources: Arc<dyn UpstreamSources>,
+}
+
+impl<P> std::fmt::Debug for SignalingDataFlows<P> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SignalingDataFlows")
+            .field("participant_id", &self.participant_id)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<P: DataPlane> SignalingDataFlows<P> {
     /// Signals `plane` on behalf of provider `participant_id`, in the
-    /// dataspace named `dataspace_context`. `datasets`: the ids of the
-    /// datasets `plane` has data for; a request for any other is refused.
+    /// dataspace named `dataspace_context`. `sources`: where `plane` fetches
+    /// each dataset's data, read at each request; a request for a dataset
+    /// without an upstream URL is refused.
     pub fn new(
         plane: P,
         participant_id: &str,
         dataspace_context: &str,
-        datasets: impl IntoIterator<Item = String>,
+        sources: Arc<dyn UpstreamSources>,
     ) -> Self {
         Self {
             plane,
             participant_id: participant_id.to_owned(),
             dataspace_context: dataspace_context.to_owned(),
-            datasets: datasets.into_iter().collect(),
+            sources,
         }
     }
 
@@ -108,7 +119,7 @@ impl<P: DataPlane> SignalingDataFlows<P> {
 
 impl<P: DataPlane + NewAddress> DataFlows for SignalingDataFlows<P> {
     fn supports(&self, dataset_id: &str, format: &str) -> bool {
-        profile_of(format).is_some() && self.datasets.contains(dataset_id)
+        profile_of(format).is_some() && self.sources.upstream_of(dataset_id).is_some()
     }
 
     fn start(&self, t: &Transfer) -> Result<DataAddress, String> {
@@ -284,7 +295,8 @@ mod tests {
     }
 
     fn flows_over(plane: &Plane) -> SignalingDataFlows<&Plane> {
-        SignalingDataFlows::new(plane, "did:web:p", "default", ["d".to_owned()])
+        let sources = BTreeMap::from([("d".to_owned(), "https://upstream.example/d".to_owned())]);
+        SignalingDataFlows::new(plane, "did:web:p", "default", Arc::new(sources))
     }
 
     impl NewAddress for &Plane {
