@@ -43,7 +43,7 @@ trap stop EXIT
 (cd "$ROOT" && cargo build --quiet --locked -p portitor-issuer)
 ISSUER_BIN=${CARGO_TARGET_DIR:-$ROOT/target}/debug/portitor-issuer
 BUNDLE_SETTINGS=()
-if [ "${BUNDLE_KEY:-}" = 1 ]; then
+if [[ "${BUNDLE_KEY:-}" == 1 ]]; then
   AUTHORITY="did:web:localhost%3A$ISSUER_PORT" "$ROOT/scripts/demo-bundle.sh" "$WORK/bundle" "$ISSUER_BIN" > /dev/null
   BUNDLE_SETTINGS=(PORTITOR_ISSUER_BUNDLE_KEY_FILE="$WORK/bundle/bundle-key.jwk"
     PORTITOR_ISSUER_BUNDLE_DIR="$WORK/bundle/bundles")
@@ -66,7 +66,7 @@ env PORTITOR_PARTICIPANT_ID="did:web:localhost%3A$ISSUER_PORT" \
 ISSUER_PID=$!
 for _ in $(seq 100); do curl -sf "http://127.0.0.1:$ISSUER_PORT/health" > /dev/null && break; sleep 0.1; done
 curl -sf "http://127.0.0.1:$ISSUER_PORT/health" > /dev/null || { cat issuer.log; exit 1; }
-if [ "${BUNDLE_KEY:-}" = 1 ]; then
+if [[ "${BUNDLE_KEY:-}" == 1 ]]; then
   # the DID document lists the bundle key, and the bundle is served
   curl -sf "http://127.0.0.1:$ISSUER_PORT/.well-known/did.json" | grep -q '#bundle-key' ||
     { echo "the DID document does not list the bundle key"; exit 1; }

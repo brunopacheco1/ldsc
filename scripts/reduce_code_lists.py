@@ -21,11 +21,12 @@ in the folder given with --in. The sources are published as RDF/XML or
 Turtle. Convert them to N-Triples with any RDF tool first, for example
 `riot --output=ntriples file.rdf > name.nt` (Apache Jena). Portitor's own
 binaries never parse RDF/XML. The shapes (--shapes) are read only for
-their `sh:class` values.
+their `sh:class` values. Every path must be inside the current folder:
+run it from the repository root, with the inputs in a folder under it.
 
   python3 scripts/reduce_code_lists.py --in <folder> \\
-    --shapes demo/bundle/healthdcat-ap-r8/shapes/*.ttl \\
-    --out demo/bundle/healthdcat-ap-r8/vocabulary/code-lists.nt
+    --shapes examples/bundle/healthdcat-ap-r8/shapes/*/*.ttl \\
+    --out examples/bundle/healthdcat-ap-r8/vocabulary/code-lists.nt
 
 The sources are the files that the HealthDCAT-AP release 8 validator
 loads (`config.properties` of
@@ -56,84 +57,147 @@ SCHEMA_NAMESPACES = (
     "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
 )
 
-# name (input file <name>.nt), kind, the URL it stands for, licence as the
+CODE_LIST = "code list"
+ONTOLOGY = "ontology"
+# The IRIs below name the sources; this script never fetches them. An
+# IRI is an identifier, so its http scheme cannot change to https.
+OP = "http://publications.europa.eu/resource/authority/"  # NOSONAR identifier, never fetched
+HDEU_AUTHORITY = "https://hdeu-dcat.data.health.europa.eu/resource/authority/"
+
+# name (input file <name>.nt), kind, the IRI it stands for, licence as the
 # publisher states it ("not stated" when we found no statement)
 EU = "CC-BY-4.0 (EU reuse policy, Commission Decision 2011/833/EU and C(2019) 1655)"
 HDEU = "not stated in the file; published with HealthDCAT-AP release 8 (CC-BY-4.0)"
 W3C = "W3C Software and Document Notice and License (W3C-20150513)"
 SOURCES = [
     # EU Publications Office authority tables (https://op.europa.eu/en/web/eu-vocabularies)
-    ("access-right", "code list", "http://publications.europa.eu/resource/authority/access-right", EU),
-    ("continents", "code list", "http://publications.europa.eu/resource/authority/continent", EU),
-    ("corporatebodies", "code list", "http://publications.europa.eu/resource/authority/corporate-body", EU),
-    ("countries", "code list", "http://publications.europa.eu/resource/authority/country", EU),
-    ("data-theme", "code list", "http://publications.europa.eu/resource/authority/data-theme", EU),
-    ("dataset-types", "code list", "http://publications.europa.eu/resource/authority/dataset-type", EU),
-    ("distribution-status", "code list", "http://publications.europa.eu/resource/authority/distribution-status", EU),
-    ("filetypes", "code list", "http://publications.europa.eu/resource/authority/file-type", EU),
-    ("frequencies", "code list", "http://publications.europa.eu/resource/authority/frequency", EU),
-    ("languages", "code list", "http://publications.europa.eu/resource/authority/language", EU),
-    ("places", "code list", "http://publications.europa.eu/resource/authority/place", EU),
-    ("planned-availability", "code list", "http://publications.europa.eu/resource/authority/planned-availability", EU),
+    ("access-right", CODE_LIST, OP + "access-right", EU),
+    ("continents", CODE_LIST, OP + "continent", EU),
+    ("corporatebodies", CODE_LIST, OP + "corporate-body", EU),
+    ("countries", CODE_LIST, OP + "country", EU),
+    ("data-theme", CODE_LIST, OP + "data-theme", EU),
+    ("dataset-types", CODE_LIST, OP + "dataset-type", EU),
+    ("distribution-status", CODE_LIST, OP + "distribution-status", EU),
+    ("filetypes", CODE_LIST, OP + "file-type", EU),
+    ("frequencies", CODE_LIST, OP + "frequency", EU),
+    ("languages", CODE_LIST, OP + "language", EU),
+    ("places", CODE_LIST, OP + "place", EU),
+    ("planned-availability", CODE_LIST, OP + "planned-availability", EU),
     # HealthData@EU code lists
-    ("coding-system", "code list", "https://hdeu-dcat.data.health.europa.eu/resource/authority/coding-system", HDEU),
-    ("health-activity", "code list", "https://hdeu-dcat.data.health.europa.eu/resource/authority/health-activity", HDEU),
-    ("health-theme", "code list", "https://hdeu-dcat.data.health.europa.eu/resource/authority/health-theme", HDEU),
-    ("healthcategories", "code list", "https://hdeu-dcat.data.health.europa.eu/resource/authority/healthcategories", HDEU),
-    ("publisher-type", "code list", "https://hdeu-dcat.data.health.europa.eu/resource/authority/publisher-type", HDEU),
-    ("standard", "code list", "https://hdeu-dcat.data.health.europa.eu/resource/authority/standard", HDEU),
+    ("coding-system", CODE_LIST, HDEU_AUTHORITY + "coding-system", HDEU),
+    ("health-activity", CODE_LIST, HDEU_AUTHORITY + "health-activity", HDEU),
+    ("health-theme", CODE_LIST, HDEU_AUTHORITY + "health-theme", HDEU),
+    ("healthcategories", CODE_LIST, HDEU_AUTHORITY + "healthcategories", HDEU),
+    ("publisher-type", CODE_LIST, HDEU_AUTHORITY + "publisher-type", HDEU),
+    ("standard", CODE_LIST, HDEU_AUTHORITY + "standard", HDEU),
     # ontologies (class hierarchy only)
-    ("adms", "ontology", "http://www.w3.org/ns/adms.ttl", W3C),
-    ("csvw", "ontology", "http://www.w3.org/ns/csvw.ttl", W3C),
-    ("dcat2", "ontology", "https://www.w3.org/ns/dcat2.ttl", "CC-BY-4.0 (stated in the file)"),
-    ("dqv", "ontology", "http://www.w3.org/ns/dqv.ttl", W3C),
-    ("dublin_core_terms", "ontology", "http://dublincore.org/2020/01/20/dublin_core_terms.ttl", "CC-BY-4.0 (DCMI)"),
-    ("eli", "ontology", "http://data.europa.eu/eli/ontology", EU),
-    ("index", "ontology", "http://xmlns.com/foaf/spec/index.rdf", "CC-BY-1.0 (FOAF specification; not stated in the file)"),
-    ("m8g", "ontology", "https://raw.githubusercontent.com/SEMICeu/uri.semic.eu-puris/main/releases/m8g/m8g.ttl",
+    ("adms", ONTOLOGY, "http://www.w3.org/ns/adms.ttl", W3C),
+    ("csvw", ONTOLOGY, "http://www.w3.org/ns/csvw.ttl", W3C),
+    ("dcat2", ONTOLOGY, "https://www.w3.org/ns/dcat2.ttl", "CC-BY-4.0 (stated in the file)"),
+    ("dqv", ONTOLOGY, "http://www.w3.org/ns/dqv.ttl", W3C),
+    ("dublin_core_terms", ONTOLOGY, "http://dublincore.org/2020/01/20/dublin_core_terms.ttl", "CC-BY-4.0 (DCMI)"),
+    ("eli", ONTOLOGY, "http://data.europa.eu/eli/ontology", EU),  # NOSONAR identifier, never fetched
+    ("index", ONTOLOGY, "http://xmlns.com/foaf/spec/index.rdf", "CC-BY-1.0 (FOAF specification; not stated in the file)"),
+    ("m8g", ONTOLOGY, "https://raw.githubusercontent.com/SEMICeu/uri.semic.eu-puris/main/releases/m8g/m8g.ttl",
      "CC-BY-4.0 (SEMIC)"),
-    ("ns", "ontology", "http://www.w3.org/2006/vcard/ns.ttl", W3C),
-    ("prov-o", "ontology", "http://www.w3.org/ns/prov-o.ttl", W3C),
-    ("spdx-ontology.owl", "ontology", "https://spdx.org/rdf/terms/spdx-ontology.owl.xml",
+    ("ns", ONTOLOGY, "http://www.w3.org/2006/vcard/ns.ttl", W3C),
+    ("prov-o", ONTOLOGY, "http://www.w3.org/ns/prov-o.ttl", W3C),
+    ("spdx-ontology.owl", ONTOLOGY, "https://spdx.org/rdf/terms/spdx-ontology.owl.xml",
      "not stated in the file (SPDX specification: CC-BY-3.0)"),
-    ("time", "ontology", "http://www.w3.org/2006/time.ttl", "CC-BY-4.0 (stated in the file)"),
+    ("time", ONTOLOGY, "http://www.w3.org/2006/time.ttl", "CC-BY-4.0 (stated in the file)"),
 ]
 
-TRIPLE = re.compile(r"^(<[^>]*>|_:\S+)\s+<([^>]*)>\s+(.+?)\s*\.\s*$")
+
+def inside_here(argument):
+    """The path, resolved; it must be inside the current folder."""
+    here = Path.cwd().resolve()
+    path = (here / argument).resolve()
+    if not path.is_relative_to(here):
+        sys.exit(f"{argument}: not inside the current folder {here}")
+    return path
+
+
+def is_iri(term):
+    return term.startswith("<") and term.endswith(">")
+
+
+def is_node(term):
+    """An IRI or a blank node: what a subject can be."""
+    return is_iri(term) or term.startswith("_:")
+
+
+def parse_triple(line):
+    """(subject, predicate, object) of one N-Triples line, or None.
+
+    Subjects and predicates hold no spaces, so two splits find them; the
+    object is the rest, before the final ".".
+    """
+    if not line.endswith("."):
+        return None
+    parts = line[:-1].rstrip().split(None, 2)
+    if len(parts) != 3 or not is_node(parts[0]) or not is_iri(parts[1]):
+        return None
+    return parts[0], parts[1][1:-1], parts[2]
 
 
 def triples(path):
     """(subject, predicate, object) of each N-Triples line, as written."""
-    with open(path, encoding="utf-8") as lines:
+    with path.open(encoding="utf-8") as lines:
         for number, line in enumerate(lines, 1):
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
-            match = TRIPLE.match(line)
-            if not match:
+            triple = parse_triple(line)
+            if triple is None:
                 sys.exit(f"{path}:{number}: not an N-Triples line")
-            yield match.group(1), match.group(2), match.group(3)
+            yield triple
 
 
 def shape_classes(paths):
     """The class IRIs that the shapes name with sh:class (prefixed or full)."""
     classes = set()
     for path in paths:
-        text = Path(path).read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8")
         prefixes = dict(re.findall(r"@prefix\s+([\w-]*):\s*<([^>]*)>", text))
         for value in re.findall(r"sh:class\s+(<[^>]*>|[\w-]*:[\w-]+)", text):
             if value.startswith("<"):
                 classes.add(value[1:-1])
-            else:
-                prefix, local = value.split(":", 1)
-                if prefix not in prefixes:
-                    sys.exit(f"{path}: unknown prefix {prefix}:")
-                classes.add(prefixes[prefix] + local)
+                continue
+            prefix, local = value.split(":", 1)
+            if prefix not in prefixes:
+                sys.exit(f"{path}: unknown prefix {prefix}:")
+            classes.add(prefixes[prefix] + local)
     return classes
 
 
-def is_iri(term):
-    return term.startswith("<")
+def read_sources(folder):
+    """Code list triples to keep, ontology subclass edges, ontology individuals."""
+    kept = set()
+    subclass = []  # (sub, super) edges of the ontologies
+    individuals = []  # (subject, class) rdf:type triples of the ontologies
+    for name, kind, _, _ in SOURCES:
+        for s, p, o in triples(folder / f"{name}.nt"):
+            if not (is_iri(s) and is_iri(o)):
+                continue
+            if kind == CODE_LIST:
+                if p in (RDF_TYPE, IN_SCHEME):
+                    kept.add(f"{s} <{p}> {o} .")
+            elif p == SUBCLASS:
+                subclass.append((s[1:-1], o[1:-1]))
+            elif p == RDF_TYPE and not o[1:-1].startswith(SCHEMA_NAMESPACES):
+                individuals.append((s, o[1:-1]))
+    return kept, subclass, individuals
+
+
+def leading_classes(classes, subclass):
+    """The classes, and every class that leads to one through rdfs:subClassOf."""
+    leads = set(classes)
+    changed = True
+    while changed:
+        before = len(leads)
+        leads.update(sub for sub, sup in subclass if sup in leads)
+        changed = len(leads) != before
+    return leads
 
 
 def main():
@@ -142,45 +206,21 @@ def main():
     parser.add_argument("--shapes", nargs="+", required=True, help="the bundle's SHACL shapes (Turtle)")
     parser.add_argument("--out", required=True, help="the reduced N-Triples file to write")
     args = parser.parse_args()
+    folder = inside_here(args.folder)
+    shapes = [inside_here(path) for path in args.shapes]
+    out = inside_here(args.out)
 
-    folder = Path(args.folder)
     missing = [name for name, *_ in SOURCES if not (folder / f"{name}.nt").is_file()]
     if missing:
         sys.exit(f"missing input files in {folder}: {', '.join(n + '.nt' for n in missing)}")
 
-    kept = set()
-    subclass = []  # (sub, super) edges of the ontologies
-    individuals = []  # (subject, class) rdf:type triples of the ontologies
-    for name, kind, _, _ in SOURCES:
-        for s, p, o in triples(folder / f"{name}.nt"):
-            if not (is_iri(s) and is_iri(o)):
-                continue
-            if kind == "code list":
-                if p in (RDF_TYPE, IN_SCHEME):
-                    kept.add(f"{s} <{p}> {o} .")
-            elif p == SUBCLASS:
-                subclass.append((s[1:-1], o[1:-1]))
-            elif p == RDF_TYPE and not o[1:-1].startswith(SCHEMA_NAMESPACES):
-                individuals.append((s, o[1:-1]))
-
-    # the classes that lead to a class the shapes name
-    leads = shape_classes(args.shapes)
-    changed = True
-    while changed:
-        changed = False
-        for sub, sup in subclass:
-            if sup in leads and sub not in leads:
-                leads.add(sub)
-                changed = True
-    for sub, sup in subclass:
-        if sup in leads:
-            kept.add(f"<{sub}> <{SUBCLASS}> <{sup}> .")
-    for s, cls in individuals:
-        if cls in leads:
-            kept.add(f"{s} <{RDF_TYPE}> <{cls}> .")
+    kept, subclass, individuals = read_sources(folder)
+    leads = leading_classes(shape_classes(shapes), subclass)
+    kept.update(f"<{sub}> <{SUBCLASS}> <{sup}> ." for sub, sup in subclass if sup in leads)
+    kept.update(f"{s} <{RDF_TYPE}> <{cls}> ." for s, cls in individuals if cls in leads)
 
     output = "".join(line + "\n" for line in sorted(kept)).encode("utf-8")
-    Path(args.out).write_bytes(output)
+    out.write_bytes(output)
     print(f"{args.out}: {len(kept)} triples, {len(output)} bytes, "
           f"sha256 {hashlib.sha256(output).hexdigest()}", file=sys.stderr)
 

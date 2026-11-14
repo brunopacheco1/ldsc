@@ -94,12 +94,17 @@ api() { # method path [body]: the management API with the key
   curl "${args[@]}"
 }
 
+state_of() { # record: its state
+  local record=$1
+  jq -r '.state' <<<"$record"
+}
+
 until_state() { # path, states (regex): prints the record once in one of them
   local path=$1 states=$2
   local view state
   for _ in $(seq 1 100); do
     view=$(api GET "$path") || fail "read $path"
-    state=$(jq -r '.state' <<<"$view")
+    state=$(state_of "$view")
     if [[ $state =~ ^($states)$ ]]; then
       echo "$view"
       return 0
@@ -159,7 +164,8 @@ echo "both valid datasets conform to $PROFILE; $BED_OCCUPANCY is not offered"
 
 step "The provider's harvest job: bed-occupancy rejected by the SHACL check, with its report"
 provider_api() { # path: the provider's management API
-  curl -sf "$PROVIDER_MANAGEMENT$1" -H "authorization: Bearer $(cat "$PROVIDER_KEY_FILE")"
+  local path=$1
+  curl -sf "$PROVIDER_MANAGEMENT$path" -H "authorization: Bearer $(cat "$PROVIDER_KEY_FILE")"
 }
 JOB=$(provider_api "/v1/harvest-jobs?limit=1" | jq -r '.jobs[0].id') || fail "list the harvest jobs"
 JOB=$(provider_api "/v1/harvest-jobs/$JOB") || fail "read harvest job $JOB"
@@ -182,7 +188,8 @@ negotiate() { # dataset offer -> prints the ended negotiation
 }
 
 catalog_offer() { # dataset offer-id: the offer, as the catalog gives it
-  jq -c --arg dataset "$1" --arg id "$2" '.dataset[] | select(.["@id"] == $dataset)
+  local dataset=$1 offer_id=$2
+  jq -c --arg dataset "$dataset" --arg id "$offer_id" '.dataset[] | select(.["@id"] == $dataset)
     | .hasPolicy[] | select(.["@id"] == $id)' <<<"$CATALOG"
 }
 
@@ -192,7 +199,7 @@ OFFER=$(catalog_offer "$ADMISSIONS" hospital-admissions:offer:until-2030)
 echo "provider $PROVIDER_ID offers: $OFFER"
 VIEW=$(negotiate "$ADMISSIONS" "$OFFER")
 jq '{consumerPid, providerPid, state, agreement}' <<<"$VIEW"
-[[ $(jq -r '.state' <<<"$VIEW") == FINALIZED ]] || fail "expected FINALIZED"
+[[ $(state_of "$VIEW") == FINALIZED ]] || fail "expected FINALIZED"
 AGREEMENT=$(jq -r '.agreement["@id"]' <<<"$VIEW")
 [[ $AGREEMENT != null ]] || fail "no agreement"
 
@@ -200,14 +207,14 @@ step "Negotiate the same offer id without its constraint: the provider refuses"
 CHANGED=$(jq -c 'del(.permission[0].constraint)' <<<"$OFFER")
 REFUSED=$(negotiate "$ADMISSIONS" "$CHANGED")
 jq '{consumerPid, providerPid, state}' <<<"$REFUSED"
-[[ $(jq -r '.state' <<<"$REFUSED") == TERMINATED ]] || fail "expected TERMINATED"
+[[ $(state_of "$REFUSED") == TERMINATED ]] || fail "expected TERMINATED"
 
 step "Negotiate the restricted dataset's offer for members: the provider checks the consumer's MembershipCredential claim"
 MEMBERS=$(catalog_offer "$REGISTRY" cancer-registry-extract:offer:members)
 [[ -n $MEMBERS ]] || fail "no members' offer in the catalog"
 VIEW=$(negotiate "$REGISTRY" "$MEMBERS")
 jq '{state, constraint: .agreement.permission[0].constraint}' <<<"$VIEW"
-[[ $(jq -r '.state' <<<"$VIEW") == FINALIZED ]] || fail "expected FINALIZED: $VIEW"
+[[ $(state_of "$VIEW") == FINALIZED ]] || fail "expected FINALIZED: $VIEW"
 MEMBERS_AGREEMENT=$(jq -r '.agreement["@id"]' <<<"$VIEW")
 
 step "Negotiate its offer for auditors: the consumer's credential has no role claim, the provider refuses"
@@ -215,7 +222,7 @@ AUDITORS=$(catalog_offer "$REGISTRY" cancer-registry-extract:offer:auditors)
 [[ -n $AUDITORS ]] || fail "no auditors' offer in the catalog"
 VIEW=$(negotiate "$REGISTRY" "$AUDITORS")
 jq '{state}' <<<"$VIEW"
-[[ $(jq -r '.state' <<<"$VIEW") == TERMINATED ]] || fail "expected TERMINATED: $VIEW"
+[[ $(state_of "$VIEW") == TERMINATED ]] || fail "expected TERMINATED: $VIEW"
 
 transfer() { # agreement -> prints the transfer once STARTED or TERMINATED
   local agreement=$1 pid
@@ -239,7 +246,7 @@ fetch() { # transfer expected-file: fetches the data with the transfer's token
 
 step "Request a transfer under agreement $AGREEMENT: the provider starts it"
 TRANSFER=$(transfer "$AGREEMENT")
-[[ $(jq -r '.state' <<<"$TRANSFER") == STARTED ]] || fail "expected STARTED: $TRANSFER"
+[[ $(state_of "$TRANSFER") == STARTED ]] || fail "expected STARTED: $TRANSFER"
 TPID=$(jq -r '.consumerPid' <<<"$TRANSFER")
 ENDPOINT=$(jq -r '.dataAddress.endpoint' <<<"$TRANSFER")
 TOKEN=$(jq -r '.dataAddress.endpointProperties[] | select(.name == "authorization") | .value' \
@@ -251,14 +258,14 @@ fetch "$TRANSFER" "$DATA/hospital-admissions.csv"
 step "Complete the transfer: the token is dropped and refused"
 api POST "/v1/transfers/$TPID/completion" >/dev/null || fail "complete"
 DONE=$(until_state "/v1/transfers/$TPID" 'COMPLETED|TERMINATED')
-[[ $(jq -r '.state' <<<"$DONE") == COMPLETED ]] || fail "expected COMPLETED"
+[[ $(state_of "$DONE") == COMPLETED ]] || fail "expected COMPLETED"
 [[ $(jq -r '.dataAddress' <<<"$DONE") == null ]] || fail "the token is still kept"
 STATUS=$(curl -s -o /dev/null -w '%{http_code}' "$ENDPOINT" -H "authorization: Bearer $TOKEN")
 [[ $STATUS == 401 ]] || fail "after completion the data plane answered $STATUS, not 401"
 
 step "Transfer the restricted dataset under the members' agreement $MEMBERS_AGREEMENT"
 TRANSFER=$(transfer "$MEMBERS_AGREEMENT")
-[[ $(jq -r '.state' <<<"$TRANSFER") == STARTED ]] || fail "expected STARTED: $TRANSFER"
+[[ $(state_of "$TRANSFER") == STARTED ]] || fail "expected STARTED: $TRANSFER"
 fetch "$TRANSFER" "$DATA/cancer-registry-extract.csv"
 
 issuer_api() { # method path: the issuer's management API
@@ -271,10 +278,10 @@ PROCESSING=$(catalog_offer "$ADMISSIONS" hospital-admissions:offer:eu-processors
 [[ -n $PROCESSING ]] || fail "no offer for EU processors in the catalog"
 VIEW=$(negotiate "$ADMISSIONS" "$PROCESSING")
 jq '{state, constraint: .agreement.permission[0].constraint}' <<<"$VIEW"
-[[ $(jq -r '.state' <<<"$VIEW") == FINALIZED ]] || fail "expected FINALIZED: $VIEW"
+[[ $(state_of "$VIEW") == FINALIZED ]] || fail "expected FINALIZED: $VIEW"
 PROCESSING_AGREEMENT=$(jq -r '.agreement["@id"]' <<<"$VIEW")
 TRANSFER=$(transfer "$PROCESSING_AGREEMENT")
-[[ $(jq -r '.state' <<<"$TRANSFER") == STARTED ]] || fail "expected STARTED: $TRANSFER"
+[[ $(state_of "$TRANSFER") == STARTED ]] || fail "expected STARTED: $TRANSFER"
 echo "transfer $(jq -r '.consumerPid' <<<"$TRANSFER") STARTED"
 
 step "The issuer revokes the consumer's DataProcessorCredential: a new transfer is refused"
@@ -287,6 +294,6 @@ issuer_api POST "/v1/credentials/$(jq -rn --arg c "$CREDENTIAL" '$c | @uri')/rev
 echo "revoked $CREDENTIAL"
 TRANSFER=$(transfer "$PROCESSING_AGREEMENT")
 jq '{state}' <<<"$TRANSFER"
-[[ $(jq -r '.state' <<<"$TRANSFER") == TERMINATED ]] || fail "expected TERMINATED: $TRANSFER"
+[[ $(state_of "$TRANSFER") == TERMINATED ]] || fail "expected TERMINATED: $TRANSFER"
 
 step "Done: the consumer authenticated with DCP, the catalog checked against the data space's HealthDCAT-AP bundle, a contract agreed, changed terms refused, credential claims checked, data transferred, the transfer completed, and a revoked credential refused"
