@@ -343,22 +343,12 @@ async fn get_request(
         Ok(status) => {
             view.issuer_status = Some(IssuerStatusView {
                 issuer_pid: status.issuer_pid,
-                status: issuer_status_text(status.status).to_owned(),
+                status: status.status.as_str().to_owned(),
             });
         }
         Err(reason) => view.issuer_status_error = Some(reason),
     }
     Json(view).into_response()
-}
-
-/// The DCP name of an issuer's request status.
-fn issuer_status_text(status: portitor_dcp::message::RequestStatus) -> &'static str {
-    use portitor_dcp::message::RequestStatus;
-    match status {
-        RequestStatus::Received => "RECEIVED",
-        RequestStatus::Issued => "ISSUED",
-        RequestStatus::Rejected => "REJECTED",
-    }
 }
 
 /// List the credentials the participant holds.

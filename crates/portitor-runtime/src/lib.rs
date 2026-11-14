@@ -15,6 +15,7 @@ use std::pin::Pin;
 pub mod api_key;
 pub mod caller;
 pub mod did;
+pub mod did_document;
 pub mod http;
 pub mod serve;
 pub mod settings;

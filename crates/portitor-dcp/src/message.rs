@@ -435,6 +435,29 @@ pub enum RequestStatus {
     Issued,
 }
 
+impl RequestStatus {
+    /// The DCP name, as in the JSON: `RECEIVED`, `REJECTED` or `ISSUED`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Received => "RECEIVED",
+            Self::Rejected => "REJECTED",
+            Self::Issued => "ISSUED",
+        }
+    }
+
+    /// The status with this DCP name, if any.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "RECEIVED" => Some(Self::Received),
+            "REJECTED" => Some(Self::Rejected),
+            "ISSUED" => Some(Self::Issued),
+            _ => None,
+        }
+    }
+}
+
 /// An issuer's answer to a status request (DCP section 6.8, `GET
 /// /requests/{issuerPid}`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -568,6 +591,20 @@ mod tests {
         let unknown = json!({"@context": [CONTEXT], "type": "CredentialStatus",
             "issuerPid": "i-1", "holderPid": "h-1", "status": "PENDING"});
         assert!(serde_json::from_value::<CredentialStatus>(unknown).is_err());
+    }
+
+    #[test]
+    fn request_status_names_are_the_json_ones() {
+        for status in [
+            RequestStatus::Received,
+            RequestStatus::Rejected,
+            RequestStatus::Issued,
+        ] {
+            let json = serde_json::to_value(status).unwrap();
+            assert_eq!(json, status.as_str());
+            assert_eq!(RequestStatus::from_name(status.as_str()), Some(status));
+        }
+        assert_eq!(RequestStatus::from_name("received"), None);
     }
 
     #[test]
