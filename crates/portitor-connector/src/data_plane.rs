@@ -16,6 +16,9 @@
 //!   about which flows exist.
 //! - The data comes from the dataset's upstream URL (`portitor:source` in
 //!   the datasets file), fetched with a plain `GET` and streamed through.
+//!   The URL is looked up in the harvest's read copy at each request
+//!   ([`UpstreamSources`]), in any state, so transfers under agreements
+//!   already made keep working after the dataset is withdrawn.
 //!   The consumer's request headers are not passed on.
 
 use std::collections::BTreeMap;
@@ -52,6 +55,19 @@ pub const DATA_PATH: &str = "/data";
 
 /// How long the upstream may take to send its answer's headers.
 const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Port: where the data plane fetches each dataset's data.
+pub trait UpstreamSources: Send + Sync {
+    /// The upstream URL of dataset `dataset_id`'s data, if it has one.
+    fn upstream_of(&self, dataset_id: &str) -> Option<String>;
+}
+
+/// A fixed map of dataset id to upstream URL (tests).
+impl UpstreamSources for BTreeMap<String, String> {
+    fn upstream_of(&self, dataset_id: &str) -> Option<String> {
+        self.get(dataset_id).cloned()
+    }
+}
 
 /// One data flow as the data plane keeps it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -198,7 +214,7 @@ fn new_token() -> Result<String, SignalError> {
 #[derive(Clone)]
 pub struct HttpDataPlane {
     flows: AnyFlowStore,
-    sources: Arc<BTreeMap<String, String>>,
+    sources: Arc<dyn UpstreamSources>,
     public_url: String,
     token_seconds: u64,
     client: HttpsClient,
@@ -224,7 +240,7 @@ pub enum Denied {
 }
 
 impl HttpDataPlane {
-    /// A data plane that serves `sources` (dataset id to upstream URL) at
+    /// A data plane that serves the data of `sources` at
     /// `{public_url}/data/{flowId}`, with tokens valid for
     /// `token_seconds`. Upstream URLs are set by the operator, so plain
     /// `http://` is allowed for them.
@@ -234,14 +250,14 @@ impl HttpDataPlane {
     /// The HTTP client cannot be built.
     pub fn new(
         flows: AnyFlowStore,
-        sources: BTreeMap<String, String>,
+        sources: Arc<dyn UpstreamSources>,
         public_url: &str,
         token_seconds: u64,
     ) -> Result<Self, String> {
         let (client, _) = https_client(true)?;
         Ok(Self {
             flows,
-            sources: Arc::new(sources),
+            sources,
             public_url: public_url.trim_end_matches('/').to_owned(),
             token_seconds,
             client,
@@ -358,8 +374,7 @@ impl HttpDataPlane {
             return Err(Denied::Unauthorized);
         }
         self.sources
-            .get(&flow.dataset_id)
-            .cloned()
+            .upstream_of(&flow.dataset_id)
             .ok_or(Denied::Unauthorized)
     }
 }
@@ -385,7 +400,7 @@ impl DataPlane for HttpDataPlane {
                 "a pull start carries no data address".to_owned(),
             ));
         }
-        if !self.sources.contains_key(&request.dataset_id) {
+        if self.sources.upstream_of(&request.dataset_id).is_none() {
             return Err(SignalError::Invalid(format!(
                 "dataset {} has no source",
                 request.dataset_id
@@ -503,7 +518,7 @@ mod tests {
     fn plane() -> HttpDataPlane {
         let sources = BTreeMap::from([("d1".to_owned(), "http://upstream.example/d1".to_owned())]);
         let flows = crate::ports::Shared(Arc::new(InMemoryFlows::default()) as _);
-        HttpDataPlane::new(flows, sources, "https://provider.example/", 60).unwrap()
+        HttpDataPlane::new(flows, Arc::new(sources), "https://provider.example/", 60).unwrap()
     }
 
     fn start(dataset: &str, profile: &str) -> DataFlowStartMessage {

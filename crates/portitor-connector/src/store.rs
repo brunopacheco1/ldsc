@@ -20,6 +20,7 @@ use rusqlite::{Connection, Row, params};
 
 mod consumer_transfers;
 mod data_flows;
+mod harvest;
 mod transfers;
 use serde::{Deserialize, Serialize};
 pub use transfers::finalized_agreement;
@@ -92,6 +93,55 @@ const MIGRATIONS: &[&str] = &[
         pending          TEXT,
         version          INTEGER NOT NULL DEFAULT 0
     )",
+    // 0.7: the read copy of harvested datasets, the harvest jobs with
+    // their entry errors, and the rules version and snapshot hash of the
+    // last run (ADR 0020); `entry` is the dataset as the source gave it,
+    // checked again when the rules change; `content` is what the catalog
+    // shows; times are seconds since 1970
+    "CREATE TABLE dataset (
+        id             TEXT PRIMARY KEY,
+        entry          TEXT NOT NULL,
+        content        TEXT NOT NULL,
+        upstream       TEXT,
+        content_sha256 TEXT NOT NULL,
+        state          TEXT NOT NULL,
+        conforms_to    TEXT,
+        first_seen     INTEGER NOT NULL,
+        last_changed   INTEGER NOT NULL,
+        last_job       INTEGER NOT NULL
+    );
+    CREATE TABLE harvest_job (
+        id              INTEGER PRIMARY KEY,
+        started_at      INTEGER NOT NULL,
+        finished_at     INTEGER NOT NULL,
+        run_trigger     TEXT NOT NULL,
+        source          TEXT NOT NULL,
+        snapshot_sha256 TEXT,
+        outcome         TEXT NOT NULL,
+        seen            INTEGER NOT NULL,
+        added           INTEGER NOT NULL,
+        updated         INTEGER NOT NULL,
+        unchanged       INTEGER NOT NULL,
+        withdrawn       INTEGER NOT NULL,
+        rejected        INTEGER NOT NULL,
+        summary         TEXT NOT NULL
+    );
+    CREATE TABLE harvest_error (
+        job_id         INTEGER NOT NULL,
+        seq            INTEGER NOT NULL,
+        entry_position INTEGER,
+        dataset_id     TEXT,
+        kind           TEXT NOT NULL,
+        message        TEXT NOT NULL,
+        report         TEXT,
+        PRIMARY KEY (job_id, seq)
+    );
+    CREATE TABLE harvest_state (
+        id              INTEGER PRIMARY KEY,
+        rules_version   TEXT,
+        snapshot_sha256 TEXT
+    );
+    INSERT INTO harvest_state (id, rules_version, snapshot_sha256) VALUES (1, NULL, NULL)",
 ];
 
 /// Adapter: negotiations in a `SQLite` file.

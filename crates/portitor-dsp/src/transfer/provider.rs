@@ -377,9 +377,11 @@ where
                 &format!("the agreement does not allow it now: {e}"),
             )
         })?;
+        // the agreement is a contract: a dataset withdrawn from the
+        // catalog since stays available to it (ADR 0020)
         let offered = self
             .catalog
-            .get(&agreement.target)
+            .get_for_agreement(&agreement.target)
             .is_some_and(|d| d.distribution.iter().any(|x| x.format == msg.format));
         if !offered {
             return Err(bad("", cpid, "the dataset is not offered in this format"));

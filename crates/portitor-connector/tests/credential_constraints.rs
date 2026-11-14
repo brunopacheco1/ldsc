@@ -27,6 +27,7 @@ use std::time::Duration;
 use portitor_connector::auth::dcp::DcpVerifier;
 use portitor_connector::auth::sts::{SecureTokenService, TokenRequest};
 use portitor_connector::auth::{AuthSettings, Caller, CallerVerifier, Prover};
+use portitor_connector::harvest::{CheckKind, FixedSource};
 use portitor_connector::http_client::Sender;
 use portitor_connector::ports::Retry;
 use portitor_connector::{Config, Negotiator, Ports};
@@ -186,10 +187,10 @@ fn config(participant: &str, public_url: &str) -> Config {
     Config {
         participant_id: participant.to_owned(),
         public_url: public_url.to_owned(),
-        datasets: Vec::new(),
+        datasets_file: None,
+        harvest_interval_seconds: 0,
         allow_http_callbacks: false,
         db_file: "unused.db".into(),
-        sources: BTreeMap::new(),
         data_token_seconds: 3_600,
         credential_types: types(),
     }
@@ -247,25 +248,11 @@ fn connectors(network: &Arc<Network>, wallets: &Wallets, queries: &Queries) -> N
 
 /// [`connectors`], with all the fakes given.
 fn connectors_with(network: &Arc<Network>, fakes: &Fakes) -> Negotiator {
-    let mut provider = config(PROVIDER_DID, PROVIDER);
-    provider.datasets = vec![
-        serde_json::from_value(json!({
-            "@id": "reports",
-            "@type": "Dataset",
-            "hasPolicy": [{"@id": "reports:eu", "@type": "Offer", "permission": [{
-                "action": "use",
-                "constraint": [{"leftOperand": "DataProcessorCredential.processing",
-                    "operator": "eq", "rightOperand": "eu"}]
-            }]}],
-            "distribution": [{"@type": "Distribution", "format": "HttpData-PULL"}]
-        }))
-        .unwrap(),
-    ];
-    provider.sources.insert(
-        "reports".to_owned(),
-        "http://127.0.0.1:9/reports.csv".to_owned(),
-    );
-    let provider_ports = fake_ports(network, PROVIDER_DID, fakes);
+    let provider = config(PROVIDER_DID, PROVIDER);
+    let mut provider_ports = fake_ports(network, PROVIDER_DID, fakes);
+    let mut reports = reports();
+    reports["portitor:source"] = json!("http://127.0.0.1:9/reports.csv");
+    provider_ports.harvest.source = Some(Arc::new(FixedSource::new(vec![reports])));
     let (provider_app, _) = portitor_connector::build(&provider, provider_ports).unwrap();
     let consumer = config(CONSUMER_DID, CONSUMER);
     let consumer_ports = fake_ports(network, CONSUMER_DID, fakes);
@@ -389,31 +376,38 @@ async fn only_holders_of_the_claim_get_an_agreement_and_a_transfer() {
     ]));
 }
 
+/// Dataset `reports`, offered to EU data processors only.
+fn reports() -> Value {
+    json!({
+        "@id": "reports",
+        "@type": "Dataset",
+        "hasPolicy": [{"@id": "reports:eu", "@type": "Offer", "permission": [{
+            "action": "use",
+            "constraint": [{"leftOperand": "DataProcessorCredential.processing",
+                "operator": "eq", "rightOperand": "eu"}]
+        }]}],
+        "distribution": [{"@type": "Distribution", "format": "HttpData-PULL"}]
+    })
+}
+
+/// Until 0.6 such an offer stopped the connector; since 0.7 the harvest
+/// rejects the dataset, says why in its job, and the connector starts.
 #[tokio::test]
-async fn an_offer_on_a_type_that_is_not_configured_stops_the_connector() {
+async fn an_offer_on_a_type_that_is_not_configured_is_rejected() {
     let network = Arc::new(Network::default());
     let mut provider = config(PROVIDER_DID, PROVIDER);
     provider.credential_types = CredentialTypes::default();
-    provider.datasets = vec![
-        serde_json::from_value(json!({
-            "@id": "reports",
-            "@type": "Dataset",
-            "hasPolicy": [{"@id": "reports:eu", "@type": "Offer", "permission": [{
-                "action": "use",
-                "constraint": [{"leftOperand": "DataProcessorCredential.processing",
-                    "operator": "eq", "rightOperand": "eu"}]
-            }]}],
-            "distribution": [{"@type": "Distribution", "format": "HttpData-PULL"}]
-        }))
-        .unwrap(),
-    ];
     let wallets = Wallets::default();
     let queries = Queries::default();
-    let err =
-        portitor_connector::build(&provider, ports(&network, PROVIDER_DID, &wallets, &queries))
-            .err()
-            .unwrap();
-    assert!(err.to_string().contains("not configured"), "{err}");
+    let mut provider_ports = ports(&network, PROVIDER_DID, &wallets, &queries);
+    provider_ports.harvest.source = Some(Arc::new(FixedSource::new(vec![reports()])));
+    let (_, provider) = portitor_connector::build(&provider, provider_ports).unwrap();
+    assert_eq!(provider.catalog_size(), 0);
+    let jobs = provider.harvest_jobs(None, 10).unwrap();
+    let (job, errors) = provider.harvest_job(jobs[0].id).unwrap().unwrap();
+    assert_eq!(job.record.counts.rejected, 1);
+    assert_eq!(errors[0].kind, CheckKind::Odrl);
+    assert!(errors[0].message.contains("not configured"), "{errors:?}");
 }
 
 #[tokio::test]
@@ -834,19 +828,14 @@ fn verified_connectors(network: &Arc<Network>, dataspace: &LocalDataspace) -> Ne
         attempts: 1,
         first_delay: Duration::from_millis(1),
     };
-    let mut provider = config(PROVIDER_DID, PROVIDER);
-    provider.datasets = vec![
-        serde_json::from_value(json!({
-            "@id": "open",
-            "@type": "Dataset",
-            "hasPolicy": [{"@id": "open:use", "@type": "Offer", "permission": [{"action": "use"}]}],
-            "distribution": [{"@type": "Distribution", "format": "HttpData-PULL"}]
-        }))
-        .unwrap(),
-    ];
-    provider
-        .sources
-        .insert("open".to_owned(), "http://127.0.0.1:9/open.csv".to_owned());
+    let provider = config(PROVIDER_DID, PROVIDER);
+    provider_ports.harvest.source = Some(Arc::new(FixedSource::new(vec![json!({
+        "@id": "open",
+        "@type": "Dataset",
+        "hasPolicy": [{"@id": "open:use", "@type": "Offer", "permission": [{"action": "use"}]}],
+        "distribution": [{"@type": "Distribution", "format": "HttpData-PULL"}],
+        "portitor:source": "http://127.0.0.1:9/open.csv"
+    })])));
     let (provider_app, _) = portitor_connector::build(&provider, provider_ports).unwrap();
 
     let mut consumer_ports = Ports::new(Arc::clone(network) as Arc<dyn Sender>);

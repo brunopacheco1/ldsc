@@ -30,8 +30,8 @@ use portitor_dsp::transfer::{
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::InMemoryDatasets;
 use crate::auth::{AnyVerifier, Caller, credentials_for};
+use crate::harvest::ReadCopy;
 use crate::http_client::outbound_url_allowed;
 use crate::negotiation::InMemoryNegotiations;
 use crate::outbox::{self, Link, Message, Outbox};
@@ -132,7 +132,7 @@ type Service = TransferService<
     AnyAgreements,
     AnyDataFlows,
     AnyTransferDecider,
-    InMemoryDatasets,
+    ReadCopy,
     SystemEnvironment,
 >;
 
@@ -147,7 +147,7 @@ pub(crate) struct TransferProvider {
 }
 
 impl TransferProvider {
-    pub(crate) fn new(ports: &crate::Ports, catalog: InMemoryDatasets, allow_http: bool) -> Self {
+    pub(crate) fn new(ports: &crate::Ports, catalog: ReadCopy, allow_http: bool) -> Self {
         let transfer = ports.transfers.clone();
         Self {
             service: TransferService::new(

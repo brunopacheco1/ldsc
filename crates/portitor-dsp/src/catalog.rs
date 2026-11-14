@@ -14,8 +14,17 @@ use crate::{
 pub trait DatasetStore {
     /// All datasets visible to the requester.
     fn all(&self) -> Vec<Dataset>;
-    /// One dataset by id.
+    /// One dataset by id, if it is in the catalog.
     fn get(&self, id: &str) -> Option<Dataset>;
+    /// One dataset by id, for a transfer under an agreement already made.
+    /// It may be a dataset that has left the catalog since (the provider
+    /// withdrew or hid it): the agreement is a contract, so its transfers
+    /// keep working. Use it only for transfers; catalog, dataset and
+    /// contract requests use [`DatasetStore::get`]. The default is `get`,
+    /// for stores whose datasets never leave the catalog.
+    fn get_for_agreement(&self, id: &str) -> Option<Dataset> {
+        self.get(id)
+    }
 }
 
 /// Outcome of a catalog operation, independent of transport.
@@ -162,62 +171,81 @@ impl std::fmt::Display for DatasetDefinitionError {
 
 impl std::error::Error for DatasetDefinitionError {}
 
-/// Checks a provider's dataset definitions against the DSP 2025-1 rules
-/// for a dataset in a catalog (at least one offer and one distribution,
-/// each distribution with a format), checks that every offer's constraints
-/// are understood (ADR 0009; credential constraints only on the credential
-/// types in `types`, ADR 0019), and makes every distribution point to
-/// this connector's data service, `service_id`.
+/// Checks a provider's dataset definitions, each with
+/// [`prepare_dataset`], and that no two share an `@id`.
 ///
 /// # Errors
 ///
 /// The first definition that breaks a rule.
 pub fn prepare_datasets(
-    mut datasets: Vec<Dataset>,
+    datasets: Vec<Dataset>,
     service_id: &str,
     types: &crate::policy::CredentialTypes,
 ) -> Result<Vec<Dataset>, DatasetDefinitionError> {
     let mut seen = std::collections::BTreeSet::new();
-    for d in &mut datasets {
-        if d.id.is_empty() {
-            return Err(DatasetDefinitionError::EmptyId);
+    let mut prepared = Vec::with_capacity(datasets.len());
+    for dataset in datasets {
+        let ready = prepare_dataset(dataset, service_id, types)?;
+        if !seen.insert(ready.id.clone()) {
+            return Err(DatasetDefinitionError::DuplicateId(ready.id));
         }
-        if !seen.insert(d.id.clone()) {
-            return Err(DatasetDefinitionError::DuplicateId(d.id.clone()));
-        }
-        if d.has_policy.is_empty() {
-            return Err(DatasetDefinitionError::NoOffer(d.id.clone()));
-        }
-        if d.distribution.is_empty() {
-            return Err(DatasetDefinitionError::NoDistribution(d.id.clone()));
-        }
-        if d.has_policy.iter().any(|o| o.target.is_some()) {
-            return Err(DatasetDefinitionError::OfferWithTarget(d.id.clone()));
-        }
-        for offer in &d.has_policy {
-            crate::policy::validate(offer, types).map_err(|e| {
-                DatasetDefinitionError::UnsupportedPolicy {
-                    dataset: d.id.clone(),
-                    reason: e.to_string(),
-                }
-            })?;
-        }
-        for dist in &mut d.distribution {
-            if dist.format.is_empty() {
-                return Err(DatasetDefinitionError::EmptyFormat(d.id.clone()));
-            }
-            if dist.access_service.is_empty() {
-                service_id.clone_into(&mut dist.access_service);
-            } else if dist.access_service != service_id {
-                return Err(DatasetDefinitionError::UnknownAccessService {
-                    dataset: d.id.clone(),
-                    service: dist.access_service.clone(),
-                });
-            }
-        }
-        d.context = None;
+        prepared.push(ready);
     }
-    Ok(datasets)
+    Ok(prepared)
+}
+
+/// Checks one dataset definition against the DSP 2025-1 rules for a
+/// dataset in a catalog (a non-empty `@id`, at least one offer and one
+/// distribution, each distribution with a format, no offer with a
+/// target), checks that every offer's constraints are understood (ADR
+/// 0009; credential constraints only on the credential types in `types`,
+/// ADR 0019), and makes every distribution point to this connector's data
+/// service, `service_id`.
+///
+/// # Errors
+///
+/// The first rule the definition breaks.
+pub fn prepare_dataset(
+    mut dataset: Dataset,
+    service_id: &str,
+    types: &crate::policy::CredentialTypes,
+) -> Result<Dataset, DatasetDefinitionError> {
+    let id = dataset.id.clone();
+    if id.is_empty() {
+        return Err(DatasetDefinitionError::EmptyId);
+    }
+    if dataset.has_policy.is_empty() {
+        return Err(DatasetDefinitionError::NoOffer(id));
+    }
+    if dataset.distribution.is_empty() {
+        return Err(DatasetDefinitionError::NoDistribution(id));
+    }
+    if dataset.has_policy.iter().any(|o| o.target.is_some()) {
+        return Err(DatasetDefinitionError::OfferWithTarget(id));
+    }
+    for offer in &dataset.has_policy {
+        if let Err(e) = crate::policy::validate(offer, types) {
+            return Err(DatasetDefinitionError::UnsupportedPolicy {
+                dataset: id,
+                reason: e.to_string(),
+            });
+        }
+    }
+    for dist in &mut dataset.distribution {
+        if dist.format.is_empty() {
+            return Err(DatasetDefinitionError::EmptyFormat(id));
+        }
+        if dist.access_service.is_empty() {
+            service_id.clone_into(&mut dist.access_service);
+        } else if dist.access_service != service_id {
+            return Err(DatasetDefinitionError::UnknownAccessService {
+                dataset: id,
+                service: dist.access_service.clone(),
+            });
+        }
+    }
+    dataset.context = None;
+    Ok(dataset)
 }
 
 /// The catalog service of one provider.

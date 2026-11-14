@@ -14,6 +14,7 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
+use portitor_connector::harvest::FixedSource;
 use portitor_connector::http_client::Sender;
 use portitor_connector::ports::Retry;
 use portitor_connector::ports::Shared;
@@ -133,10 +134,10 @@ fn config() -> Config {
     Config {
         participant_id: "did:web:provider.example".into(),
         public_url: "https://provider.example".into(),
-        datasets: portitor_connector::read_datasets(std::path::Path::new(path)).unwrap(),
+        datasets_file: Some(path.into()),
+        harvest_interval_seconds: 0,
         allow_http_callbacks: false,
         db_file: "unused.db".into(),
-        sources: std::collections::BTreeMap::new(),
         data_token_seconds: 3_600,
         credential_types: portitor_dsp::policy::CredentialTypes::default(),
     }
@@ -442,14 +443,21 @@ async fn upstream() -> String {
 }
 
 /// The built-in data plane, with `source` as the data of dataset `CAT0101`.
-fn built_in(sender: &Arc<FakeSender>, source: Option<String>) -> Router {
-    let mut config = config();
-    config
-        .sources
-        .extend(source.map(|url| ("CAT0101".to_owned(), url)));
+fn built_in(sender: &Arc<FakeSender>, source: Option<&str>) -> Router {
+    let file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tck/datasets.json");
+    let mut entries: Vec<Value> = serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+    // the TCK's file names a source for CAT0101: replace it, or drop it
+    for entry in entries.iter_mut().filter(|entry| entry["@id"] == "CAT0101") {
+        let fields = entry.as_object_mut().unwrap();
+        fields.remove("portitor:source");
+        if let Some(url) = source {
+            fields.insert("portitor:source".to_owned(), json!(url));
+        }
+    }
     let mut p = authenticating(Ports::new(Arc::clone(sender) as Arc<dyn Sender>), PROVIDER);
     p.transfers.agreements = Shared(Arc::new(OneAgreement));
-    portitor_connector::router(&config, p).unwrap()
+    p.harvest.source = Some(Arc::new(FixedSource::new(entries)));
+    portitor_connector::router(&config(), p).unwrap()
 }
 
 /// `GET` of a data address path with `token`: the status and the body.
@@ -469,7 +477,8 @@ async fn fetch(app: &Router, path: &str, token: &str) -> (StatusCode, String) {
 #[tokio::test]
 async fn the_built_in_data_plane_serves_the_data_while_the_transfer_is_started() {
     let sender = Arc::new(FakeSender::default());
-    let app = built_in(&sender, Some(upstream().await));
+    let url = upstream().await;
+    let app = built_in(&sender, Some(&url));
     let (status, ack) = call(&app, post(&format!("{BASE}/request"), &request("a1"))).await;
     assert_eq!(status, StatusCode::CREATED, "{ack}");
     let pid = ack["providerPid"].as_str().unwrap().to_owned();

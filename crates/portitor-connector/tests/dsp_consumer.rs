@@ -219,10 +219,10 @@ fn connector() -> Connector {
     let config = Config {
         participant_id: "did:web:consumer.example".into(),
         public_url: "https://consumer.example/".into(),
-        datasets: Vec::new(),
+        datasets_file: None,
+        harvest_interval_seconds: 0,
         allow_http_callbacks: false,
         db_file: "unused.db".into(),
-        sources: std::collections::BTreeMap::new(),
         data_token_seconds: 3_600,
         credential_types: portitor_dsp::policy::CredentialTypes::default(),
     };
@@ -535,10 +535,10 @@ async fn pending_messages_are_sent_after_a_restart() {
     let config = Config {
         participant_id: "did:web:consumer.example".into(),
         public_url: "https://consumer.example/".into(),
-        datasets: Vec::new(),
+        datasets_file: None,
+        harvest_interval_seconds: 0,
         allow_http_callbacks: false,
         db_file: path.clone(),
-        sources: std::collections::BTreeMap::new(),
         data_token_seconds: 3_600,
         credential_types: portitor_dsp::policy::CredentialTypes::default(),
     };
@@ -708,10 +708,10 @@ async fn other_participants_cannot_use_the_transfer_callback() {
     let config = Config {
         participant_id: CONSUMER.into(),
         public_url: "https://consumer.example/".into(),
-        datasets: Vec::new(),
+        datasets_file: None,
+        harvest_interval_seconds: 0,
         allow_http_callbacks: false,
         db_file: "unused.db".into(),
-        sources: std::collections::BTreeMap::new(),
         data_token_seconds: 3_600,
         credential_types: portitor_dsp::policy::CredentialTypes::default(),
     };
