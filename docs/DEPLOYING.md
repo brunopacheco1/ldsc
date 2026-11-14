@@ -105,7 +105,7 @@ All configuration is by environment variable. The full table is in the
 | `PORTITOR_BUNDLE_URL` | with a bundle: the `https://` base URL of one bundle version folder, for example `https://issuer.example.com/bundles/2026-11/`; plain `http://` only with `PORTITOR_ALLOW_HTTP_CALLBACKS=true` |
 | `PORTITOR_BUNDLE_DIR` | unset; a local bundle version folder, for development and tests only. Not together with `PORTITOR_BUNDLE_URL` |
 | `PORTITOR_BUNDLE_VERSION` | with a bundle, **required**: the version you pin; the manifest must have exactly this version |
-| `PORTITOR_BUNDLE_AUTHORITY` | with a bundle, **required**: the authority's `did:web` DID; the manifest must name it and its bundle key must have signed it |
+| `PORTITOR_BUNDLE_AUTHORITY` | with a bundle, **required**: the authority's `did:web` DID; the manifest must name it, and its bundle key `<DID>#bundle-key`, listed under `assertionMethod` in its DID document, must have signed it with ES256; a bundle signed with any other key of the authority (such as its credential key) is refused |
 | `PORTITOR_BUNDLE_CACHE_DIR` | leave the default, `bundle-cache` next to `PORTITOR_DB_FILE` (`/data/bundle-cache` in the image) |
 | `PORTITOR_DB_FILE` | leave the image default, `/data/portitor.db` |
 | `PORTITOR_BIND` | leave the default, `0.0.0.0:8080` |

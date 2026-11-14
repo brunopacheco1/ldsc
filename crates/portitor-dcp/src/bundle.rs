@@ -26,6 +26,11 @@
 //! say something other than what was signed. The cost is a manifest
 //! stored twice, a few kilobytes.
 //!
+//! Only the bundle key may sign a bundle: the `kid` must be
+//! `<authority>#bundle-key` ([`BUNDLE_KEY_FRAGMENT`]) and the `alg`
+//! ES256. The credential key, also listed under `assertionMethod`, is
+//! refused, so a stolen credential key cannot sign a bundle.
+//!
 //! To use a bundle: [`signing_kid`] names the key that signed it,
 //! [`key_from_document`] finds that key in the authority's DID document,
 //! [`verify`] checks the signature and the manifest, and [`check_files`]
@@ -36,7 +41,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
-use crate::{DidDocument, Error, Jwk, Jws, Purpose, SigningKey};
+use crate::{Alg, DidDocument, Error, Jwk, Jws, Purpose, SigningKey};
 
 /// The file name of the manifest in a bundle folder.
 pub const MANIFEST_FILE: &str = "manifest.json";
@@ -90,12 +95,16 @@ pub enum BundleError {
     /// The JWS cannot be read, or its signature does not verify.
     #[error("bundle signature: {0}")]
     Signature(#[from] Error),
+    /// The JWS is signed with another algorithm than ES256 (a bundle
+    /// key is a P-256 key, ADR 0005).
+    #[error("bundle signature: alg is {0:?}, only ES256 is allowed")]
+    WrongAlgorithm(Alg),
     /// The JWS has another `typ` than [`JWS_TYPE`].
     #[error("bundle signature: typ is not {JWS_TYPE}")]
     WrongType,
-    /// The JWS has no `kid`, or a `kid` that is not a key of the expected
-    /// authority.
-    #[error("bundle signature: key {kid:?} is not a key of {authority}")]
+    /// The JWS has no `kid`, or a `kid` that is not the bundle key of the
+    /// expected authority (`<authority>#bundle-key`).
+    #[error("bundle signature: key {kid:?} is not the bundle key {authority}#{BUNDLE_KEY_FRAGMENT}")]
     WrongSigner {
         /// The `kid` of the JWS (empty if there is none).
         kid: String,
@@ -455,14 +464,14 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 
 /// Signs `manifest_bytes` (the exact bytes of `manifest.json`) as a
 /// compact JWS with `alg: ES256`, `typ:` [`JWS_TYPE`] and `kid`, the DID
-/// URL of the authority's bundle key (for example
-/// `did:web:authority.example#bundle-key`). The payload is the bytes as
+/// URL of the authority's bundle key, `<authority>#bundle-key` (see
+/// [`bundle_kid`]). The payload is the bytes as
 /// they are, so `manifest.json` must have no white space before or after
 /// the JSON (a JSON writer adds none).
 ///
 /// # Errors
 /// The manifest is not valid ([`Manifest::parse`]), has white space
-/// around it, `kid` is not a key of the manifest's authority, or signing
+/// around it, `kid` is not the bundle key of the manifest's authority, or signing
 /// fails.
 pub fn sign_manifest(
     manifest_bytes: &[u8],
@@ -493,26 +502,46 @@ pub struct Expected<'a> {
 }
 
 /// The `kid` of a bundle signature, read before it is verified, so the
-/// caller knows which key to look up. It must be a key of `authority`:
-/// `<authority>#<fragment>`.
+/// caller knows which key to look up. It must be the bundle key of
+/// `authority` (`<authority>#bundle-key`), and the `alg` ES256.
 ///
 /// # Errors
-/// The JWS cannot be read, or has no `kid` of `authority`.
+/// The JWS cannot be read, is not ES256, or its `kid` is not the bundle
+/// key of `authority`.
 pub fn signing_kid(jws: &str, authority: &str) -> Result<String, BundleError> {
     let parsed = Jws::parse(jws)?;
+    check_alg(&parsed)?;
     let kid = parsed.kid().unwrap_or_default();
     check_kid(kid, authority)?;
     Ok(kid.to_owned())
 }
 
-/// `kid` is `<authority>#<fragment>` with a fragment.
+/// The id of the bundle key of `authority`: `<authority>#bundle-key`.
+#[must_use]
+pub fn bundle_kid(authority: &str) -> String {
+    format!("{authority}#{BUNDLE_KEY_FRAGMENT}")
+}
+
+/// `kid` is the bundle key of `authority`, `<authority>#bundle-key`.
+/// Any other key of the authority, such as its credential key, is
+/// refused (ADR 0005: only the bundle key signs a bundle).
 fn check_kid(kid: &str, authority: &str) -> Result<(), BundleError> {
-    match kid.split_once('#') {
-        Some((did, fragment)) if did == authority && !fragment.is_empty() => Ok(()),
-        _ => Err(BundleError::WrongSigner {
+    if kid == bundle_kid(authority) {
+        Ok(())
+    } else {
+        Err(BundleError::WrongSigner {
             kid: kid.to_owned(),
             authority: authority.to_owned(),
-        }),
+        })
+    }
+}
+
+/// The JWS is signed with ES256. [`Jws::parse`] also accepts PS256 (for
+/// credentials), which a bundle key never uses.
+fn check_alg(parsed: &Jws<'_>) -> Result<(), BundleError> {
+    match parsed.alg() {
+        Alg::ES256 => Ok(()),
+        other => Err(BundleError::WrongAlgorithm(other)),
     }
 }
 
@@ -545,8 +574,9 @@ pub fn key_from_document<'d>(
     Ok(&method.public_key_jwk)
 }
 
-/// Checks a bundle's signature and manifest: `jws` is a [`JWS_TYPE`]
-/// JWS by a key of `expected.authority`, verified with `key` (found with
+/// Checks a bundle's signature and manifest: `jws` is an ES256
+/// [`JWS_TYPE`] JWS by the bundle key of `expected.authority`
+/// (`<authority>#bundle-key`), verified with `key` (found with
 /// [`key_from_document`], or kept from an earlier start); its payload is
 /// exactly `manifest_bytes`; the manifest is valid, names that authority
 /// and has the pinned version.
@@ -566,6 +596,7 @@ pub fn verify(
     if parsed.typ() != Some(JWS_TYPE) {
         return Err(BundleError::WrongType);
     }
+    check_alg(&parsed)?;
     check_kid(parsed.kid().unwrap_or_default(), expected.authority)?;
     parsed.verify(key)?;
     if parsed.payload() != manifest_bytes {
@@ -927,13 +958,14 @@ mod tests {
             key_from_document(&document(&key, false), &kid(), AUTHORITY),
             Err(BundleError::KeyNotInDocument { .. })
         ));
+        // a key of the authority, but not its bundle key
         assert!(matches!(
             key_from_document(
                 &document(&key, true),
                 &format!("{AUTHORITY}#other"),
                 AUTHORITY
             ),
-            Err(BundleError::KeyNotInDocument { .. })
+            Err(BundleError::WrongSigner { .. })
         ));
         let mut foreign = document(&key, true);
         foreign.id = "did:web:other.example".to_owned();
@@ -941,6 +973,111 @@ mod tests {
             key_from_document(&foreign, &kid(), AUTHORITY),
             Err(BundleError::KeyNotInDocument { .. })
         ));
+    }
+
+    /// The authority's DID document as the issuer publishes it: the
+    /// credential key `#key-1` and the bundle key, both under
+    /// `assertionMethod`.
+    fn document_with_both_keys(credential_key: &Jwk, bundle_key: &Jwk) -> DidDocument {
+        let credential_kid = format!("{AUTHORITY}#key-1");
+        let method = |id: &str, jwk: &Jwk| VerificationMethod {
+            id: id.to_owned(),
+            kind: "JsonWebKey2020".to_owned(),
+            controller: AUTHORITY.to_owned(),
+            public_key_jwk: jwk.clone(),
+        };
+        DidDocument {
+            id: AUTHORITY.to_owned(),
+            verification_method: vec![
+                method(&credential_kid, credential_key),
+                method(&kid(), bundle_key),
+            ],
+            assertion_method: vec![
+                Relationship::Reference(credential_kid),
+                Relationship::Reference(kid()),
+            ],
+            ..DidDocument::default()
+        }
+    }
+
+    #[test]
+    fn a_bundle_signed_with_the_credential_key_is_refused() {
+        let credential_key = SigningKey::generate().unwrap();
+        let bundle_key = SigningKey::generate().unwrap();
+        let doc = document_with_both_keys(&credential_key.public_jwk(), &bundle_key.public_jwk());
+        let credential_kid = format!("{AUTHORITY}#key-1");
+        // sign_manifest itself refuses another kid ...
+        let bytes = serde_json::to_vec(&manifest()).unwrap();
+        assert!(matches!(
+            sign_manifest(&bytes, &credential_key, &credential_kid),
+            Err(BundleError::WrongSigner { .. })
+        ));
+        // ... and a connector refuses such a JWS made by hand
+        let raw = RawValue::from_string(String::from_utf8(bytes.clone()).unwrap()).unwrap();
+        let jws = credential_key
+            .sign_json(&credential_kid, JWS_TYPE, &raw)
+            .unwrap();
+        assert!(matches!(
+            signing_kid(&jws, AUTHORITY),
+            Err(BundleError::WrongSigner { .. })
+        ));
+        assert!(matches!(
+            key_from_document(&doc, &credential_kid, AUTHORITY),
+            Err(BundleError::WrongSigner { .. })
+        ));
+        // even with the credential key in hand, verify refuses it
+        assert!(matches!(
+            verify(&bytes, &jws, &credential_key.public_jwk(), expected()),
+            Err(BundleError::WrongSigner { .. })
+        ));
+        // the bundle key of the same document is accepted
+        let jws = sign_manifest(&bytes, &bundle_key, &kid()).unwrap();
+        let jwk = key_from_document(&doc, &signing_kid(&jws, AUTHORITY).unwrap(), AUTHORITY)
+            .unwrap();
+        assert!(verify(&bytes, &jws, jwk, expected()).is_ok());
+    }
+
+    /// TEST ONLY RSA key (PKCS#1 DER) of the PS256 test.
+    const TEST_RSA_KEY: &[u8] = include_bytes!("../tests/fixtures/test-only-rsa-2048.der");
+
+    #[test]
+    fn a_ps256_bundle_signature_is_refused() {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
+        use ring::signature::{RSA_PSS_SHA256, RsaKeyPair, RsaPublicKeyComponents};
+        let pair = RsaKeyPair::from_der(TEST_RSA_KEY).unwrap();
+        let public = RsaPublicKeyComponents::<Vec<u8>>::from(pair.public());
+        let rsa_jwk = Jwk::RSA {
+            n: B64.encode(&public.n),
+            e: B64.encode(&public.e),
+        };
+        // a valid PS256 signature by the key listed as #bundle-key
+        let bytes = serde_json::to_vec(&manifest()).unwrap();
+        let header = serde_json::json!({"alg": "PS256", "typ": JWS_TYPE, "kid": kid()});
+        let input = format!(
+            "{}.{}",
+            B64.encode(serde_json::to_vec(&header).unwrap()),
+            B64.encode(&bytes)
+        );
+        let mut signature = vec![0; pair.public().modulus_len()];
+        pair.sign(
+            &RSA_PSS_SHA256,
+            &ring::rand::SystemRandom::new(),
+            input.as_bytes(),
+            &mut signature,
+        )
+        .unwrap();
+        let jws = format!("{input}.{}", B64.encode(&signature));
+        // the signature itself is good ...
+        Jws::parse(&jws).unwrap().verify(&rsa_jwk).unwrap();
+        // ... but a bundle must be ES256
+        assert_eq!(
+            signing_kid(&jws, AUTHORITY),
+            Err(BundleError::WrongAlgorithm(Alg::PS256))
+        );
+        assert_eq!(
+            verify(&bytes, &jws, &rsa_jwk, expected()),
+            Err(BundleError::WrongAlgorithm(Alg::PS256))
+        );
     }
 
     #[test]

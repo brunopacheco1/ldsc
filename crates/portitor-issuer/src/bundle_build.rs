@@ -87,7 +87,9 @@ pub struct Options {
     pub profile: String,
     /// `--authority`: the authority's DID.
     pub authority: String,
-    /// `--kid`: the bundle key's id, for example `<authority>#bundle-key`.
+    /// `--kid`: the bundle key's id. It must be `<authority>#bundle-key`:
+    /// only the bundle key may sign a bundle (ADR 0005), and a connector
+    /// refuses a bundle signed with any other key.
     pub kid: String,
     /// `--key`: the bundle key, PKCS#8 PEM.
     pub key: PathBuf,
@@ -194,6 +196,7 @@ fn read_key(path: &Path) -> Result<SigningKey, String> {
 /// See the module documentation; the text says what is wrong.
 pub fn build(options: &Options, key: &SigningKey) -> Result<Built, String> {
     bundle::check_version(&options.version).map_err(|e| format!("--version: {e}"))?;
+    check_kid(options)?;
     let input_folder = std::fs::canonicalize(&options.input)
         .map_err(|e| format!("--in: {}: {e}", options.input.display()))?;
     let input = read_input(&input_folder)?;
@@ -253,6 +256,21 @@ pub fn build(options: &Options, key: &SigningKey) -> Result<Built, String> {
         manifest,
         public_key,
     })
+}
+
+/// `--kid` is the authority's bundle key, `<authority>#bundle-key`. The
+/// credential key (`#key-1`) or any other key is refused here, as a
+/// connector would refuse the bundle.
+fn check_kid(options: &Options) -> Result<(), String> {
+    let bundle_kid = bundle::bundle_kid(&options.authority);
+    if options.kid == bundle_kid {
+        Ok(())
+    } else {
+        Err(format!(
+            "--kid must be the bundle key {bundle_kid}, not {}: only the bundle key may sign a bundle",
+            options.kid
+        ))
+    }
 }
 
 /// Today's date in UTC, `YYYY-MM-DD`.

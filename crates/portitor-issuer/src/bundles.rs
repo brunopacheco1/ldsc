@@ -21,7 +21,7 @@ use std::sync::Arc;
 use axum::extract::{Path as UrlPath, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use portitor_dcp::bundle::{self, BUNDLE_KEY_FRAGMENT, MANIFEST_FILE, Manifest, SIGNATURE_FILE};
+use portitor_dcp::bundle::{self, MANIFEST_FILE, Manifest, SIGNATURE_FILE};
 use portitor_dcp::{Jwk, SigningKey};
 use portitor_runtime::api_key::problem;
 use serde_json::Value;
@@ -72,7 +72,7 @@ pub fn read_public_key(path: &Path) -> Result<Jwk, String> {
 /// The id of the bundle key in the DID document of `did`.
 #[must_use]
 pub fn bundle_kid(did: &str) -> String {
-    format!("{did}#{BUNDLE_KEY_FRAGMENT}")
+    bundle::bundle_kid(did)
 }
 
 /// Adds the bundle key to a DID document (as JSON): a verification

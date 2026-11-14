@@ -182,6 +182,29 @@ fn bad_input_is_refused() {
     assert!(build(&wrong_version, &SigningKey::generate().unwrap()).is_err());
 }
 
+#[test]
+fn only_the_bundle_key_may_sign() {
+    let (input, output) = (input_folder(), scratch());
+    // the authority's credential key, or any other fragment
+    for kid in [
+        format!("{AUTHORITY}#key-1"),
+        format!("{AUTHORITY}#bundle-key-2"),
+        AUTHORITY.to_owned(),
+    ] {
+        let mut options = options(&input, &output);
+        options.kid.clone_from(&kid);
+        let error = build(&options, &SigningKey::generate().unwrap()).unwrap_err();
+        assert!(
+            error.contains("--kid must be the bundle key"),
+            "{kid}: {error}"
+        );
+    }
+    assert!(
+        std::fs::read_dir(&output).map_or(true, |mut entries| entries.next().is_none()),
+        "nothing is written"
+    );
+}
+
 /// The issuer, serving bundles from `bundle_dir` if given.
 fn issuer(bundle_dir: Option<PathBuf>) -> Issuer {
     let config = Config {
