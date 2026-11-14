@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Where harvested datasets come from: the [`HarvestSource`] port and its
+//! Where harvested datasets come from: the [`DatasetSource`] port and its
 //! adapters. [`FileSource`] reads the datasets file
 //! (`PORTITOR_DATASETS_FILE`); later adapters (a DCAT-AP endpoint, CKAN)
 //! give the same [`Snapshot`].
@@ -37,7 +37,7 @@ impl std::fmt::Display for SourceError {
 impl std::error::Error for SourceError {}
 
 /// Port: a source of the provider's datasets.
-pub trait HarvestSource: Send + Sync {
+pub trait DatasetSource: Send + Sync {
     /// A name for the jobs and the logs, for example
     /// `file:/etc/portitor/datasets.json`.
     fn name(&self) -> String;
@@ -90,7 +90,7 @@ impl FileSource {
     }
 }
 
-impl HarvestSource for FileSource {
+impl DatasetSource for FileSource {
     fn name(&self) -> String {
         format!("file:{}", self.path.display())
     }
@@ -122,7 +122,7 @@ impl FixedSource {
     }
 }
 
-impl HarvestSource for FixedSource {
+impl DatasetSource for FixedSource {
     fn name(&self) -> String {
         "fixed".to_owned()
     }
@@ -141,7 +141,7 @@ impl HarvestSource for FixedSource {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct EmptySource;
 
-impl HarvestSource for EmptySource {
+impl DatasetSource for EmptySource {
     fn name(&self) -> String {
         "none".to_owned()
     }

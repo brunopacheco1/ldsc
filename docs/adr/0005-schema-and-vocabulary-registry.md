@@ -107,12 +107,12 @@ example the EU Interoperability Test Bed SHACL validator, or Apache Jena.
     changes no state; an outbound rejection is not sent, and the
     negotiation or transfer is terminated with the reason logged. The
     default adapter, `AllowAll`, accepts everything.
-  - `ShapeSource`: where shapes, vocabularies and JSON-LD contexts come
+  - `BundleSource`: where shapes, vocabularies and JSON-LD contexts come
     from. Adapters: a local folder (development and tests), the signed
     bundle below, later a Gaia-X or Simpl-Open registry if one is
     standardised.
   - `ShapeValidator`: the SHACL engine (see "Validation engine").
-- JSON-LD contexts used for validation come from the `ShapeSource`
+- JSON-LD contexts used for validation come from the `BundleSource`
   only; the validator never fetches a `@context` from the network, so a
   counter-party cannot point it at a hostile context.
 - Distribution: **Option A**, a signed static bundle.

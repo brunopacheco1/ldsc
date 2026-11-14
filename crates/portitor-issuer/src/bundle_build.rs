@@ -387,7 +387,7 @@ fn media_type_from_extension(path: &str) -> Result<MediaType, String> {
 }
 
 /// Writes the bundle to `<output>/<version>/`, which must not exist yet.
-/// (The connector's bundle cache, `shape_source.rs`, writes its copy the
+/// (The connector's bundle cache, `bundle_source.rs`, writes its copy the
 /// same way, but replaces an older copy instead of refusing.)
 /// Everything is written to `<output>/.<version>.partial/` first and the
 /// folder renamed at the end, so a failed build never leaves a version

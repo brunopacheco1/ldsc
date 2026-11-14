@@ -18,7 +18,7 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
-use portitor_connector::harvest::{HarvestSource, Snapshot, SourceError};
+use portitor_connector::harvest::{DatasetSource, Snapshot, SourceError};
 use portitor_connector::http_client::Sender;
 use portitor_connector::{Config, Negotiator, Ports};
 use portitor_dsp::negotiation::NegotiationState;
@@ -70,7 +70,7 @@ impl Switch {
     }
 }
 
-impl HarvestSource for Switch {
+impl DatasetSource for Switch {
     fn name(&self) -> String {
         "switch".to_owned()
     }

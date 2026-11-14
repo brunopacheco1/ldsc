@@ -12,8 +12,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use portitor_connector::shape_source::{
-    BundleConfig, BundleLocation, CACHED_KEY_FILE, ShapeSourceError, load_bundle,
+use portitor_connector::bundle_source::{
+    BundleConfig, BundleLocation, BundleSourceError, CACHED_KEY_FILE, load_bundle,
 };
 use portitor_dcp::SigningKey;
 use portitor_dcp::bundle::BundleError;
@@ -199,7 +199,7 @@ async fn the_cache_is_used_when_the_authority_is_down() {
     std::fs::write(cache.join(VERSION).join("shapes/public.ttl"), "changed").unwrap();
     let error = load_bundle(Some(settings.clone())).await.unwrap_err();
     assert!(
-        matches!(&error, ShapeSourceError::NoUsableCopy { cache, .. } if cache.contains("SHA-256")),
+        matches!(&error, BundleSourceError::NoUsableCopy { cache, .. } if cache.contains("SHA-256")),
         "{error}"
     );
     // nor a cached copy of another version than the pinned one
@@ -207,7 +207,7 @@ async fn the_cache_is_used_when_the_authority_is_down() {
     other_version.version = "2026.12.0".to_owned();
     assert!(matches!(
         load_bundle(Some(other_version)).await,
-        Err(ShapeSourceError::NoUsableCopy { .. })
+        Err(BundleSourceError::NoUsableCopy { .. })
     ));
 }
 
@@ -218,7 +218,7 @@ async fn without_any_cache_a_down_authority_is_an_error() {
     authority.stop().await;
     let error = load_bundle(Some(settings)).await.unwrap_err();
     assert!(
-        matches!(error, ShapeSourceError::NoUsableCopy { .. }),
+        matches!(error, BundleSourceError::NoUsableCopy { .. }),
         "{error}"
     );
 }
@@ -232,7 +232,7 @@ async fn a_key_the_did_document_does_not_list_is_refused() {
     assert!(
         matches!(
             error,
-            ShapeSourceError::Invalid(BundleError::KeyNotInDocument { .. })
+            BundleSourceError::Invalid(BundleError::KeyNotInDocument { .. })
         ),
         "{error}"
     );
@@ -246,14 +246,14 @@ async fn another_authority_or_version_is_refused() {
     other_authority.authority = "did:web:127.0.0.1%3A1".to_owned();
     assert!(matches!(
         load_bundle(Some(other_authority)).await,
-        Err(ShapeSourceError::Invalid(BundleError::WrongSigner { .. }))
+        Err(BundleSourceError::Invalid(BundleError::WrongSigner { .. }))
     ));
     // the URL of the served version, but another version pinned
     let mut other_version = authority.settings(&scratch());
     other_version.version = "2026.12.0".to_owned();
     assert!(matches!(
         load_bundle(Some(other_version)).await,
-        Err(ShapeSourceError::Invalid(BundleError::WrongVersion { .. }))
+        Err(BundleSourceError::Invalid(BundleError::WrongVersion { .. }))
     ));
     authority.stop().await;
 }
@@ -281,7 +281,7 @@ async fn a_bundle_signed_with_the_credential_key_is_refused() {
     assert!(
         matches!(
             error,
-            ShapeSourceError::Invalid(BundleError::WrongSigner { .. })
+            BundleSourceError::Invalid(BundleError::WrongSigner { .. })
         ),
         "{error}"
     );
@@ -314,7 +314,7 @@ async fn a_bundle_folder_is_checked_like_a_download() {
     std::fs::write(folder.join("dct.jsonld"), "{}").unwrap();
     assert_eq!(
         load_bundle(Some(folder_settings(&authority))).await,
-        Err(ShapeSourceError::Invalid(BundleError::DigestMismatch(
+        Err(BundleSourceError::Invalid(BundleError::DigestMismatch(
             "dct.jsonld".to_owned()
         )))
     );
@@ -322,7 +322,7 @@ async fn a_bundle_folder_is_checked_like_a_download() {
     std::fs::remove_file(folder.join("dct.jsonld")).unwrap();
     assert!(matches!(
         load_bundle(Some(folder_settings(&authority))).await,
-        Err(ShapeSourceError::Unavailable(_))
+        Err(BundleSourceError::Unavailable(_))
     ));
     authority.stop().await;
 }

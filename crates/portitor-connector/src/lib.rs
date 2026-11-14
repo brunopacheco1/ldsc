@@ -20,7 +20,7 @@
 //! - [`harvest`]: datasets come from a source (the datasets file) into a
 //!   read copy, checked entry by entry; every run is a stored job
 //!   (ADR 0020).
-//! - [`shape_source`], [`shacl`]: the authority's signed bundle (ADR
+//! - [`bundle_source`], [`shacl`]: the authority's signed bundle (ADR
 //!   0005) and its rules: the SHACL check of each harvested dataset, and
 //!   the SHACL guard on DSP messages.
 //! - [`store`]: everything kept in the `SQLite` file.
@@ -64,8 +64,8 @@ pub mod negotiation;
 mod outbox;
 pub mod ports;
 // the signed schema and vocabulary bundle (ADR 0005); its settings are
-// read by `shape_source::BundleConfig`, not by `Config`
-pub mod shape_source;
+// read by `bundle_source::BundleConfig`, not by `Config`
+pub mod bundle_source;
 // the bundle's rules: SHACL dataset check, message guard
 pub mod shacl;
 pub mod store;
@@ -249,7 +249,7 @@ impl Config {
 }
 
 struct AppState {
-    catalog: CatalogService<harvest::ReadCopy>,
+    catalog: CatalogService<harvest::DatasetCopy>,
     versions: VersionResponse,
 }
 
@@ -262,7 +262,7 @@ pub struct Negotiator {
     provider: Arc<negotiation::Provider>,
     transfers: Arc<transfer::TransferProvider>,
     transfer_consumer: Arc<consumer_transfer::TransferConsumer>,
-    harvester: Arc<harvest::Harvester>,
+    harvester: Arc<harvest::DatasetHarvester>,
 }
 
 impl std::fmt::Debug for Negotiator {
@@ -645,8 +645,8 @@ fn start_harvest(
     config: &Config,
     ports: &harvest::HarvestPorts,
     service_id: &str,
-) -> Result<harvest::Harvester, StartError> {
-    let source: Arc<dyn harvest::HarvestSource> = match (&ports.source, &config.datasets_file) {
+) -> Result<harvest::DatasetHarvester, StartError> {
+    let source: Arc<dyn harvest::DatasetSource> = match (&ports.source, &config.datasets_file) {
         (Some(source), _) => Arc::clone(source),
         (None, Some(file)) => Arc::new(harvest::FileSource::new(file)),
         (None, None) => {
@@ -661,7 +661,7 @@ fn start_harvest(
         None => dsp,
     };
     // `.0`: the `Arc` inside the `Shared` wrapper
-    let harvester = harvest::Harvester::new(source, check, Arc::clone(&ports.store.0));
+    let harvester = harvest::DatasetHarvester::new(source, check, Arc::clone(&ports.store.0));
     harvester.start().map_err(|e| StartError(e.0))?;
     Ok(harvester)
 }
@@ -672,7 +672,7 @@ fn start_harvest(
 fn start_data_plane(
     config: &Config,
     ports: &mut Ports,
-    datasets: &harvest::ReadCopy,
+    datasets: &harvest::DatasetCopy,
 ) -> Option<Arc<data_plane::HttpDataPlane>> {
     if !cfg!(feature = "data-plane") {
         return None;

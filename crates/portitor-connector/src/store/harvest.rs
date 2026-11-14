@@ -9,7 +9,7 @@ use rusqlite::{OptionalExtension as _, Row, Transaction, params};
 
 use super::{SqliteNegotiations, StoreError, col, err, json, parsed};
 use crate::harvest::{
-    CheckKind, Commit, Counts, DatasetState, EntryError, HarvestJob, HarvestStatus, HarvestStore,
+    CheckKind, Commit, Counts, DatasetState, DatasetStore, EntryError, HarvestJob, HarvestStatus,
     JobOutcome, JobRecord, JobWithErrors, KEPT_JOBS, StoredDataset, Trigger, count,
 };
 
@@ -184,7 +184,7 @@ fn insert_error(
     Ok(())
 }
 
-impl HarvestStore for SqliteNegotiations {
+impl DatasetStore for SqliteNegotiations {
     fn datasets(&self) -> Result<Vec<StoredDataset>, StoreError> {
         let sql = format!("SELECT {DATASET_COLUMNS} FROM dataset ORDER BY id");
         self.query(&sql, [], dataset_from_row)
@@ -284,12 +284,12 @@ impl HarvestStore for SqliteNegotiations {
 mod tests {
     use std::sync::Arc;
 
-    use portitor_dsp::catalog::DatasetStore as _;
+    use portitor_dsp::catalog::CatalogDatasets as _;
     use portitor_dsp::policy::CredentialTypes;
     use serde_json::json;
 
     use super::*;
-    use crate::harvest::{DspCheck, FixedSource, Harvester, RunResult};
+    use crate::harvest::{DatasetHarvester, DspCheck, FixedSource, RunResult};
 
     fn entry(id: &str) -> serde_json::Value {
         json!({
@@ -300,9 +300,12 @@ mod tests {
         })
     }
 
-    fn harvester(store: &Arc<SqliteNegotiations>, entries: Vec<serde_json::Value>) -> Harvester {
+    fn harvester(
+        store: &Arc<SqliteNegotiations>,
+        entries: Vec<serde_json::Value>,
+    ) -> DatasetHarvester {
         let check = DspCheck::new("https://p.example/dsp/2025-1", &CredentialTypes::default());
-        let harvester = Harvester::new(
+        let harvester = DatasetHarvester::new(
             Arc::new(FixedSource::new(entries)),
             Arc::new(check),
             Arc::clone(store) as _,
@@ -336,7 +339,7 @@ mod tests {
 
         // a restart with a source that is gone: the stored copy is served
         let check = DspCheck::new("https://p.example/dsp/2025-1", &CredentialTypes::default());
-        let restarted = Harvester::new(
+        let restarted = DatasetHarvester::new(
             Arc::new(crate::harvest::FileSource::new("/nonexistent.json")),
             Arc::new(check),
             Arc::clone(&store) as _,
@@ -365,7 +368,7 @@ mod tests {
             .unwrap();
         let mut broken = entry("c");
         broken["hasPolicy"] = json!([]);
-        let failing = Harvester::new(
+        let failing = DatasetHarvester::new(
             Arc::new(FixedSource::new(vec![entry("b"), broken])),
             Arc::new(DspCheck::new(
                 "https://p.example/dsp/2025-1",

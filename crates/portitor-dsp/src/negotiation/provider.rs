@@ -22,7 +22,7 @@
 //!
 //! Every write is a compare-and-update on the negotiation's `version`.
 
-use crate::catalog::DatasetStore;
+use crate::catalog::CatalogDatasets;
 use crate::policy::CallerCredentials;
 use crate::{Context, Offer};
 use crate::{WRITE_ATTEMPTS, Write};
@@ -206,7 +206,9 @@ pub struct ProviderService<S, D, C, E> {
 /// HTTP response and, possibly, the next message to send.
 pub type Handled = Result<(ContractNegotiation, Option<Outgoing>), Failure>;
 
-impl<S: NegotiationStore, D: Decider, C: DatasetStore, E: Environment> ProviderService<S, D, C, E> {
+impl<S: NegotiationStore, D: Decider, C: CatalogDatasets, E: Environment>
+    ProviderService<S, D, C, E>
+{
     /// Builds the service for provider `participant_id`.
     pub fn new(store: S, decider: D, catalog: C, env: E, participant_id: String) -> Self {
         Self {

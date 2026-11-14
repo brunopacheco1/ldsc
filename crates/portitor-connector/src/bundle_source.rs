@@ -4,7 +4,7 @@
 
 //! Where the connector gets the dataspace's shapes, vocabularies and
 //! JSON-LD contexts: the authority's signed bundle (ADR 0005, "Bundle
-//! format"). [`ShapeSource`] is the port; it gives a
+//! format"). [`BundleSource`] is the port; it gives a
 //! [`VerifiedBundle`], whose signature and digests were checked. Two
 //! adapters:
 //!
@@ -67,7 +67,7 @@ pub const CACHED_KEY_FILE: &str = ".bundle-key.json";
 
 /// Why no bundle could be loaded.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ShapeSourceError {
+pub enum BundleSourceError {
     /// A bundle setting is missing or wrong.
     Config(String),
     /// The bundle or the authority's DID document could not be read:
@@ -86,7 +86,7 @@ pub enum ShapeSourceError {
     },
 }
 
-impl std::fmt::Display for ShapeSourceError {
+impl std::fmt::Display for BundleSourceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Config(why) => write!(f, "bundle settings: {why}"),
@@ -100,9 +100,9 @@ impl std::fmt::Display for ShapeSourceError {
     }
 }
 
-impl std::error::Error for ShapeSourceError {}
+impl std::error::Error for BundleSourceError {}
 
-impl From<BundleError> for ShapeSourceError {
+impl From<BundleError> for BundleSourceError {
     fn from(error: BundleError) -> Self {
         Self::Invalid(error)
     }
@@ -110,9 +110,9 @@ impl From<BundleError> for ShapeSourceError {
 
 /// Port: gives the verified bundle. Called once at start; a new version
 /// needs a restart (ADR 0005).
-pub trait ShapeSource: Send + Sync {
+pub trait BundleSource: Send + Sync {
     /// The bundle, checked (signature and every digest).
-    fn load(&self) -> BoxFuture<'_, Result<VerifiedBundle, ShapeSourceError>>;
+    fn load(&self) -> BoxFuture<'_, Result<VerifiedBundle, BundleSourceError>>;
 }
 
 /// Where the bundle comes from.
@@ -156,13 +156,13 @@ impl BundleConfig {
         var: impl Fn(&str) -> Option<OsString>,
         db_file: &Path,
         allow_http: bool,
-    ) -> Result<Option<Self>, ShapeSourceError> {
+    ) -> Result<Option<Self>, BundleSourceError> {
         let text = |name: &str| {
             var(name)
                 .map(|value| value.to_string_lossy().trim().to_owned())
                 .filter(|value| !value.is_empty())
         };
-        let config_error = |why: &str| Err(ShapeSourceError::Config(why.to_owned()));
+        let config_error = |why: &str| Err(BundleSourceError::Config(why.to_owned()));
         let location = match (text("PORTITOR_BUNDLE_URL"), text("PORTITOR_BUNDLE_DIR")) {
             (Some(_), Some(_)) => {
                 return config_error("set PORTITOR_BUNDLE_URL or PORTITOR_BUNDLE_DIR, not both");
@@ -184,12 +184,12 @@ impl BundleConfig {
             return config_error("PORTITOR_BUNDLE_VERSION is required with a bundle");
         };
         bundle::check_version(&version)
-            .map_err(|e| ShapeSourceError::Config(format!("PORTITOR_BUNDLE_VERSION: {e}")))?;
+            .map_err(|e| BundleSourceError::Config(format!("PORTITOR_BUNDLE_VERSION: {e}")))?;
         let Some(authority) = text("PORTITOR_BUNDLE_AUTHORITY") else {
             return config_error("PORTITOR_BUNDLE_AUTHORITY is required with a bundle");
         };
         portitor_dcp::did_web_url(&authority)
-            .map_err(|e| ShapeSourceError::Config(format!("PORTITOR_BUNDLE_AUTHORITY: {e}")))?;
+            .map_err(|e| BundleSourceError::Config(format!("PORTITOR_BUNDLE_AUTHORITY: {e}")))?;
         let cache_dir = text("PORTITOR_BUNDLE_CACHE_DIR")
             .map_or_else(|| default_cache_dir(db_file), PathBuf::from);
         Ok(Some(Self {
@@ -205,7 +205,7 @@ impl BundleConfig {
     ///
     /// # Errors
     /// See [`BundleConfig::from_vars`].
-    pub fn from_env(db_file: &Path, allow_http: bool) -> Result<Option<Self>, ShapeSourceError> {
+    pub fn from_env(db_file: &Path, allow_http: bool) -> Result<Option<Self>, BundleSourceError> {
         Self::from_vars(|name| std::env::var_os(name), db_file, allow_http)
     }
 
@@ -228,9 +228,9 @@ fn default_cache_dir(db_file: &Path) -> PathBuf {
 
 /// Checks a bundle URL and makes it end in `/`, so file paths can be
 /// added to it.
-fn checked_base_url(url: &str, allow_http: bool) -> Result<String, ShapeSourceError> {
+fn checked_base_url(url: &str, allow_http: bool) -> Result<String, BundleSourceError> {
     if !outbound_url_allowed(url, allow_http) || url.contains(['?', '#']) {
-        return Err(ShapeSourceError::Config(format!(
+        return Err(BundleSourceError::Config(format!(
             "PORTITOR_BUNDLE_URL must be an https:// URL without query or fragment: {url}"
         )));
     }
@@ -250,12 +250,12 @@ fn checked_base_url(url: &str, allow_http: bool) -> Result<String, ShapeSourceEr
 /// should stop, as for a missing key.
 pub async fn load_bundle(
     config: Option<BundleConfig>,
-) -> Result<Option<VerifiedBundle>, ShapeSourceError> {
+) -> Result<Option<VerifiedBundle>, BundleSourceError> {
     let Some(config) = config else {
         return Ok(None);
     };
     let directory: Arc<dyn Directory> =
-        Arc::new(WebDirectory::new(config.allow_http).map_err(ShapeSourceError::Unavailable)?);
+        Arc::new(WebDirectory::new(config.allow_http).map_err(BundleSourceError::Unavailable)?);
     let source = source_for(config, directory)?;
     source.load().await.map(Some)
 }
@@ -267,7 +267,7 @@ pub async fn load_bundle(
 pub fn source_for(
     config: BundleConfig,
     directory: Arc<dyn Directory>,
-) -> Result<Box<dyn ShapeSource>, ShapeSourceError> {
+) -> Result<Box<dyn BundleSource>, BundleSourceError> {
     match &config.location {
         BundleLocation::Url(url) => {
             let url = url.clone();
@@ -294,9 +294,9 @@ struct Signed {
 impl Signed {
     /// The two parts from their bytes, however they were read. The
     /// signature must be text; spaces and line ends around it are dropped.
-    fn from_parts(manifest_bytes: Vec<u8>, jws_bytes: Vec<u8>) -> Result<Self, ShapeSourceError> {
+    fn from_parts(manifest_bytes: Vec<u8>, jws_bytes: Vec<u8>) -> Result<Self, BundleSourceError> {
         let jws = String::from_utf8(jws_bytes)
-            .map_err(|_| ShapeSourceError::Unavailable(format!("{SIGNATURE_FILE} is not text")))?;
+            .map_err(|_| BundleSourceError::Unavailable(format!("{SIGNATURE_FILE} is not text")))?;
         Ok(Self {
             manifest_bytes,
             jws: jws.trim().to_owned(),
@@ -314,10 +314,10 @@ struct CollectedFiles {
 
 impl CollectedFiles {
     /// Adds one file, refusing to go over [`MAX_BUNDLE_BYTES`] in all.
-    fn add(&mut self, path: &str, bytes: Vec<u8>) -> Result<(), ShapeSourceError> {
+    fn add(&mut self, path: &str, bytes: Vec<u8>) -> Result<(), BundleSourceError> {
         self.total = self.total.saturating_add(bytes.len());
         if self.total > MAX_BUNDLE_BYTES {
-            return Err(ShapeSourceError::Unavailable(format!(
+            return Err(BundleSourceError::Unavailable(format!(
                 "the bundle's files are larger than {} MiB together",
                 MAX_BUNDLE_BYTES / (1024 * 1024)
             )));
@@ -343,13 +343,13 @@ async fn verify_with_authority(
     signed: &Signed,
     config: &BundleConfig,
     directory: &dyn Directory,
-) -> Result<(Manifest, CachedKey), ShapeSourceError> {
+) -> Result<(Manifest, CachedKey), BundleSourceError> {
     let kid = bundle::signing_kid(&signed.jws, &config.authority)?;
     let document = directory
         .did_document(&config.authority)
         .await
         .map_err(|e| {
-            ShapeSourceError::Unavailable(format!("DID document of the authority: {e}"))
+            BundleSourceError::Unavailable(format!("DID document of the authority: {e}"))
         })?;
     let jwk = bundle::key_from_document(&document, &kid, &config.authority)?;
     let manifest = bundle::verify(&signed.manifest_bytes, &signed.jws, jwk, config.expected())?;
@@ -369,8 +369,8 @@ pub struct FolderSource {
     directory: Arc<dyn Directory>,
 }
 
-impl ShapeSource for FolderSource {
-    fn load(&self) -> BoxFuture<'_, Result<VerifiedBundle, ShapeSourceError>> {
+impl BundleSource for FolderSource {
+    fn load(&self) -> BoxFuture<'_, Result<VerifiedBundle, BundleSourceError>> {
         Box::pin(async move {
             let signed = read_signed(&self.folder)?;
             let (manifest, _key) =
@@ -385,7 +385,7 @@ impl ShapeSource for FolderSource {
 // at start, before the connector serves anything.
 
 /// Reads `manifest.json` and `manifest.jws` from `folder`.
-fn read_signed(folder: &Path) -> Result<Signed, ShapeSourceError> {
+fn read_signed(folder: &Path) -> Result<Signed, BundleSourceError> {
     let manifest_bytes = read_limited(&folder.join(MANIFEST_FILE), MAX_MANIFEST_BYTES)?;
     let jws_bytes = read_limited(&folder.join(SIGNATURE_FILE), MAX_SIGNATURE_BYTES)?;
     Signed::from_parts(manifest_bytes, jws_bytes)
@@ -395,7 +395,7 @@ fn read_signed(folder: &Path) -> Result<Signed, ShapeSourceError> {
 fn read_listed_files(
     folder: &Path,
     manifest: &Manifest,
-) -> Result<BTreeMap<String, Vec<u8>>, ShapeSourceError> {
+) -> Result<BTreeMap<String, Vec<u8>>, BundleSourceError> {
     let mut collected = CollectedFiles::default();
     for entry in &manifest.files {
         // the path was checked when the manifest was read: relative, no
@@ -407,13 +407,13 @@ fn read_listed_files(
 }
 
 /// Reads a file of at most `max_bytes`.
-fn read_limited(path: &Path, max_bytes: usize) -> Result<Vec<u8>, ShapeSourceError> {
+fn read_limited(path: &Path, max_bytes: usize) -> Result<Vec<u8>, BundleSourceError> {
     let unavailable = |e: std::io::Error| {
-        ShapeSourceError::Unavailable(format!("cannot read {}: {e}", path.display()))
+        BundleSourceError::Unavailable(format!("cannot read {}: {e}", path.display()))
     };
     let size = std::fs::metadata(path).map_err(unavailable)?.len();
     if size > max_bytes as u64 {
-        return Err(ShapeSourceError::Unavailable(format!(
+        return Err(BundleSourceError::Unavailable(format!(
             "{} is larger than {max_bytes} bytes",
             path.display()
         )));
@@ -441,10 +441,10 @@ impl UrlSource {
         config: BundleConfig,
         base_url: &str,
         directory: Arc<dyn Directory>,
-    ) -> Result<Self, ShapeSourceError> {
+    ) -> Result<Self, BundleSourceError> {
         let base_url = checked_base_url(base_url, config.allow_http)?;
         let (client, has_ca_certificates) =
-            https_client(config.allow_http).map_err(ShapeSourceError::Unavailable)?;
+            https_client(config.allow_http).map_err(BundleSourceError::Unavailable)?;
         Ok(Self {
             config,
             base_url,
@@ -462,7 +462,7 @@ impl UrlSource {
     /// Downloads and checks the bundle: first the manifest and its
     /// signature, which are checked before any listed file is
     /// downloaded.
-    async fn download(&self) -> Result<(Signed, CachedKey, VerifiedBundle), ShapeSourceError> {
+    async fn download(&self) -> Result<(Signed, CachedKey, VerifiedBundle), BundleSourceError> {
         let manifest_bytes = self.get(MANIFEST_FILE, MAX_MANIFEST_BYTES).await?;
         let jws_bytes = self.get(SIGNATURE_FILE, MAX_SIGNATURE_BYTES).await?;
         let signed = Signed::from_parts(manifest_bytes, jws_bytes)?;
@@ -479,9 +479,9 @@ impl UrlSource {
 
     /// GETs `<base_url><path>`, at most `max_bytes`, within
     /// [`DOWNLOAD_TIMEOUT`].
-    async fn get(&self, path: &str, max_bytes: usize) -> Result<Vec<u8>, ShapeSourceError> {
+    async fn get(&self, path: &str, max_bytes: usize) -> Result<Vec<u8>, BundleSourceError> {
         let url = format!("{}{path}", self.base_url);
-        let unavailable = |why: String| ShapeSourceError::Unavailable(format!("{url}: {why}"));
+        let unavailable = |why: String| BundleSourceError::Unavailable(format!("{url}: {why}"));
         if !self.has_ca_certificates && url.to_ascii_lowercase().starts_with("https://") {
             return Err(unavailable(
                 "no CA certificates to verify the host; mount the system bundle".to_owned(),
@@ -523,17 +523,17 @@ impl UrlSource {
 
     /// The cached copy of the pinned version, checked again: the
     /// signature with the key kept next to it, and every digest.
-    fn load_cached(&self) -> Result<VerifiedBundle, ShapeSourceError> {
+    fn load_cached(&self) -> Result<VerifiedBundle, BundleSourceError> {
         let folder = self.cache_folder();
         let signed = read_signed(&folder)?;
         let key_bytes = read_limited(&folder.join(CACHED_KEY_FILE), MAX_MANIFEST_BYTES)?;
         let key: CachedKey = serde_json::from_slice(&key_bytes).map_err(|e| {
-            ShapeSourceError::Unavailable(format!("{CACHED_KEY_FILE} cannot be read: {e}"))
+            BundleSourceError::Unavailable(format!("{CACHED_KEY_FILE} cannot be read: {e}"))
         })?;
         // the cached key must be the one that signed
         let kid = bundle::signing_kid(&signed.jws, &self.config.authority)?;
         if kid != key.kid {
-            return Err(ShapeSourceError::Unavailable(format!(
+            return Err(BundleSourceError::Unavailable(format!(
                 "the cached key is {}, the bundle names {kid}",
                 key.kid
             )));
@@ -567,9 +567,9 @@ impl UrlSource {
     /// be reached): the cached copy, checked again, with a warning.
     ///
     /// # Errors
-    /// [`ShapeSourceError::NoUsableCopy`]: the cached copy cannot be used
+    /// [`BundleSourceError::NoUsableCopy`]: the cached copy cannot be used
     /// either.
-    fn use_cache_after(&self, download: String) -> Result<VerifiedBundle, ShapeSourceError> {
+    fn use_cache_after(&self, download: String) -> Result<VerifiedBundle, BundleSourceError> {
         match self.load_cached() {
             Ok(verified) => {
                 tracing::warn!(
@@ -580,7 +580,7 @@ impl UrlSource {
                 );
                 Ok(verified)
             }
-            Err(cache) => Err(ShapeSourceError::NoUsableCopy {
+            Err(cache) => Err(BundleSourceError::NoUsableCopy {
                 download,
                 cache: cache.to_string(),
             }),
@@ -588,20 +588,20 @@ impl UrlSource {
     }
 }
 
-impl ShapeSource for UrlSource {
+impl BundleSource for UrlSource {
     /// Downloads and checks the bundle, and keeps it in the cache. If
     /// the download fails because something cannot be reached (the host,
     /// the authority's DID document, a missing or too large file), the
     /// cached copy is used. A bundle that was downloaded but fails a
     /// check is never replaced by the cache: that is an error.
-    fn load(&self) -> BoxFuture<'_, Result<VerifiedBundle, ShapeSourceError>> {
+    fn load(&self) -> BoxFuture<'_, Result<VerifiedBundle, BundleSourceError>> {
         Box::pin(async move {
             match self.download().await {
                 Ok((signed, key, verified)) => {
                     self.keep_in_cache(&signed, &key, &verified);
                     Ok(verified)
                 }
-                Err(ShapeSourceError::Unavailable(download)) => self.use_cache_after(download),
+                Err(BundleSourceError::Unavailable(download)) => self.use_cache_after(download),
                 Err(other) => Err(other),
             }
         })
@@ -717,7 +717,7 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
-    fn read(pairs: &[(&str, &str)]) -> Result<Option<BundleConfig>, ShapeSourceError> {
+    fn read(pairs: &[(&str, &str)]) -> Result<Option<BundleConfig>, BundleSourceError> {
         let vars: HashMap<String, OsString> = pairs
             .iter()
             .map(|(k, v)| ((*k).to_owned(), OsString::from(v)))

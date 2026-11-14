@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Catalog protocol (domain). Pure logic; datasets come through the
-//! [`DatasetStore`] port.
+//! [`CatalogDatasets`] port.
 
 use crate::{
     Catalog, CatalogError, CatalogRequestMessage, CatalogType, Context, DataService,
@@ -11,7 +11,7 @@ use crate::{
 };
 
 /// Port: where the provider's datasets come from.
-pub trait DatasetStore {
+pub trait CatalogDatasets {
     /// All datasets visible to the requester.
     fn all(&self) -> Vec<Dataset>;
     /// One dataset by id, if it is in the catalog.
@@ -20,7 +20,7 @@ pub trait DatasetStore {
     /// It may be a dataset that has left the catalog since (the provider
     /// withdrew or hid it): the agreement is a contract, so its transfers
     /// keep working. Use it only for transfers; catalog, dataset and
-    /// contract requests use [`DatasetStore::get`]. The default is `get`,
+    /// contract requests use [`CatalogDatasets::get`]. The default is `get`,
     /// for stores whose datasets never leave the catalog.
     fn get_for_agreement(&self, id: &str) -> Option<Dataset> {
         self.get(id)
@@ -257,7 +257,7 @@ pub struct CatalogService<S> {
     service: DataService,
 }
 
-impl<S: DatasetStore> CatalogService<S> {
+impl<S: CatalogDatasets> CatalogService<S> {
     /// Creates the service.
     pub fn new(
         store: S,

@@ -9,7 +9,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use portitor_dsp::catalog::DatasetStore;
+use portitor_dsp::catalog::CatalogDatasets;
 use portitor_dsp::policy::CredentialTypes;
 use serde_json::{Value, json};
 
@@ -33,7 +33,7 @@ impl Source {
     }
 }
 
-impl HarvestSource for Source {
+impl DatasetSource for Source {
     fn name(&self) -> String {
         "test".to_owned()
     }
@@ -70,20 +70,20 @@ fn dsp() -> Arc<dyn DatasetCheck> {
 /// A started harvester on `source` and `store`, with `check`.
 fn started(
     source: &Arc<Source>,
-    store: &Arc<dyn HarvestStore>,
+    store: &Arc<dyn DatasetStore>,
     check: Arc<dyn DatasetCheck>,
-) -> Harvester {
-    let harvester = Harvester::new(Arc::clone(source) as _, check, Arc::clone(store));
+) -> DatasetHarvester {
+    let harvester = DatasetHarvester::new(Arc::clone(source) as _, check, Arc::clone(store));
     harvester.start().unwrap();
     harvester
 }
 
-fn memory() -> Arc<dyn HarvestStore> {
-    Arc::new(InMemoryHarvestStore::default())
+fn memory() -> Arc<dyn DatasetStore> {
+    Arc::new(InMemoryDatasetStore::default())
 }
 
 /// The newest job and its errors.
-fn last_job(store: &Arc<dyn HarvestStore>) -> (HarvestJob, Vec<EntryError>) {
+fn last_job(store: &Arc<dyn DatasetStore>) -> (HarvestJob, Vec<EntryError>) {
     let newest = store.jobs(None, 1).unwrap().remove(0);
     store.job(newest.id).unwrap().unwrap()
 }
@@ -95,7 +95,7 @@ fn done(result: RunResult) -> HarvestJob {
     }
 }
 
-fn ids(copy: &ReadCopy) -> Vec<String> {
+fn ids(copy: &DatasetCopy) -> Vec<String> {
     copy.all().into_iter().map(|d| d.id).collect()
 }
 

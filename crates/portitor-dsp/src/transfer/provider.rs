@@ -22,7 +22,7 @@
 
 use crate::Context;
 use crate::WRITE_ATTEMPTS;
-use crate::catalog::DatasetStore;
+use crate::catalog::CatalogDatasets;
 use crate::negotiation::Agreement;
 pub use crate::negotiation::provider::{Environment, StoreError};
 use crate::policy::CallerCredentials;
@@ -259,7 +259,7 @@ where
     A: Agreements,
     F: DataFlows,
     D: TransferDecider,
-    C: DatasetStore,
+    C: CatalogDatasets,
     E: Environment,
 {
     /// Builds the service.

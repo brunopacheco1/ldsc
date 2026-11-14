@@ -297,7 +297,7 @@ fixed header to the TCK participant.
 Four ports carry the 0.7 work, each with its adapters
 (ADR 0004; C4 diagrams above):
 
-- `HarvestSource` (`harvest/source.rs`): a full snapshot of the
+- `DatasetSource` (`harvest/source.rs`): a full snapshot of the
   provider's datasets. `FileSource` reads `PORTITOR_DATASETS_FILE` again
   at each run; later sources (a DCAT-AP endpoint, CKAN) are new adapters.
 - `DatasetCheck` (`harvest/check.rs`): checks one entry. `DspCheck` holds
@@ -305,13 +305,13 @@ Four ports carry the 0.7 work, each with its adapters
   bundle that has dataset shapes, `ShaclDatasetCheck` (`shacl.rs`): the
   entry, read with the DSP context only (as the catalog serves it), is
   validated against the shapes for its `dct:accessRights` value.
-- `HarvestStore` (`harvest.rs`): the read copy, the jobs and their
+- `DatasetStore` (`harvest.rs`): the read copy, the jobs and their
   errors, in the connector's SQLite file (`store/harvest.rs`). A run
-  commits in one transaction. `ReadCopy` (`harvest/copy.rs`) is the copy
-  in memory that the DSP code (`DatasetStore`) and the data plane
+  commits in one transaction. `DatasetCopy` (`harvest/copy.rs`) is the copy
+  in memory that the DSP code (`CatalogDatasets`) and the data plane
   (`UpstreamSources`) read; it is replaced as a whole after a run that
   changed it.
-- `ShapeSource` (`shape_source.rs`): the verified bundle. `UrlSource`
+- `BundleSource` (`bundle_source.rs`): the verified bundle. `UrlSource`
   downloads one version over HTTPS and keeps it in a disk cache;
   `FolderSource` reads a local folder. Both check the signature against
   the authority's `did:web` document and every digest.

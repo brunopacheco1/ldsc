@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! The read copy in memory: what the DSP code ([`DatasetStore`]) and the
+//! The read copy in memory: what the DSP code ([`CatalogDatasets`]) and the
 //! data plane ([`UpstreamSources`]) read. The store keeps the copy; this
 //! is a snapshot of it, replaced as a whole after each run that changed
 //! it, so a request never sees half a run.
@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, PoisonError, RwLock};
 
 use portitor_dsp::Dataset;
-use portitor_dsp::catalog::DatasetStore;
+use portitor_dsp::catalog::CatalogDatasets;
 
 use super::{DatasetState, StoredDataset};
 use crate::data_plane::UpstreamSources;
@@ -30,9 +30,9 @@ struct View {
 /// Adapter: the read copy in memory. Cheap to clone; all clones see the
 /// same copy.
 #[derive(Debug, Clone, Default)]
-pub struct ReadCopy(Arc<RwLock<Arc<View>>>);
+pub struct DatasetCopy(Arc<RwLock<Arc<View>>>);
 
-impl ReadCopy {
+impl DatasetCopy {
     /// Replaces the snapshot with `datasets` (every state).
     pub(crate) fn replace(&self, datasets: &[StoredDataset]) {
         let mut view = View::default();
@@ -63,7 +63,7 @@ impl ReadCopy {
     }
 }
 
-impl DatasetStore for ReadCopy {
+impl CatalogDatasets for DatasetCopy {
     /// Active datasets only.
     fn all(&self) -> Vec<Dataset> {
         self.view().active.clone()
@@ -87,8 +87,8 @@ impl DatasetStore for ReadCopy {
     }
 }
 
-impl UpstreamSources for ReadCopy {
-    /// Any state, like [`ReadCopy::get_for_agreement`].
+impl UpstreamSources for DatasetCopy {
+    /// Any state, like [`DatasetCopy::get_for_agreement`].
     fn upstream_of(&self, dataset_id: &str) -> Option<String> {
         self.view().upstream.get(dataset_id).cloned()
     }

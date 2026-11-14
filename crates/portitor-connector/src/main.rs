@@ -8,8 +8,8 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use portitor_connector::auth::{AuthSettings, CallerVerifier, Prover, dcp_adapters};
+use portitor_connector::bundle_source::{BundleConfig, load_bundle};
 use portitor_connector::shacl::BundleRules;
-use portitor_connector::shape_source::{BundleConfig, load_bundle};
 use portitor_runtime::serve::{
     MAX_CONCURRENT_REQUESTS, REQUEST_TIMEOUT, bind_management, init_logging, serve, with_limits,
 };

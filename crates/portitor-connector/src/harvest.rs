@@ -5,15 +5,15 @@
 //! Dataset harvest (ADR 0020): datasets come from a source outside the
 //! connector into a read copy, and every run is stored as a job.
 //!
-//! - [`HarvestSource`] (port) gives a full snapshot of the provider's
+//! - [`DatasetSource`] (port) gives a full snapshot of the provider's
 //!   datasets; [`FileSource`] reads the datasets file.
 //! - [`DatasetCheck`] (port) checks one entry; [`DspCheck`] holds the DSP
 //!   and ODRL rules, and [`BothChecks`] adds another check (SHACL) after it.
-//! - [`HarvestStore`] (port) keeps the read copy, the jobs and their
+//! - [`DatasetStore`] (port) keeps the read copy, the jobs and their
 //!   errors; the `SQLite` adapter is in `store/harvest.rs`.
-//! - `run` decides what a run changes, without I/O; [`Harvester`] runs it:
+//! - `run` decides what a run changes, without I/O; [`DatasetHarvester`] runs it:
 //!   at start, then on a schedule, one run at a time.
-//! - [`ReadCopy`] is what the DSP code and the data plane read: the copy in
+//! - [`DatasetCopy`] is what the DSP code and the data plane read: the copy in
 //!   memory, replaced after each run that changed it.
 //!
 //! The rule: the read copy changes only when a run succeeds, and a bad
@@ -38,12 +38,12 @@ mod source;
 pub use check::{
     BothChecks, CHECKS_VERSION, CheckKind, CheckedDataset, DatasetCheck, DspCheck, EntryFailure,
 };
-pub use copy::ReadCopy;
-pub use memory::InMemoryHarvestStore;
+pub use copy::DatasetCopy;
+pub use memory::InMemoryDatasetStore;
 pub(crate) use run::count;
 pub use run::{MAX_REPORT_RESULTS, MAX_STORED_ERRORS, SOURCE_KEY};
 pub use source::{
-    EmptySource, FileSource, FixedSource, HarvestSource, MAX_DATASETS_FILE_BYTES, Snapshot,
+    DatasetSource, EmptySource, FileSource, FixedSource, MAX_DATASETS_FILE_BYTES, Snapshot,
     SourceError,
 };
 
@@ -284,7 +284,7 @@ pub struct Commit {
 }
 
 /// Port: where the read copy, the jobs and their errors are kept.
-pub trait HarvestStore: Send + Sync {
+pub trait DatasetStore: Send + Sync {
     /// Every dataset of the copy, in any state, in id order.
     ///
     /// # Errors
@@ -326,16 +326,16 @@ pub trait HarvestStore: Send + Sync {
 }
 
 /// The harvest store chosen at start (see [`Shared`]).
-pub type AnyHarvestStore = Shared<dyn HarvestStore>;
+pub type AnyDatasetStore = Shared<dyn DatasetStore>;
 
 /// The adapters behind the harvest (part of [`crate::Ports`]).
 #[derive(Clone)]
 pub struct HarvestPorts {
     /// Where the read copy and the jobs are kept.
-    pub store: AnyHarvestStore,
+    pub store: AnyDatasetStore,
     /// Where the datasets come from. `None`: the datasets file of
     /// [`crate::Config::datasets_file`], or no datasets without one.
-    pub source: Option<Arc<dyn HarvestSource>>,
+    pub source: Option<Arc<dyn DatasetSource>>,
     /// A check run after the DSP rules ([`DspCheck`]) on each entry, for
     /// example the SHACL shapes of a bundle. `None`: the DSP rules only.
     pub extra_check: Option<Arc<dyn DatasetCheck>>,
@@ -351,7 +351,7 @@ impl Default for HarvestPorts {
     /// The copy in memory, the source from the configuration, DSP rules only.
     fn default() -> Self {
         Self {
-            store: Shared(Arc::new(InMemoryHarvestStore::default())),
+            store: Shared(Arc::new(InMemoryDatasetStore::default())),
             source: None,
             extra_check: None,
         }
@@ -359,22 +359,22 @@ impl Default for HarvestPorts {
 }
 
 /// Runs harvests: at start, then on a schedule; one run at a time.
-pub struct Harvester {
-    source: Arc<dyn HarvestSource>,
+pub struct DatasetHarvester {
+    source: Arc<dyn DatasetSource>,
     check: Arc<dyn DatasetCheck>,
-    store: Arc<dyn HarvestStore>,
-    copy: ReadCopy,
+    store: Arc<dyn DatasetStore>,
+    copy: DatasetCopy,
     /// Held while a run is going on.
     busy: Mutex<()>,
 }
 
-impl std::fmt::Debug for Harvester {
+impl std::fmt::Debug for DatasetHarvester {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Harvester")
+        f.write_str("DatasetHarvester")
     }
 }
 
-/// What [`Harvester::run`] did.
+/// What [`DatasetHarvester::run`] did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunResult {
     /// The run ended and was stored.
@@ -385,34 +385,34 @@ pub enum RunResult {
     StoreFailed(StoreError),
 }
 
-impl Harvester {
+impl DatasetHarvester {
     /// A harvester that takes snapshots from `source`, checks each entry
-    /// with `check` and keeps the copy in `store`. Call [`Harvester::start`]
+    /// with `check` and keeps the copy in `store`. Call [`DatasetHarvester::start`]
     /// before serving.
     #[must_use]
     pub fn new(
-        source: Arc<dyn HarvestSource>,
+        source: Arc<dyn DatasetSource>,
         check: Arc<dyn DatasetCheck>,
-        store: Arc<dyn HarvestStore>,
+        store: Arc<dyn DatasetStore>,
     ) -> Self {
         Self {
             source,
             check,
             store,
-            copy: ReadCopy::default(),
+            copy: DatasetCopy::default(),
             busy: Mutex::new(()),
         }
     }
 
     /// The read copy the DSP code and the data plane use.
     #[must_use]
-    pub fn copy(&self) -> ReadCopy {
+    pub fn copy(&self) -> DatasetCopy {
         self.copy.clone()
     }
 
     /// The store, for the management API.
     #[must_use]
-    pub fn store(&self) -> &Arc<dyn HarvestStore> {
+    pub fn store(&self) -> &Arc<dyn DatasetStore> {
         &self.store
     }
 
@@ -468,7 +468,7 @@ impl Harvester {
     }
 
     /// Runs a harvest every `every`, in the background, the first one
-    /// `every` after now (the start run is done by [`Harvester::start`]).
+    /// `every` after now (the start run is done by [`DatasetHarvester::start`]).
     /// A zero `every` means no schedule (`None`). Must be called inside
     /// the Tokio runtime.
     #[must_use]

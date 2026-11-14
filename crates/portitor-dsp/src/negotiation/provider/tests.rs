@@ -62,7 +62,7 @@ impl NegotiationStore for &Store {
 
 struct Catalog;
 
-impl DatasetStore for Catalog {
+impl CatalogDatasets for Catalog {
     fn all(&self) -> Vec<Dataset> {
         self.get("d1").into_iter().collect()
     }

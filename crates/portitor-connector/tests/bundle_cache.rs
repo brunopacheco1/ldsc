@@ -20,8 +20,8 @@ use axum::extract::{Path as UrlPath, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use portitor_connector::shape_source::{
-    BundleConfig, BundleLocation, ShapeSourceError, load_bundle,
+use portitor_connector::bundle_source::{
+    BundleConfig, BundleLocation, BundleSourceError, load_bundle,
 };
 use portitor_dcp::SigningKey;
 use portitor_dcp::bundle::{BundleError, MAX_FILE_BYTES};
@@ -219,7 +219,7 @@ async fn a_file_that_cannot_be_downloaded_falls_back_to_the_cache() {
             .await
             .unwrap_err();
         assert!(
-            matches!(&error, ShapeSourceError::NoUsableCopy { download, .. } if download.contains(why)),
+            matches!(&error, BundleSourceError::NoUsableCopy { download, .. } if download.contains(why)),
             "{serve:?}: {error}"
         );
     }
@@ -237,7 +237,7 @@ async fn a_downloaded_file_with_another_digest_does_not_fall_back() {
     authority.serve(Serve::Changed);
     assert_eq!(
         load_bundle(Some(authority.settings(&cache))).await,
-        Err(ShapeSourceError::Invalid(BundleError::DigestMismatch(
+        Err(BundleSourceError::Invalid(BundleError::DigestMismatch(
             BROKEN_FILE.to_owned()
         )))
     );

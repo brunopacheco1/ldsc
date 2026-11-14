@@ -58,12 +58,12 @@ build and a 12.6 MB binary. The connector only needs "all datasets" and
 
 ### Source and copy
 
-- A port, `HarvestSource`, gives a full snapshot of the provider's
+- A port, `DatasetSource`, gives a full snapshot of the provider's
   datasets. The first adapter reads the existing datasets file (same
   JSON format, including `portitor:source`). Later adapters (a DCAT-AP
   endpoint, CKAN) need no change elsewhere.
 - The connector keeps a **read copy** in its SQLite database (ADR 0006),
-  behind the existing `DatasetStore` port. The DSP code does not know
+  behind the existing `CatalogDatasets` port. The DSP code does not know
   where datasets come from.
 - **Policies live with the datasets**: each dataset carries its offers
   (`odrl:hasPolicy`), as DSP shows them. There is no separate policy

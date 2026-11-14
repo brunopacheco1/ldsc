@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use super::{
-    Commit, HarvestJob, HarvestStatus, HarvestStore, JobWithErrors, KEPT_JOBS, StoreError,
+    Commit, DatasetStore, HarvestJob, HarvestStatus, JobWithErrors, KEPT_JOBS, StoreError,
     StoredDataset,
 };
 
@@ -22,16 +22,16 @@ struct Kept {
 
 /// Adapter: the read copy and the jobs in memory.
 #[derive(Debug, Default)]
-pub struct InMemoryHarvestStore(Mutex<Kept>);
+pub struct InMemoryDatasetStore(Mutex<Kept>);
 
-impl InMemoryHarvestStore {
+impl InMemoryDatasetStore {
     fn kept(&self) -> MutexGuard<'_, Kept> {
         // a commit changes nothing until it cannot fail any more
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
-impl HarvestStore for InMemoryHarvestStore {
+impl DatasetStore for InMemoryDatasetStore {
     fn datasets(&self) -> Result<Vec<StoredDataset>, StoreError> {
         Ok(self.kept().datasets.values().cloned().collect())
     }

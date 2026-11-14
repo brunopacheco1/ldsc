@@ -29,7 +29,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::auth::{AnyVerifier, Caller, credentials_for};
-use crate::harvest::ReadCopy;
+use crate::harvest::DatasetCopy;
 use crate::http_client::outbound_url_allowed;
 use crate::outbox::{self, Link, Message, Outbox};
 use crate::ports::{AnyDecider, AnyStore, Ports};
@@ -83,7 +83,7 @@ impl NegotiationStore for InMemoryNegotiations {
     }
 }
 
-type Service = ProviderService<AnyStore, AnyDecider, ReadCopy, SystemEnvironment>;
+type Service = ProviderService<AnyStore, AnyDecider, DatasetCopy, SystemEnvironment>;
 
 /// The provider side of negotiation, as used by the HTTP handlers.
 pub(crate) struct Provider {
@@ -97,7 +97,7 @@ pub(crate) struct Provider {
 impl Provider {
     pub(crate) fn new(
         ports: Ports,
-        catalog: ReadCopy,
+        catalog: DatasetCopy,
         participant_id: String,
         allow_http: bool,
     ) -> Self {

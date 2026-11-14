@@ -282,7 +282,7 @@ SqliteNegotiations`).
 
 ```rust
 pub struct ProviderService<S, D, C, E> { /* ... */ }
-impl<S: NegotiationStore, D: Decider, C: DatasetStore, E: Environment> ProviderService<S, D, C, E>
+impl<S: NegotiationStore, D: Decider, C: CatalogDatasets, E: Environment> ProviderService<S, D, C, E>
 ```
 
 The service is *generic*. `S` is "some type that implements
@@ -393,14 +393,14 @@ on the heap", one type that holds either (`portitor-shacl/src/graph.rs`).
   another thread". The web server needs them.
 - `mutex.try_lock()` takes the lock only if it is free, and does not
   wait. `let Ok(_running) = self.busy.try_lock() else { ... return }`
-  skips a harvest run when another one is going on (`Harvester::run` in
+  skips a harvest run when another one is going on (`DatasetHarvester::run` in
   `portitor-connector/src/harvest.rs`): a timer tick that comes during a
   long run is dropped, not queued.
 
 ### A snapshot swapped as a whole: `RwLock<Arc<View>>`
 
 ```rust
-pub struct ReadCopy(Arc<RwLock<Arc<View>>>);
+pub struct DatasetCopy(Arc<RwLock<Arc<View>>>);
 
 fn view(&self) -> Arc<View> {
     Arc::clone(&self.0.read().unwrap_or_else(PoisonError::into_inner))
@@ -411,7 +411,7 @@ fn view(&self) -> Arc<View> {
 is itself an `Arc`, so a reader holds the lock only to copy that
 pointer, then works on its own snapshot without any lock. A harvest run
 builds a whole new `View` and swaps the pointer in one write
-(`ReadCopy::replace` in `portitor-connector/src/harvest/copy.rs`). A
+(`DatasetCopy::replace` in `portitor-connector/src/harvest/copy.rs`). A
 request never sees half a run, and a slow catalog request never blocks
 the next run. The old snapshot is freed when its last reader drops it.
 
@@ -420,11 +420,11 @@ the next run. The old snapshot is freed when its last reader drops it.
 ```
 
 `self.0` is the first (here the only) field of a *tuple struct*, a
-struct whose fields have no names: `ReadCopy(Arc<...>)`. `StartError(e.0)`
+struct whose fields have no names: `DatasetCopy(Arc<...>)`. `StartError(e.0)`
 and `Shared(Arc::clone(store) as _)` in the connector use the same
 form. `write()` returns a guard; `*guard = value` replaces the value the
 guard protects, and the guard is dropped (the lock freed) at the end of
-the line (`ReadCopy::replace`).
+the line (`DatasetCopy::replace`).
 
 ## `SQLite` transactions
 
@@ -534,7 +534,7 @@ match tokio::time::timeout(DOWNLOAD_TIMEOUT, exchange).await { /* ... */ }
 An `async { ... }` block is a task written in place, not started yet. Kept
 in a variable, it runs only when awaited, here inside `timeout`, which
 stops it when the time is up (`UrlSource::get` in
-`portitor-connector/src/shape_source.rs`).
+`portitor-connector/src/bundle_source.rs`).
 
 ```rust
 pub fn schedule(self: &Arc<Self>, every: Duration) -> Option<JoinHandle<()>> {
@@ -554,7 +554,7 @@ an `Arc`. It needs that, as the background task keeps its own pointer
 thread (reading a file, `SQLite`, a long computation) on a separate pool
 of threads, so the async threads stay free for requests. Awaiting it
 gives the closure's result, or an error if it panicked
-(`Harvester::schedule` in `portitor-connector/src/harvest.rs`).
+(`DatasetHarvester::schedule` in `portitor-connector/src/harvest.rs`).
 
 ```rust
 tokio::select! {
@@ -737,7 +737,7 @@ API needs (here the STS error list, `portitor-identity/src/sts.rs`).
   byte order mark if there is one (`portitor-issuer/src/bundle_build.rs`).
 - `x as u64` converts a number. Portitor uses `as` only where nothing can
   be lost, such as a `usize` length into a `u64` (`max_bytes as u64` in
-  `shape_source.rs`). Where a value may not fit, it writes
+  `bundle_source.rs`). Where a value may not fit, it writes
   `u64::try_from(x)`, which gives an error instead of a wrong number,
   and says what to do then (`.unwrap_or(u64::MAX)`, or an error).
 - `const fn` is a function that may also run while the program is
