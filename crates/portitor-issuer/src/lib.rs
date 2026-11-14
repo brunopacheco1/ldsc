@@ -11,5 +11,5 @@
 //! - issuer metadata, credential requests and their status (public port);
 //! - delivery of issued credentials to the holder's Storage API, through
 //!   an outbox;
-//! - one signed BitstringStatusList credential per profile, for revocation;
+//! - one signed `BitstringStatusListCredential` per profile, for revocation;
 //! - a management API (API key): participants, offers, revocation.
