@@ -173,6 +173,12 @@ versions may change behaviour and configuration.
   credential about someone else, still refuses the caller, and so does
   the lack of a valid `MembershipCredential` (the refusal names the
   credentials left out).
+- Readability review, no behaviour change: clearer issuer names
+  (`SignedCredential`, `IssuedWithDelivery`, `SignedRequest`), one
+  `Directory` port and a typed `HttpError` in `portitor-runtime`, shared
+  `merge_scopes` and `HeldCredential::has_type`, shorter functions in the
+  issuer store, the connector and the identity component, and more
+  patterns explained in `docs/RUST-IDIOMS.md`.
 
 ### Removed
 
