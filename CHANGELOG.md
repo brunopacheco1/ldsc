@@ -22,6 +22,9 @@ versions may change behaviour and configuration.
   against the official schemas.
 - `portitor-issuer`: new crate for the issuer component (work in
   progress).
+- Spike report `docs/spikes/0.6-shacl-engine.md` on the SHACL engine for
+  ADR 0005 (rudof, an own SHACL Core subset, or a JVM sidecar), and its
+  result in ADR 0005, which stays proposed.
 
 - C4 model diagrams (system context, containers, components of both
   images, and the provider negotiation as code) in draw.io format, shown
