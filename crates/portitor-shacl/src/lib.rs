@@ -53,12 +53,12 @@ mod shape;
 mod validate;
 mod vocab;
 
-pub use error::{DataError, LoadError};
+pub use error::{DataError, LoadError, Warning};
 pub use jsonld::{Contexts, jsonld_to_graph};
 pub use oxrdf;
 pub use oxrdf::Graph;
 pub use report::{Report, Severity, ValidationResult};
-pub use validate::NESTING_LIMIT_COMPONENT;
+pub use validate::{MAX_CHECKS, NESTING_LIMIT_COMPONENT, WORK_LIMIT_COMPONENT};
 
 use graph::DataView;
 use shape::Shape;
@@ -93,7 +93,7 @@ pub struct Shapes {
     /// Shared, so several sets of shapes can use one copy of large code
     /// lists ([`Shapes::load_with_vocabulary`]).
     vocabulary: std::sync::Arc<Graph>,
-    warnings: Vec<String>,
+    warnings: Vec<Warning>,
 }
 
 impl std::fmt::Debug for Shapes {
@@ -146,11 +146,11 @@ impl Shapes {
         })
     }
 
-    /// Plain-English notes about terms the engine ignored while loading
+    /// Notes about terms the engine ignored while loading
     /// (`sh:extends`, `sh:shape`, a `sh:property` without `sh:path`),
-    /// sorted, each once.
+    /// each once, sorted by their text.
     #[must_use]
-    pub fn warnings(&self) -> &[String] {
+    pub fn warnings(&self) -> &[Warning] {
         &self.warnings
     }
 
@@ -178,13 +178,18 @@ impl Shapes {
     /// EU ITB validator does with imported files. Class targets select
     /// only nodes typed in `data`: the vocabulary's own nodes are
     /// reference data and are not checked themselves.
+    ///
+    /// Time grows with the size of the data, also with recursive shapes
+    /// on data with loops, and one call makes at most [`MAX_CHECKS`]
+    /// checks: past that, the report has a Violation with
+    /// [`WORK_LIMIT_COMPONENT`].
     #[must_use]
     pub fn validate(&self, data: &Graph) -> Report {
         let view = DataView {
             data,
             vocabulary: &self.vocabulary,
         };
-        let results = validate::Validator::new(&self.list, view).run();
+        let results = validate::Validator::new(&self.list, view, MAX_CHECKS).run();
         Report { results }
     }
 }

@@ -182,6 +182,29 @@ fn bad_input_is_refused() {
     assert!(build(&wrong_version, &SigningKey::generate().unwrap()).is_err());
 }
 
+#[test]
+fn only_the_bundle_key_may_sign() {
+    let (input, output) = (input_folder(), scratch());
+    // the authority's credential key, or any other fragment
+    for kid in [
+        format!("{AUTHORITY}#key-1"),
+        format!("{AUTHORITY}#bundle-key-2"),
+        AUTHORITY.to_owned(),
+    ] {
+        let mut options = options(&input, &output);
+        options.kid.clone_from(&kid);
+        let error = build(&options, &SigningKey::generate().unwrap()).unwrap_err();
+        assert!(
+            error.contains("--kid must be the bundle key"),
+            "{kid}: {error}"
+        );
+    }
+    assert!(
+        std::fs::read_dir(&output).map_or(true, |mut entries| entries.next().is_none()),
+        "nothing is written"
+    );
+}
+
 /// The issuer, serving bundles from `bundle_dir` if given.
 fn issuer(bundle_dir: Option<PathBuf>) -> Issuer {
     let config = Config {
@@ -258,6 +281,45 @@ async fn built_bundles_are_served() {
         let (status, _, _) = get(&app, refused).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{refused}");
     }
+}
+
+#[tokio::test]
+async fn a_large_file_is_served_whole_with_its_length() {
+    // larger than one piece of the stream (64 KiB), not a multiple of it
+    let input = scratch();
+    let mut codes = String::new();
+    let mut index = 0;
+    while codes.len() < 300_000 {
+        codes.push_str("<urn:code:");
+        codes.push_str(&index.to_string());
+        codes.push_str("> ");
+        codes.push_str("<http://www.w3.org/2004/02/skos/core#inScheme> <urn:scheme> .\n");
+        index += 1;
+    }
+    write(&input, "codes.nt", &codes);
+    write(
+        &input,
+        "bundle.json",
+        r#"{"files": [{"path": "codes.nt", "role": {"type": "vocabulary"}}]}"#,
+    );
+    let output = scratch();
+    build(&options(&input, &output), &SigningKey::generate().unwrap()).unwrap();
+    let app = portitor_issuer::router(Arc::new(issuer(Some(output.clone()))));
+    let request = Request::get("/bundles/2026.11.0/codes.nt")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get(header::CONTENT_LENGTH).unwrap(),
+        &codes.len().to_string()
+    );
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(body, codes.as_bytes());
+    // served again from the cached manifest
+    let (status, _, body) = get(&app, "/bundles/2026.11.0/codes.nt").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, codes.as_bytes());
 }
 
 #[tokio::test]

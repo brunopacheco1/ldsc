@@ -118,6 +118,43 @@ fn malformed_turtle_is_refused() {
 }
 
 #[test]
+fn patterns_that_rust_reads_differently_are_refused() {
+    // XPath: a class minus a class (consonants); Rust would read a union
+    let error =
+        invalid("ex:S sh:targetClass ex:C ; sh:path ex:p ; sh:pattern \"^[a-z-[aeiou]]+$\" .");
+    assert!(error.contains("class subtraction"), "{error}");
+    // XPath: '#' is a '#'; Rust with x would start a comment
+    let error = invalid(
+        "ex:S sh:targetClass ex:C ; sh:path ex:p ; sh:pattern \"^a#b$\" ; sh:flags \"x\" .",
+    );
+    assert!(error.contains("'#'"), "{error}");
+    // XPath with x keeps white space inside a class; Rust drops it
+    let error = invalid(
+        "ex:S sh:targetClass ex:C ; sh:path ex:p ; sh:pattern \"^[a b]$\" ; sh:flags \"x\" .",
+    );
+    assert!(error.contains("white space"), "{error}");
+    // read the same way: accepted
+    for (pattern, flags) in [
+        ("^a#b$", ""),
+        ("^[]a]$", ""),
+        ("^[^]a]$", ""),
+        ("^[a\\\\[]$", ""),
+        ("^a b c$", "x"),
+        ("^[a-z]+-[0-9]$", ""),
+        ("[a-z-[aeiou]]", "q"),
+    ] {
+        let flags = if flags.is_empty() {
+            String::new()
+        } else {
+            format!(" ; sh:flags \"{flags}\"")
+        };
+        let shapes =
+            format!("ex:S sh:targetClass ex:C ; sh:path ex:p ; sh:pattern \"{pattern}\"{flags} .");
+        assert!(load(&shapes).is_ok(), "{pattern} should be accepted");
+    }
+}
+
+#[test]
 fn malformed_shapes_are_refused() {
     assert!(invalid("ex:S sh:targetClass ex:C ; sh:severity ex:Mine .").contains("sh:severity"));
     assert!(invalid("ex:S sh:targetClass ex:C ; sh:minCount 1 .").contains("needs a sh:path"));
@@ -225,4 +262,35 @@ fn malformed_data_turtle_is_refused() {
     })
     .unwrap_err();
     assert!(matches!(error, DataError::Syntax { document, .. } if document == "data.ttl"));
+}
+
+#[test]
+fn a_nested_context_cannot_redefine_protected_terms() {
+    // a context like the DSP one: its terms are @protected
+    let mut contexts = Contexts::new();
+    contexts.insert(
+        "https://contexts.example/protected",
+        json!({"@context": {
+            "@version": 1.1,
+            "@protected": true,
+            "ex": "https://example.org/",
+            "rule": {"@id": "ex:rule", "@type": "@id"}
+        }}),
+    );
+    let document = |inner: serde_json::Value| {
+        json!({
+            "@context": "https://contexts.example/protected",
+            "@id": "ex:a",
+            "rule": {"@context": inner, "@id": "ex:b", "rule": "ex:c"}
+        })
+    };
+    // a nested context that leaves the protected term alone reads
+    assert!(jsonld_to_graph(&document(json!({"other": "ex:other"})), &contexts).is_ok());
+    for inner in [json!({"rule": "urn:x:hidden"}), serde_json::Value::Null] {
+        let error = jsonld_to_graph(&document(inner.clone()), &contexts).unwrap_err();
+        assert!(
+            matches!(&error, DataError::Syntax { message, .. } if message.contains("protected")),
+            "{inner}: {error}"
+        );
+    }
 }

@@ -43,6 +43,10 @@ fn scratch() -> PathBuf {
 /// built bundle.
 struct Authority {
     did: String,
+    /// The issuer's credential key, listed under `assertionMethod` next
+    /// to the bundle key, and its id.
+    credential_key: SigningKey,
+    credential_kid: String,
     bundles: PathBuf,
     url: String,
     server: tokio::task::JoinHandle<()>,
@@ -76,8 +80,15 @@ impl Authority {
             directory: Arc::new(WebDirectory::new(true).unwrap()),
             sender: Arc::new(HttpSender::new(true).unwrap()),
         };
-        let mut issuer =
-            Issuer::new(&config, SigningKey::generate().unwrap(), Vec::new(), ports).unwrap();
+        let credential_key = SigningKey::generate().unwrap();
+        let mut issuer = Issuer::new(
+            &config,
+            SigningKey::from_pkcs8(credential_key.pkcs8()).unwrap(),
+            Vec::new(),
+            ports,
+        )
+        .unwrap();
+        let credential_kid = issuer.kid().to_owned();
         if list_bundle_key {
             issuer.add_bundle_key(&bundle_key.public_jwk());
         }
@@ -88,6 +99,8 @@ impl Authority {
         Self {
             url: format!("http://127.0.0.1:{port}/bundles/{VERSION}"),
             did,
+            credential_key,
+            credential_kid,
             bundles,
             server,
         }
@@ -242,6 +255,36 @@ async fn another_authority_or_version_is_refused() {
         load_bundle(Some(other_version)).await,
         Err(ShapeSourceError::Invalid(BundleError::WrongVersion { .. }))
     ));
+    authority.stop().await;
+}
+
+#[tokio::test]
+async fn a_bundle_signed_with_the_credential_key_is_refused() {
+    let authority = Authority::start(true).await;
+    // re-sign the served manifest with the credential key, which the
+    // DID document also lists under assertionMethod
+    let folder = authority.bundles.join(VERSION);
+    let manifest = std::fs::read_to_string(folder.join("manifest.json")).unwrap();
+    let raw = serde_json::value::RawValue::from_string(manifest).unwrap();
+    let jws = authority
+        .credential_key
+        .sign_json(
+            &authority.credential_kid,
+            portitor_dcp::bundle::JWS_TYPE,
+            &raw,
+        )
+        .unwrap();
+    std::fs::write(folder.join("manifest.jws"), jws).unwrap();
+    let error = load_bundle(Some(authority.settings(&scratch())))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            ShapeSourceError::Invalid(BundleError::WrongSigner { .. })
+        ),
+        "{error}"
+    );
     authority.stop().await;
 }
 

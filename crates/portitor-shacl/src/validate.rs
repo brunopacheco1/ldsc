@@ -26,39 +26,87 @@ const MAX_DEPTH: usize = 64;
 /// It is the engine's own, not a SHACL component.
 pub const NESTING_LIMIT_COMPONENT: &str = "urn:portitor:shacl:NestingLimit";
 
+/// The most checks of a node against a shape that one validation makes
+/// (each focus node, each value of each property shape, each `sh:node`
+/// and `sh:or` member that is not already known). The HealthDCAT-AP
+/// samples need a few hundred; a million take about a second in a
+/// release build with simple shapes. When the budget is
+/// spent, the validation stops and its report has one Violation with
+/// [`WORK_LIMIT_COMPONENT`]: hostile data can neither keep a worker busy
+/// for minutes nor pass unchecked.
+pub const MAX_CHECKS: usize = 1_000_000;
+
+/// The component IRI of the result given when [`MAX_CHECKS`] is spent.
+/// It is the engine's own, not a SHACL component.
+pub const WORK_LIMIT_COMPONENT: &str = "urn:portitor:shacl:WorkLimit";
+
+/// A check of one node against one shape, as the key of what is known.
+type Check = (ShapeId, Term);
+
 /// The state of one validation.
+///
+/// How loops are handled. Shapes may refer to themselves (`sh:node`), and
+/// the data may form loops, so a check of a node can meet the same check
+/// again while it is still running. That inner check is then assumed to
+/// conform, so the outer check decides (SHACL leaves recursive shapes
+/// undefined, section 3.4.1). The assumption only ever lets checks pass
+/// (the engine has no `sh:not`), so:
+/// - a check that fails is a sure failure, kept in `known`;
+/// - a check that passes without resting on an assumption about a check
+///   still running is a sure pass, kept in `known`;
+/// - a check that passes because a check further out is assumed to pass
+///   is kept in `provisional` until that outer check ends: if it passes,
+///   so do the provisional checks that rest on it; if it fails, they are
+///   forgotten and checked again when next asked.
+///
+/// So each check runs about once, and validation time grows with the
+/// size of the graph, not with the number of paths through it.
 pub(crate) struct Validator<'a> {
     shapes: &'a [Shape],
     view: DataView<'a>,
     /// Whether a node conforms to a shape, once known for sure.
-    known: HashMap<(ShapeId, Term), bool>,
-    /// The (shape, node) checks now running. Meeting one again means the
-    /// shapes and the data form a loop; that inner check is assumed to
-    /// conform, so the outer check decides (SHACL leaves recursive
-    /// shapes undefined, section 3.4.1).
-    running: HashSet<(ShapeId, Term)>,
-    /// How many times such an assumption was made. A check that passed
-    /// while an assumption was made may be wrong, so it is not kept in
-    /// `known`; a check that failed is a sure failure (the assumption
-    /// only ever lets checks pass), so it is kept.
-    assumptions: usize,
+    known: HashMap<Check, bool>,
+    /// Passes that rest on an assumption about a running check: the
+    /// position in `running` of the outermost such check.
+    provisional: HashMap<Check, usize>,
+    /// The `sh:node` and `sh:or` checks now running, outermost first.
+    running: Vec<Check>,
+    /// The position of each check in `running`, to find it quickly.
+    running_positions: HashMap<Check, usize>,
+    /// While a check runs: the position of the outermost running check
+    /// that it (or a check inside it) assumed to conform; `None` if none.
+    outermost_assumed: Option<usize>,
+    /// How many checks this validation may make ([`MAX_CHECKS`]).
+    max_checks: usize,
+    /// How many of them are left.
+    checks_left: usize,
+    /// The result to report once the budget is spent.
+    out_of_budget: Option<ValidationResult>,
 }
 
 impl<'a> Validator<'a> {
-    /// A validator for `shapes` on the data graph `view`.
-    pub fn new(shapes: &'a [Shape], view: DataView<'a>) -> Self {
+    /// A validator for `shapes` on the data graph `view`, which may make
+    /// at most `max_checks` checks ([`MAX_CHECKS`] outside tests).
+    pub fn new(shapes: &'a [Shape], view: DataView<'a>, max_checks: usize) -> Self {
         Validator {
             shapes,
             view,
             known: HashMap::new(),
-            running: HashSet::new(),
-            assumptions: 0,
+            provisional: HashMap::new(),
+            running: Vec::new(),
+            running_positions: HashMap::new(),
+            outermost_assumed: None,
+            max_checks,
+            checks_left: max_checks,
+            out_of_budget: None,
         }
     }
 
     /// Checks every shape that has targets on its focus nodes, and
     /// returns all results, sorted.
     pub fn run(&mut self) -> Vec<ValidationResult> {
+        // a copy of the slice reference, so `self` can be borrowed
+        // mutably in the loop while the shapes are read
         let shapes = self.shapes;
         let mut results = Vec::new();
         for (id, shape) in shapes.iter().enumerate() {
@@ -68,6 +116,11 @@ impl<'a> Validator<'a> {
             for focus in self.focus_nodes(shape) {
                 self.check_shape(id, &focus, 0, &mut results);
             }
+        }
+        // once the budget is spent, later checks passed without looking:
+        // this result makes sure the report never conforms
+        if let Some(result) = self.out_of_budget.take() {
+            results.push(result);
         }
         results.sort();
         results
@@ -103,9 +156,14 @@ impl<'a> Validator<'a> {
         depth: usize,
         results: &mut Vec<ValidationResult>,
     ) {
+        // a copy of the slice reference, so `self` can be borrowed
+        // mutably below while `shape` is in use
         let shapes = self.shapes;
         let shape = &shapes[id];
         if shape.deactivated {
+            return;
+        }
+        if !self.spend_one_check(shape, focus) {
             return;
         }
         if depth > MAX_DEPTH {
@@ -143,27 +201,112 @@ impl<'a> Validator<'a> {
         }
     }
 
-    /// Whether `node` conforms to the shape `id`: checking it gives no
-    /// result at all, of any severity (SHACL 3.4).
-    fn conforms(&mut self, id: ShapeId, node: &Term, depth: usize) -> bool {
-        let key = (id, node.clone());
-        if let Some(&known) = self.known.get(&key) {
-            return known;
-        }
-        if self.running.contains(&key) {
-            self.assumptions += 1;
+    /// Takes one check from the budget. When none is left, notes the
+    /// work-limit result (once) and returns `false`: the caller then
+    /// skips the check.
+    fn spend_one_check(&mut self, shape: &Shape, focus: &Term) -> bool {
+        if self.checks_left > 0 {
+            self.checks_left -= 1;
             return true;
         }
-        let assumptions_before = self.assumptions;
-        self.running.insert(key.clone());
+        if self.out_of_budget.is_none() {
+            self.out_of_budget = Some(ValidationResult {
+                focus_node: owned_term_text(focus),
+                path: shape.path_text.clone(),
+                value: None,
+                severity: Severity::Violation,
+                source_shape: shape.name.clone(),
+                component: WORK_LIMIT_COMPONENT.to_owned(),
+                message: Some(format!(
+                    "Not checked: the validation stopped after {} checks",
+                    self.max_checks
+                )),
+            });
+        }
+        false
+    }
+
+    /// Whether `node` conforms to the shape `id`: checking it gives no
+    /// result at all, of any severity (SHACL 3.4). See [`Validator`] for
+    /// how loops are handled.
+    fn conforms(&mut self, id: ShapeId, node: &Term, depth: usize) -> bool {
+        let check = (id, node.clone());
+        if let Some(&known) = self.known.get(&check) {
+            return known;
+        }
+        if let Some(&outer) = self.provisional.get(&check) {
+            self.note_assumption(outer);
+            return true;
+        }
+        if let Some(&position) = self.running_positions.get(&check) {
+            // a loop: assume it conforms, the running check decides
+            self.note_assumption(position);
+            return true;
+        }
+        let position = self.running.len();
+        self.running.push(check.clone());
+        self.running_positions.insert(check.clone(), position);
+        // what the checks inside this one assume, apart from the caller's
+        let caller_assumed = self.outermost_assumed.take();
         let mut inner = Vec::new();
         self.check_shape(id, node, depth + 1, &mut inner);
-        self.running.remove(&key);
+        let assumed = self.outermost_assumed.take();
+        self.outermost_assumed = caller_assumed;
+        self.running.pop();
+        self.running_positions.remove(&check);
         let conforms = inner.is_empty();
-        if !conforms || self.assumptions == assumptions_before {
-            self.known.insert(key, conforms);
+        match assumed {
+            // passes only if a check further out passes
+            Some(outer) if conforms && outer < position => {
+                self.rest_provisional_on(position, outer);
+                self.provisional.insert(check, outer);
+                self.note_assumption(outer);
+            }
+            // a sure answer: a failure, or a pass that rests on no
+            // check further out
+            _ => {
+                self.settle_provisional(position, conforms);
+                self.known.insert(check, conforms);
+            }
         }
         conforms
+    }
+
+    /// Notes that the running check now at work assumed the check at
+    /// `position` in `running` conforms.
+    fn note_assumption(&mut self, position: usize) {
+        self.outermost_assumed = Some(match self.outermost_assumed {
+            Some(earlier) => earlier.min(position),
+            None => position,
+        });
+    }
+
+    /// The check at `position` ended with a sure answer: the provisional
+    /// passes that rested on it become sure passes if it passed, and are
+    /// forgotten (to be checked again) if it failed.
+    fn settle_provisional(&mut self, position: usize, passed: bool) {
+        let mut settled = Vec::new();
+        for (check, &outer) in &self.provisional {
+            if outer >= position {
+                settled.push(check.clone());
+            }
+        }
+        for check in settled {
+            self.provisional.remove(&check);
+            if passed {
+                self.known.insert(check, true);
+            }
+        }
+    }
+
+    /// The check at `position` passed, resting on the check at `outer`:
+    /// the provisional passes that rested on it now rest on `outer`.
+    fn rest_provisional_on(&mut self, position: usize, outer: usize) {
+        for resting_on in self.provisional.values_mut() {
+            if *resting_on >= position {
+                *resting_on = outer;
+            }
+        }
     }
 
     /// Checks one constraint on the value nodes and adds a result for
@@ -323,7 +466,80 @@ fn has_datatype(value: &Term, datatype: &str) -> bool {
         return literal.language().is_some();
     }
     match datatype.strip_prefix(XSD) {
+        // `None`: an XSD type the engine has no lexical rules for; its
+        // literals are checked by datatype IRI only
         Some(local) => lexical::is_valid(local, literal.value()).unwrap_or(true),
         None => true,
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::{Document, Format, Graph, Shapes, parse_document};
+    use std::fmt::Write as _;
+
+    fn load(text: &str) -> Shapes {
+        Shapes::load(
+            &[Document {
+                name: "shapes.ttl",
+                format: Format::Turtle,
+                text,
+            }],
+            &[],
+        )
+        .unwrap()
+    }
+
+    fn data(text: &str) -> Graph {
+        parse_document(&Document {
+            name: "data.nt",
+            format: Format::NTriples,
+            text,
+        })
+        .unwrap()
+    }
+
+    /// Validates with a budget of `max_checks`.
+    fn validate(shapes: &Shapes, data: &Graph, max_checks: usize) -> Vec<ValidationResult> {
+        let view = DataView {
+            data,
+            vocabulary: &shapes.vocabulary,
+        };
+        Validator::new(&shapes.list, view, max_checks).run()
+    }
+
+    #[test]
+    fn a_spent_budget_ends_in_a_violation_never_a_pass() {
+        let shapes = load(
+            "@prefix sh: <http://www.w3.org/ns/shacl#> .
+             <urn:Link> sh:targetNode <urn:n0> ;
+               sh:property [ sh:path <urn:next> ; sh:node <urn:Link> ] .",
+        );
+        // a chain of 10 nodes, every one of them valid
+        let mut text = String::new();
+        for index in 0..10 {
+            writeln!(text, "<urn:n{index}> <urn:next> <urn:n{}> .", index + 1).unwrap();
+        }
+        let graph = data(&text);
+        // enough checks: it conforms
+        assert!(validate(&shapes, &graph, 1_000).is_empty());
+        // too few: one work-limit Violation, and nothing else
+        let results = validate(&shapes, &graph, 5);
+        assert_eq!(results.len(), 1, "{results:?}");
+        assert_eq!(results[0].component, WORK_LIMIT_COMPONENT);
+        assert_eq!(results[0].severity, Severity::Violation);
+        assert!(
+            results[0]
+                .message
+                .as_deref()
+                .is_some_and(|text| text.contains("stopped after")),
+            "{results:?}"
+        );
+        // no check at all
+        let results = validate(&shapes, &graph, 0);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].component, WORK_LIMIT_COMPONENT);
     }
 }

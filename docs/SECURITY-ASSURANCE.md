@@ -33,11 +33,17 @@ dataspace participants over HTTPS.
   running as a non-root user, with no shell.
 - **Authentic schema and vocabulary bundles (0.7):** a connector loads
   only the bundle version it pins, signed (ES256, `typ`
-  `portitor-bundle+jws`) with the bundle key that the authority's
-  `did:web` document lists under `assertionMethod`, with every file's
-  SHA-256 matching. A bundle that fails a check stops the start; the disk
+  `portitor-bundle+jws`) with the bundle key `<authority>#bundle-key`
+  that the authority's `did:web` document lists under `assertionMethod`,
+  with every file's SHA-256 matching. Any other key of the authority,
+  such as its credential key (also under `assertionMethod`), is refused,
+  and so is PS256. A bundle that fails a check stops the start; the disk
   cache never replaces it and is itself checked again before use
-  ([ADR 0005](adr/0005-schema-and-vocabulary-registry.md)).
+  ([ADR 0005](adr/0005-schema-and-vocabulary-registry.md)). While the
+  authority cannot be reached, the connector reuses the cached copy of
+  the pinned version that it verified before, with the key it stored
+  then, without reading the DID document again: a bundle key revoked in
+  the meantime is not noticed until the authority is reachable.
 - **No surprise in validation:** `portitor-shacl` refuses shapes that use
   a SHACL term it does not implement, so a rule is never passed silently.
 - **A bad dataset does not take the catalog down (0.7):** each dataset is

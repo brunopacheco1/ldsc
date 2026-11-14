@@ -62,6 +62,16 @@ pub struct ValidationResult {
     pub message: Option<String>,
 }
 
+impl ValidationResult {
+    /// The constraint component's name without the SHACL namespace, such
+    /// as `MinCountConstraintComponent`; the engine's own components
+    /// (`urn:portitor:shacl:...`) are given whole.
+    #[must_use]
+    pub fn component_local_name(&self) -> &str {
+        crate::vocab::shacl_local_name(&self.component).unwrap_or(&self.component)
+    }
+}
+
 /// The outcome of a validation (SHACL 3.6.1): every result, sorted.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Report {
@@ -111,6 +121,18 @@ impl Report {
         self.results
             .iter()
             .any(|result| result.severity == Severity::Violation)
+    }
+
+    /// The results with the severity `Violation`, in report order.
+    #[must_use]
+    pub fn violations(&self) -> Vec<&ValidationResult> {
+        let mut violations = Vec::new();
+        for result in &self.results {
+            if result.severity == Severity::Violation {
+                violations.push(result);
+            }
+        }
+        violations
     }
 
     /// The report as JSON, for storing in harvest jobs and for API

@@ -44,7 +44,7 @@ fuzz_target!(|data: &[u8]| {
     for entry in &manifest.files {
         assert!(bundle::check_path(&entry.path).is_ok());
     }
-    let kid = format!("{}#bundle-key", manifest.authority);
+    let kid = bundle::bundle_kid(&manifest.authority);
     let Ok(jws) = bundle::sign_manifest(data, key, &kid) else {
         return;
     };

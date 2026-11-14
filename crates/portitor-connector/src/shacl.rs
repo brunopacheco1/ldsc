@@ -33,7 +33,7 @@ use portitor_dsp::guard::{Direction, MessageGuard, Rejection};
 use portitor_dsp::{CONTEXT, Dataset};
 use portitor_shacl::oxrdf::{NamedNode, NamedNodeRef, TermRef};
 use portitor_shacl::{
-    Contexts, Document, Format, Graph, LoadError, Report, Severity, Shapes, ValidationResult,
+    Contexts, Document, Format, Graph, LoadError, Report, Shapes, ValidationResult, Warning,
     jsonld_to_graph,
 };
 use serde_json::Value;
@@ -105,7 +105,7 @@ pub struct BundleRules {
     dataset_check: Arc<ShaclDatasetCheck>,
     guard: Option<Arc<ShaclGuard>>,
     context_notes: Vec<String>,
-    shape_notes: Vec<String>,
+    shape_notes: Vec<Warning>,
 }
 
 impl BundleRules {
@@ -173,17 +173,11 @@ impl BundleRules {
         self.guard.clone()
     }
 
-    /// The bundle `context` files that are not used, and why, one line each.
-    #[must_use]
-    pub fn context_notes(&self) -> &[String] {
+    /// The bundle `context` files that are not used, and why, one line
+    /// each (logged by [`BundleRules::log_start`]; read by tests).
+    #[cfg(test)]
+    pub(crate) fn context_notes(&self) -> &[String] {
         &self.context_notes
-    }
-
-    /// The SHACL engine's notes on terms it ignored while loading
-    /// (`sh:extends`, `sh:shape`, `sh:property` without `sh:path`), each once.
-    #[must_use]
-    pub fn shape_notes(&self) -> &[String] {
-        &self.shape_notes
     }
 
     /// Logs, once at start, what the rules are and the notes above.
@@ -218,8 +212,12 @@ impl BundleRules {
 }
 
 /// Whether an engine note is one the upstream shapes are known to cause.
-fn is_expected_shape_note(note: &str) -> bool {
-    note.contains("sh:extends") || note.contains("sh:shape") || note.contains("without sh:path")
+/// A kind the engine adds later is logged at warn until it is listed here.
+fn is_expected_shape_note(note: &Warning) -> bool {
+    matches!(
+        note,
+        Warning::NotShaclCore { .. } | Warning::PropertyWithoutPath { .. }
+    )
 }
 
 /// The embedded DSP 2025-1 contexts, by URL.
@@ -351,6 +349,108 @@ pub struct ShaclDatasetCheck {
     by_access_right: BTreeMap<String, Arc<Shapes>>,
 }
 
+impl ShaclDatasetCheck {
+    /// The bundle's access levels, for messages.
+    fn known_access_rights(&self) -> String {
+        let names: Vec<&str> = self.by_access_right.keys().map(String::as_str).collect();
+        names.join(", ")
+    }
+
+    /// Reads the entry: as a DSP [`Dataset`], its `@id` as an IRI, and as
+    /// an RDF graph with the served `@context`.
+    fn read_entry(&self, entry: &Value) -> Result<(Dataset, NamedNode, Graph), EntryFailure> {
+        let document = with_served_context(entry)?;
+        let dataset: Dataset = serde_json::from_value(entry.clone())
+            .map_err(|e| EntryFailure::new(CheckKind::Dsp, format!("not a DSP dataset: {e}")))?;
+        let id = &dataset.id;
+        // JSON-LD drops a relative @id (there is no base IRI), and with it
+        // every statement about the dataset: nothing could be checked
+        let Ok(subject) = NamedNode::new(id.as_str()) else {
+            return Err(shacl_failure(format!(
+                "dataset {id:?}: its @id is not an absolute IRI, so its metadata cannot be checked against the bundle's shapes"
+            )));
+        };
+        let graph = jsonld_to_graph(&document, &self.contexts).map_err(|e| {
+            shacl_failure(format!(
+                "dataset {id:?} cannot be read as JSON-LD with the served @context: {e}"
+            ))
+        })?;
+        Ok((dataset, subject, graph))
+    }
+
+    /// Validates the dataset `id` with the shapes of each of its
+    /// `access_rights` that the bundle has shapes for. At least one must
+    /// have shapes; one violation fails the dataset.
+    fn validate_for(
+        &self,
+        id: &str,
+        access_rights: &[String],
+        graph: &Graph,
+    ) -> Result<(), EntryFailure> {
+        let mut checked_any = false;
+        for access_right in access_rights {
+            let Some(shapes) = self.by_access_right.get(access_right) else {
+                continue;
+            };
+            checked_any = true;
+            let report = shapes.validate(graph);
+            if report.has_violations() {
+                return Err(EntryFailure {
+                    kind: CheckKind::Shacl,
+                    message: violations_message(id, access_right, &self.version, &report),
+                    report: Some(report.to_json()),
+                });
+            }
+            if !report.results.is_empty() {
+                tracing::debug!(
+                    dataset = %id,
+                    results = report.results.len(),
+                    "harvest: SHACL warnings only; the dataset passes"
+                );
+            }
+        }
+        if checked_any {
+            return Ok(());
+        }
+        Err(shacl_failure(format!(
+            "dataset {id:?} has dct:accessRights {}; bundle {} has no dataset shapes for it, only for: {}",
+            access_rights.join(", "),
+            self.version,
+            self.known_access_rights()
+        )))
+    }
+}
+
+impl DatasetCheck for ShaclDatasetCheck {
+    /// `bundle:<version>`.
+    fn rules_version(&self) -> String {
+        format!("bundle:{}", self.version)
+    }
+
+    fn check(&self, entry: &Value) -> Result<CheckedDataset, EntryFailure> {
+        let (dataset, subject, graph) = self.read_entry(entry)?;
+        let access_rights = access_rights_of(&graph, subject.as_ref());
+        if access_rights.is_empty() {
+            return Err(shacl_failure(format!(
+                "dataset {:?} has no dct:accessRights IRI, which chooses the shapes to check it with; bundle {} has shapes for: {}",
+                dataset.id,
+                self.version,
+                self.known_access_rights()
+            )));
+        }
+        self.validate_for(&dataset.id, &access_rights, &graph)?;
+        Ok(CheckedDataset {
+            dataset,
+            conforms_to: Some(self.profile.clone()),
+        })
+    }
+}
+
+/// A failed SHACL check with `message` and no report.
+fn shacl_failure(message: String) -> EntryFailure {
+    EntryFailure::new(CheckKind::Shacl, message)
+}
+
 /// The entry with the `@context` the catalog serves (the DSP 2025-1
 /// context alone), ready for the JSON-LD reader.
 fn with_served_context(entry: &Value) -> Result<Value, EntryFailure> {
@@ -363,83 +463,6 @@ fn with_served_context(entry: &Value) -> Result<Value, EntryFailure> {
     let mut document = fields.clone();
     document.insert("@context".to_owned(), Value::from(vec![CONTEXT]));
     Ok(Value::Object(document))
-}
-
-impl ShaclDatasetCheck {
-    /// The bundle's access levels, for messages.
-    fn known_access_rights(&self) -> String {
-        let names: Vec<&str> = self.by_access_right.keys().map(String::as_str).collect();
-        names.join(", ")
-    }
-}
-
-impl DatasetCheck for ShaclDatasetCheck {
-    /// `bundle:<version>`.
-    fn rules_version(&self) -> String {
-        format!("bundle:{}", self.version)
-    }
-
-    fn check(&self, entry: &Value) -> Result<CheckedDataset, EntryFailure> {
-        let shacl = |message: String| EntryFailure::new(CheckKind::Shacl, message);
-        let document = with_served_context(entry)?;
-        let dataset: Dataset = serde_json::from_value(entry.clone())
-            .map_err(|e| EntryFailure::new(CheckKind::Dsp, format!("not a DSP dataset: {e}")))?;
-        let id = dataset.id.clone();
-        // JSON-LD drops a relative @id (there is no base IRI), and with it
-        // every statement about the dataset: nothing could be checked
-        let Ok(subject) = NamedNode::new(id.as_str()) else {
-            return Err(shacl(format!(
-                "dataset {id:?}: its @id is not an absolute IRI, so its metadata cannot be checked against the bundle's shapes"
-            )));
-        };
-        let graph = jsonld_to_graph(&document, &self.contexts).map_err(|e| {
-            shacl(format!(
-                "dataset {id:?} cannot be read as JSON-LD with the served @context: {e}"
-            ))
-        })?;
-        let access_rights = access_rights_of(&graph, subject.as_ref());
-        if access_rights.is_empty() {
-            return Err(shacl(format!(
-                "dataset {id:?} has no dct:accessRights IRI, which chooses the shapes to check it with; bundle {} has shapes for: {}",
-                self.version,
-                self.known_access_rights()
-            )));
-        }
-        let mut checked_any = false;
-        for access_right in &access_rights {
-            let Some(shapes) = self.by_access_right.get(access_right) else {
-                continue;
-            };
-            checked_any = true;
-            let report = shapes.validate(&graph);
-            if report.has_violations() {
-                return Err(EntryFailure {
-                    kind: CheckKind::Shacl,
-                    message: violations_message(&id, access_right, &self.version, &report),
-                    report: Some(report.to_json()),
-                });
-            }
-            if !report.results.is_empty() {
-                tracing::debug!(
-                    dataset = %id,
-                    results = report.results.len(),
-                    "harvest: SHACL warnings only; the dataset passes"
-                );
-            }
-        }
-        if !checked_any {
-            return Err(shacl(format!(
-                "dataset {id:?} has dct:accessRights {}; bundle {} has no dataset shapes for it, only for: {}",
-                access_rights.join(", "),
-                self.version,
-                self.known_access_rights()
-            )));
-        }
-        Ok(CheckedDataset {
-            dataset,
-            conforms_to: Some(self.profile.clone()),
-        })
-    }
 }
 
 /// The IRIs of `subject`'s `dct:accessRights` in `graph`, sorted.
@@ -457,11 +480,7 @@ fn access_rights_of(graph: &Graph, subject: NamedNodeRef<'_>) -> Vec<String> {
 /// The one-line message for a dataset with violations: how many, for
 /// which shapes, and the first one.
 fn violations_message(id: &str, access_right: &str, version: &str, report: &Report) -> String {
-    let violations: Vec<&ValidationResult> = report
-        .results
-        .iter()
-        .filter(|result| result.severity == Severity::Violation)
-        .collect();
+    let violations = report.violations();
     let count = violations.len();
     let noun = if count == 1 {
         "violation"
@@ -483,13 +502,9 @@ fn violations_message(id: &str, access_right: &str, version: &str, report: &Repo
 fn describe(result: &ValidationResult) -> String {
     // the engine gives a message for every result; the constraint's name
     // is a fallback
-    let what = if let Some(message) = &result.message {
-        message.clone()
-    } else {
-        let component = result
-            .component
-            .trim_start_matches("http://www.w3.org/ns/shacl#");
-        format!("{component} not met")
+    let what = match &result.message {
+        Some(message) => message.clone(),
+        None => format!("{} not met", result.component_local_name()),
     };
     let mut text = format!("{what} (focus node {}", result.focus_node);
     if let Some(path) = &result.path {
@@ -556,11 +571,7 @@ impl MessageGuard for ShaclGuard {
 /// The violations as reasons, at most [`MAX_REASONS`], then one line
 /// with the number left out.
 fn violation_reasons(report: &Report) -> Vec<String> {
-    let violations: Vec<&ValidationResult> = report
-        .results
-        .iter()
-        .filter(|result| result.severity == Severity::Violation)
-        .collect();
+    let violations = report.violations();
     let mut reasons = Vec::new();
     for result in violations.iter().take(MAX_REASONS) {
         reasons.push(format!("SHACL: {}", describe(result)));

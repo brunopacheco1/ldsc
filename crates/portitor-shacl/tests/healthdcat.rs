@@ -20,8 +20,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, missing_docs)]
 
 use portitor_shacl::{
-    Contexts, Document, Format, Graph, LoadError, Report, Severity, Shapes, jsonld_to_graph,
-    parse_document,
+    Contexts, Document, Format, Graph, LoadError, Report, Severity, Shapes, Warning,
+    jsonld_to_graph, parse_document,
 };
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -181,7 +181,8 @@ fn every_release_8_and_dcat_ap_file_loads_with_only_the_known_warnings() {
             "sh:shape on {DCAT_AP}PeriodOfTime_Shape/property(http://www.w3.org/ns/dcat#startDate) is not part of SHACL Core and is ignored"
         ),
     ];
-    assert_eq!(shapes.warnings(), expected);
+    let texts: Vec<String> = shapes.warnings().iter().map(ToString::to_string).collect();
+    assert_eq!(texts, expected);
     assert!(shapes.len() > 600, "{} shapes", shapes.len());
 }
 
@@ -190,14 +191,10 @@ fn each_access_level_loads_as_a_profile() {
     for level in ["public", "restricted", "non-public"] {
         let shapes = load_profile(level);
         assert_eq!(shapes.vocabulary_len(), 29, "{level}");
-        assert!(
-            shapes
-                .warnings()
-                .iter()
-                .all(|warning| warning.contains("sh:extends")
-                    || warning.contains("sh:shape")
-                    || warning.contains("without sh:path"))
-        );
+        assert!(shapes.warnings().iter().all(|warning| matches!(
+            warning,
+            Warning::NotShaclCore { .. } | Warning::PropertyWithoutPath { .. }
+        )));
     }
 }
 

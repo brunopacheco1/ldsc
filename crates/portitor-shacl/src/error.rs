@@ -65,3 +65,28 @@ pub enum DataError {
         graph: String,
     },
 }
+
+/// A note about a term the engine ignored while loading shapes
+/// ([`Shapes::warnings`](crate::Shapes::warnings)). The shapes still load;
+/// the text (`Display`) says what was ignored. Both kinds are known to
+/// come from the upstream HealthDCAT-AP and DCAT-AP shapes.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, thiserror::Error)]
+#[non_exhaustive]
+pub enum Warning {
+    /// `sh:extends` or `sh:shape`, used by upstream shapes but not part
+    /// of SHACL Core, is ignored.
+    #[error("sh:{term} on {shape} is not part of SHACL Core and is ignored")]
+    NotShaclCore {
+        /// The SHACL local name: `extends` or `shape`.
+        term: String,
+        /// The shape that uses it.
+        shape: String,
+    },
+    /// A value of `sh:property` without `sh:path`, which is checked as a
+    /// node shape on the same focus node (as Jena and `TopBraid` do).
+    #[error("{shape} is a value of sh:property without sh:path; it is checked as a node shape")]
+    PropertyWithoutPath {
+        /// The shape without a path.
+        shape: String,
+    },
+}

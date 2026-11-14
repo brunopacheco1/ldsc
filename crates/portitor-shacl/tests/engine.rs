@@ -172,6 +172,109 @@ fn recursive_shapes_on_cyclic_data_terminate() {
     );
 }
 
+/// A layered graph: `ex:n0` points to every node of layer 1, each node
+/// of a layer to every node of the next one, and every node of the last
+/// layer back to `ex:n0`. Every node has `ex:mark`, except `unmarked`.
+fn layered_graph(layers: usize, fan_out: usize, unmarked: Option<&str>) -> String {
+    use std::fmt::Write as _;
+    let name = |layer: usize, index: usize| {
+        if layer == 0 {
+            "ex:n0".to_owned()
+        } else {
+            format!("ex:n{layer}_{index}")
+        }
+    };
+    let mut text = String::new();
+    for layer in 0..=layers {
+        let width = if layer == 0 { 1 } else { fan_out };
+        for index in 0..width {
+            let node = name(layer, index);
+            if unmarked != Some(node.as_str()) {
+                writeln!(text, "{node} ex:mark true .").unwrap();
+            }
+            if layer == layers {
+                writeln!(text, "{node} ex:next ex:n0 .").unwrap();
+                continue;
+            }
+            for next in 0..fan_out {
+                writeln!(text, "{node} ex:next {} .", name(layer + 1, next)).unwrap();
+            }
+        }
+    }
+    text
+}
+
+#[test]
+fn recursive_shapes_on_layered_cyclic_data_take_polynomial_time() {
+    // Each node is checked against ex:Link once, not once per path to it:
+    // there are 4^7 paths from the top to the last layer. Before the
+    // engine kept passes that rest on an outer check, this took over a
+    // minute in a release build.
+    let shapes = shapes(
+        "ex:Link sh:targetNode ex:n0 ; sh:property [ sh:path ex:next ; sh:node ex:Link ] ;
+           sh:property [ sh:path ex:mark ; sh:minCount 1 ] .",
+        "",
+    );
+    let started = std::time::Instant::now();
+    let report = shapes.validate(&data(&layered_graph(7, 4, None)));
+    assert!(report.conforms(), "{:?}", report.results);
+    // one node without a mark, at the bottom: every node above it fails
+    // its sh:node check, whatever the order of the checks
+    let report = shapes.validate(&data(&layered_graph(7, 4, Some("ex:n7_3"))));
+    let elapsed = started.elapsed();
+    // only the top node is a focus node: one result per value of ex:next
+    assert_eq!(components(&report.results), ["NodeConstraintComponent"; 4]);
+    assert!(
+        report
+            .results
+            .iter()
+            .all(|result| result.focus_node == "https://example.org/n0")
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "took {elapsed:?}"
+    );
+}
+
+#[test]
+fn a_failure_found_under_an_assumption_is_not_kept_as_a_pass() {
+    // ex:a and ex:b point to each other. ex:b's check assumes ex:a
+    // conforms while ex:a is being checked; ex:a then fails on its own
+    // (no mark), so ex:b, which ex:c checks later, must fail as well.
+    let shapes = shapes(
+        "ex:Top sh:targetNode ex:top ;
+           sh:property [ sh:path ex:first ; sh:node ex:Link ] ;
+           sh:property [ sh:path ex:second ; sh:node ex:Link ] .
+         ex:Link sh:property [ sh:path ex:next ; sh:node ex:Link ] ;
+           sh:property [ sh:path ex:mark ; sh:minCount 1 ] .",
+        "",
+    );
+    let report = shapes.validate(&data(
+        "ex:top ex:first ex:a ; ex:second ex:b .
+         ex:a ex:next ex:b .
+         ex:b ex:next ex:a ; ex:mark true .",
+    ));
+    let failed: Vec<(&str, &str)> = report
+        .results
+        .iter()
+        .map(|result| {
+            (
+                result.focus_node.as_str(),
+                result
+                    .component
+                    .trim_start_matches("http://www.w3.org/ns/shacl#"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        failed,
+        [
+            ("https://example.org/top", "NodeConstraintComponent"),
+            ("https://example.org/top", "NodeConstraintComponent"),
+        ]
+    );
+}
+
 #[test]
 fn deep_nesting_stops_with_a_result() {
     let shapes = shapes(

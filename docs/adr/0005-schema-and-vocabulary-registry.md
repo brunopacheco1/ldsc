@@ -173,7 +173,11 @@ SHACL 1.2 draft).
 - `manifest.jws` is a compact JWS (ES256) over the bytes of
   `manifest.json`, signed with a **bundle key** of the authority: its own
   verification method in the authority's `did:web` document, separate
-  from the credential signing key (maintainer, 2026-11-14).
+  from the credential signing key (maintainer, 2026-11-14). Enforced:
+  the JWS `kid` must be `<authority>#bundle-key` and its `alg` ES256; a
+  connector refuses a bundle signed with any other key of the
+  authority, the credential key included (it is also under
+  `assertionMethod`), and `bundle build` refuses any other `--kid`.
 - Code lists travel as reduced N-Triples (`rdf:type` and
   `skos:inScheme` triples only). The build tool accepts only Turtle,
   N-Triples and JSON-LD contexts, so no Portitor binary parses RDF/XML.

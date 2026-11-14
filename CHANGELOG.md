@@ -131,8 +131,11 @@ versions may change behaviour and configuration.
 - The bundle is signed with its own bundle key, separate from the
   issuer's credential key; the issuer refuses to start if they are the
   same, and needs only the public key. The connector accepts only the
-  pinned version, signed by the key the authority's `did:web` document
-  lists under `assertionMethod`, with every file's SHA-256 matching; a
+  pinned version, signed (ES256 only) by the bundle key
+  `<authority>#bundle-key` that the authority's `did:web` document lists
+  under `assertionMethod`; a bundle signed with any other key of the
+  authority, such as its credential key, is refused, and `bundle build`
+  refuses any other `--kid`. Every file's SHA-256 must match; a
   bundle that fails a check stops the start and is never replaced by the
   cache. Limits: manifest 1 MiB, 64 MiB per file, 256 MiB in all, 120 s
   per download.
@@ -142,6 +145,19 @@ versions may change behaviour and configuration.
   and code lists travel as N-Triples.
 - `portitor-shacl` refuses shapes that use a SHACL term it does not
   implement, so nothing passes silently.
+- `portitor-shacl` checks each node against a shape about once, also
+  with recursive shapes on data with loops (a layered graph that took 79 s
+  now takes milliseconds), and one validation makes at most 1,000,000
+  checks (`MAX_CHECKS`): past that, the report has a Violation
+  (`urn:portitor:shacl:WorkLimit`), never a pass.
+- `portitor-shacl` refuses a `sh:pattern` that Rust's `regex` would read
+  differently from `XPath`: a `[` inside a character class (`XPath` class
+  subtraction such as `[a-z-[aeiou]]`), and with the `x` flag a `#` or
+  white space inside a class.
+- The issuer's public bundle route sends a file in 64 KiB pieces as it
+  reads it, with its `Content-Length`, instead of reading the whole file
+  into memory for each request, and keeps each version's parsed manifest
+  (read again only when the file changes).
 
 ### Documentation
 

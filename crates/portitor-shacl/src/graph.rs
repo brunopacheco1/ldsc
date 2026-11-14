@@ -52,6 +52,17 @@ fn fresh(renamed: &mut HashMap<String, BlankNode>, node: &BlankNode) -> BlankNod
     renamed.entry(node.as_str().to_owned()).or_default().clone()
 }
 
+/// `term` as a node that can be a subject: an IRI or a blank node;
+/// `None` for a literal. Each caller says in its own words why a literal
+/// is wrong.
+pub(crate) fn as_node(term: &Term) -> Option<NamedOrBlankNode> {
+    match term {
+        Term::NamedNode(iri) => Some(NamedOrBlankNode::from(iri.clone())),
+        Term::BlankNode(blank) => Some(NamedOrBlankNode::from(blank.clone())),
+        Term::Literal(_) => None,
+    }
+}
+
 /// The data graph of one validation: the dataset graph and the
 /// vocabulary graph (ontologies, code lists) read as one graph, without
 /// copying either. A triple found in both counts once.
@@ -66,11 +77,9 @@ pub(crate) struct DataView<'a> {
 impl DataView<'_> {
     /// The objects of `subject predicate ?` in either graph, each once.
     pub fn objects(&self, subject: TermRef<'_>, predicate: NamedNodeRef<'_>) -> Vec<Term> {
-        let subject = match subject {
-            TermRef::NamedNode(node) => NamedOrBlankNode::from(node.into_owned()),
-            TermRef::BlankNode(node) => NamedOrBlankNode::from(node.into_owned()),
-            // a literal is never a subject
-            TermRef::Literal(_) => return Vec::new(),
+        // a literal is never a subject
+        let Some(subject) = as_node(&subject.into_owned()) else {
+            return Vec::new();
         };
         let mut found = Vec::new();
         let mut seen = HashSet::new();

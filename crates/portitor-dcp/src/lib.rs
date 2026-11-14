@@ -29,6 +29,7 @@ pub mod message;
 pub mod scope;
 pub mod status_list;
 
+pub use bundle::sha256_hex;
 pub use did::{DidDocument, Purpose, Relationship, Service, VerificationMethod, did_web_url};
 pub use id_token::{
     Claims, DEFAULT_MAX_TOKEN_IDS, JtiCache, MAX_TOKEN_LIFETIME, unverified_claims,
