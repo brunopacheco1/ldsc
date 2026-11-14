@@ -90,6 +90,7 @@ impl DatasetStore for Catalog {
                 kind: DistributionType,
                 format: "HttpData-PULL".to_owned(),
                 access_service: "svc".to_owned(),
+                metadata: crate::Metadata::default(),
             }],
             metadata: crate::Metadata::default(),
         })

@@ -351,6 +351,7 @@ mod tests {
                 kind: DistributionType,
                 format: "HttpData-PULL".to_owned(),
                 access_service: String::new(),
+                metadata: crate::Metadata::default(),
             }],
             metadata: crate::Metadata::default(),
         }

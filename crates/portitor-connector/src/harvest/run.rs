@@ -249,27 +249,45 @@ fn accept(
 /// context defines the `dct` prefix).
 const CONFORMS_TO: &str = "dct:conformsTo";
 
-/// `dataset` with `{"@id": iri}` among its `dct:conformsTo` values. A value
-/// the dataset already has is kept.
+/// `dataset` with `{"@id": iri, "@type": "dct:Standard"}` among its
+/// `dct:conformsTo` values. DCAT-AP 3.0.0 requires every `dct:conformsTo`
+/// value to be a `dct:Standard`, so the type travels with the reference.
+/// A value with the same `@id` that the dataset already has is kept as it
+/// is.
 fn with_conforms_to(dataset: &Dataset, iri: &str) -> Result<Dataset, EntryFailure> {
     let as_json = |e: serde_json::Error| EntryFailure::new(CheckKind::Json, e.to_string());
     let mut value = serde_json::to_value(dataset).map_err(as_json)?;
-    let reference = serde_json::json!({"@id": iri});
+    let reference = serde_json::json!({"@id": iri, "@type": STANDARD});
     if let Some(fields) = value.as_object_mut() {
         let merged = match fields.remove(CONFORMS_TO) {
             None => reference,
             Some(serde_json::Value::Array(mut list)) => {
-                if !list.contains(&reference) {
+                if !list.iter().any(|v| names(v, iri)) {
                     list.push(reference);
                 }
                 serde_json::Value::Array(list)
             }
-            Some(one) if one == reference => one,
+            Some(one) if names(&one, iri) => one,
             Some(other) => serde_json::Value::Array(vec![other, reference]),
         };
         fields.insert(CONFORMS_TO.to_owned(), merged);
     }
     serde_json::from_value(value).map_err(as_json)
+}
+
+/// The class of a `dct:conformsTo` value in DCAT-AP.
+const STANDARD: &str = "dct:Standard";
+
+/// Whether a `dct:conformsTo` value refers to `iri` (`{"@id": iri, ...}`
+/// or the plain IRI text).
+fn names(value: &serde_json::Value, iri: &str) -> bool {
+    match value {
+        serde_json::Value::String(text) => text == iri,
+        serde_json::Value::Object(fields) => {
+            fields.get("@id").and_then(serde_json::Value::as_str) == Some(iri)
+        }
+        _ => false,
+    }
 }
 
 /// A dataset that passed, as the copy keeps it, active.

@@ -519,6 +519,11 @@ pub struct Distribution {
     /// sets it to its own data service (see [`catalog::CatalogService`]).
     #[serde(default)]
     pub access_service: String,
+    /// Any other metadata of the distribution (for example its `@id`,
+    /// `dcat:accessURL` or DCAT-AP properties), kept and served as written,
+    /// as for a dataset.
+    #[serde(flatten)]
+    pub metadata: Metadata,
 }
 
 /// A DCAT dataset.
@@ -675,6 +680,17 @@ mod tests {
         let back = serde_json::to_value(&d).unwrap();
         assert_eq!(back["dcat:keyword"][1], "EU");
         assert!(!d.metadata.is_empty());
+    }
+
+    #[test]
+    fn distribution_keeps_unknown_metadata() {
+        let raw = r#"{"@id":"urn:d1","@type":"Distribution","format":"HttpData-PULL",
+            "dcat:accessURL":{"@id":"https://data.example/d1"}}"#;
+        let d: Distribution = serde_json::from_str(raw).unwrap();
+        assert_eq!(d.format, "HttpData-PULL");
+        let back = serde_json::to_value(&d).unwrap();
+        assert_eq!(back["@id"], "urn:d1");
+        assert_eq!(back["dcat:accessURL"]["@id"], "https://data.example/d1");
     }
 
     #[test]

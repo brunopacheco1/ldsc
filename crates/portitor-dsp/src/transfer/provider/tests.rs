@@ -191,6 +191,7 @@ impl DatasetStore for Catalog {
             kind: DistributionType,
             format: format.to_owned(),
             access_service: "svc".to_owned(),
+            metadata: crate::Metadata::default(),
         };
         (id == "d1").then(|| Dataset {
             context: None,

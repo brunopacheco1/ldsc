@@ -317,7 +317,10 @@ async fn valid_datasets_are_served_with_the_profile_and_invalid_ones_are_rejecte
         }])
     );
     let served = &catalog["dataset"][0];
-    assert_eq!(served["dct:conformsTo"], json!({"@id": PROFILE}));
+    assert_eq!(
+        served["dct:conformsTo"],
+        json!({"@id": PROFILE, "@type": "dct:Standard"})
+    );
     assert_eq!(
         served["healthdcatap:healthCategory"]["@id"],
         "https://hdeu-dcat.data.health.europa.eu/resource/authority/healthcategories/HRAD"
@@ -330,7 +333,10 @@ async fn valid_datasets_are_served_with_the_profile_and_invalid_ones_are_rejecte
     let (status, dataset) = call(&app, req).await;
     assert_eq!(status, StatusCode::OK, "{dataset}");
     assert_eq!(dataset["@context"], catalog["@context"]);
-    assert_eq!(dataset["dct:conformsTo"], json!({"@id": PROFILE}));
+    assert_eq!(
+        dataset["dct:conformsTo"],
+        json!({"@id": PROFILE, "@type": "dct:Standard"})
+    );
 
     // the rejections, with the SHACL report, in the harvest job
     let management = management_router(negotiator, ApiKey::new(KEY).unwrap());

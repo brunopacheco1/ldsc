@@ -345,7 +345,7 @@ fn new_rules_check_the_stored_datasets_again_at_start() {
     let a = first.copy().get("a").unwrap();
     assert_eq!(
         a.metadata.get("dct:conformsTo"),
-        Some(&json!({"@id": "https://shapes.example/v1"}))
+        Some(&json!({"@id": "https://shapes.example/v1", "@type": "dct:Standard"}))
     );
 
     // a restart with new rules that refuse b, while the source is down:
@@ -375,7 +375,7 @@ fn new_rules_check_the_stored_datasets_again_at_start() {
     assert_eq!(store.datasets().unwrap()[1].state, DatasetState::Hidden);
     assert_eq!(
         copy.get("a").unwrap().metadata.get("dct:conformsTo"),
-        Some(&json!({"@id": "https://shapes.example/v2"}))
+        Some(&json!({"@id": "https://shapes.example/v2", "@type": "dct:Standard"}))
     );
 
     // the same rules again: no `bundle` job
@@ -504,7 +504,7 @@ fn both_checks_add_conforms_to_without_losing_one_already_there() {
     assert_eq!(
         copy.get("a").unwrap().metadata.get("dct:conformsTo"),
         Some(
-            &json!([{"@id": "https://other.example/profile"}, {"@id": "https://shapes.example/v1"}])
+            &json!([{"@id": "https://other.example/profile"}, {"@id": "https://shapes.example/v1", "@type": "dct:Standard"}])
         )
     );
     assert_eq!(
