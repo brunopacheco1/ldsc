@@ -220,8 +220,11 @@ impl Config {
                 "PORTITOR_DATASETS was removed in 0.2; define datasets in a JSON file and set PORTITOR_DATASETS_FILE",
             ));
         }
-        let data_token_seconds =
-            seconds_var(&var, "PORTITOR_DATA_TOKEN_SECONDS", DEFAULT_DATA_TOKEN_SECONDS)?;
+        let data_token_seconds = seconds_var(
+            &var,
+            "PORTITOR_DATA_TOKEN_SECONDS",
+            DEFAULT_DATA_TOKEN_SECONDS,
+        )?;
         if data_token_seconds == 0 {
             return Err(ConfigError::Invalid(
                 "PORTITOR_DATA_TOKEN_SECONDS",

@@ -195,6 +195,10 @@ file (`PORTITOR_DATASETS_FILE`), in the same format as before.
   stored.
 - All changes of a run are written in one transaction. The last 100 runs
   are kept.
+- Limits: a datasets file larger than 256 MiB makes the run `failed`. A
+  run stores the errors of its first 1000 rejected entries (the others are
+  counted and logged), and a stored SHACL report keeps its first 50
+  results (`resultsNotStored` says how many more).
 
 Each run is a job on the management API (read only, API key):
 

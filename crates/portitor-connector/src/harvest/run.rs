@@ -30,17 +30,58 @@ pub struct Plan {
     pub counts: Counts,
 }
 
+/// How many entry errors one job stores: the first ones found. The
+/// others are counted (`rejected`) and logged, and the job's summary says
+/// that some were not stored.
+pub const MAX_STORED_ERRORS: usize = 1_000;
+
+/// How many results of a check's report (a SHACL validation report) are
+/// stored with an entry error: the first ones. The report then says how
+/// many were left out, in `resultsNotStored`.
+pub const MAX_REPORT_RESULTS: usize = 50;
+
 impl Plan {
+    /// Counts a rejected entry, and stores its error while fewer than
+    /// [`MAX_STORED_ERRORS`] are stored.
     fn reject(&mut self, position: Option<u64>, dataset_id: Option<String>, failure: EntryFailure) {
         self.counts.rejected += 1;
+        if self.errors.len() >= MAX_STORED_ERRORS {
+            tracing::warn!(
+                position,
+                dataset = dataset_id.as_deref().unwrap_or(""),
+                check = failure.kind.name(),
+                error = %failure.message,
+                "harvest: dataset rejected; error not stored (too many in this run)"
+            );
+            return;
+        }
         self.errors.push(EntryError {
             position,
             dataset_id,
             kind: failure.kind,
             message: failure.message,
-            report: failure.report,
+            report: failure.report.map(trimmed_report),
         });
     }
+}
+
+/// The report with at most [`MAX_REPORT_RESULTS`] of its `results`, and
+/// `resultsNotStored` saying how many were left out. A report without a
+/// `results` list is kept as it is.
+fn trimmed_report(mut report: serde_json::Value) -> serde_json::Value {
+    let Some(results) = report
+        .get_mut("results")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return report;
+    };
+    if results.len() <= MAX_REPORT_RESULTS {
+        return report;
+    }
+    let left_out = results.len() - MAX_REPORT_RESULTS;
+    results.truncate(MAX_REPORT_RESULTS);
+    report["resultsNotStored"] = serde_json::Value::from(left_out);
+    report
 }
 
 /// `succeeded` when nothing was rejected, else `partial`.
@@ -53,10 +94,11 @@ pub fn outcome_of(counts: &Counts) -> JobOutcome {
     }
 }
 
-/// The counts in one line, for the job's summary.
+/// The counts in one line, for the job's summary. Says so when not every
+/// error was stored ([`MAX_STORED_ERRORS`]).
 #[must_use]
 pub fn summary(counts: &Counts) -> String {
-    format!(
+    let mut line = format!(
         "{} seen, {} added, {} updated, {} unchanged, {} withdrawn, {} rejected",
         counts.seen,
         counts.added,
@@ -64,7 +106,13 @@ pub fn summary(counts: &Counts) -> String {
         counts.unchanged,
         counts.withdrawn,
         counts.rejected
-    )
+    );
+    if counts.rejected > count(MAX_STORED_ERRORS) {
+        line.push_str(&format!(
+            "; only the first {MAX_STORED_ERRORS} errors are stored, the others are in the log"
+        ));
+    }
+    line
 }
 
 /// A full run over a snapshot's `entries`, against the `stored` copy

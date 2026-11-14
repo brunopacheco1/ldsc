@@ -473,6 +473,70 @@ fn a_new_portitor_version_checks_the_stored_datasets_again() {
 }
 
 #[test]
+fn a_job_stores_at_most_the_first_errors() {
+    let store = memory();
+    let too_many = run::MAX_STORED_ERRORS + 5;
+    let entries = (0..too_many).map(|n| broken(&format!("d{n}"))).collect();
+    let source = Source::with(entries);
+    started(&source, &store, dsp());
+    let (job, errors) = last_job(&store);
+    assert_eq!(job.record.counts.rejected, u64::try_from(too_many).unwrap());
+    assert_eq!(errors.len(), run::MAX_STORED_ERRORS);
+    assert_eq!(errors[0].dataset_id.as_deref(), Some("d0"));
+    assert!(
+        job.record
+            .summary
+            .ends_with("; only the first 1000 errors are stored, the others are in the log"),
+        "{}",
+        job.record.summary
+    );
+}
+
+/// Refuses every entry with a report of `results` results.
+struct LongReport {
+    results: usize,
+}
+
+impl DatasetCheck for LongReport {
+    fn rules_version(&self) -> String {
+        "long".to_owned()
+    }
+    fn check(&self, _entry: &Value) -> Result<CheckedDataset, EntryFailure> {
+        let results: Vec<Value> = (0..self.results).map(|n| json!({"n": n})).collect();
+        Err(EntryFailure {
+            kind: CheckKind::Shacl,
+            message: "violations".to_owned(),
+            report: Some(json!({"conforms": false, "results": results})),
+        })
+    }
+}
+
+#[test]
+fn a_stored_report_keeps_only_the_first_results() {
+    let store = memory();
+    let source = Source::with(vec![entry("a")]);
+    let results = run::MAX_REPORT_RESULTS + 7;
+    started(&source, &store, Arc::new(LongReport { results }));
+    let (_, errors) = last_job(&store);
+    let report = errors[0].report.as_ref().unwrap();
+    assert_eq!(
+        report["results"].as_array().unwrap().len(),
+        run::MAX_REPORT_RESULTS
+    );
+    assert_eq!(report["results"][0], json!({"n": 0}));
+    assert_eq!(report["resultsNotStored"], json!(7));
+    assert_eq!(report["conforms"], json!(false));
+
+    // a short report is kept as it is
+    let store = memory();
+    started(&source, &store, Arc::new(LongReport { results: 2 }));
+    let (_, errors) = last_job(&store);
+    let report = errors[0].report.as_ref().unwrap();
+    assert_eq!(report["results"].as_array().unwrap().len(), 2);
+    assert!(report.get("resultsNotStored").is_none());
+}
+
+#[test]
 fn only_the_last_jobs_are_kept() {
     let store = memory();
     let source = Source::with(vec![broken("x")]);

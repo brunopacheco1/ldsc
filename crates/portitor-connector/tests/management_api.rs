@@ -394,6 +394,43 @@ async fn harvest_jobs_are_listed_newest_first_a_page_at_a_time() {
     assert_eq!(s, StatusCode::BAD_REQUEST);
 }
 
+/// The job detail has no pages: a job stores at most the first 1000
+/// errors (as its description says), and the counts have the total.
+#[tokio::test]
+async fn a_harvest_job_shows_at_most_the_first_errors() {
+    let config = Config {
+        participant_id: "did:web:provider.example".into(),
+        public_url: "https://provider.example".into(),
+        datasets_file: None,
+        harvest_interval_seconds: 0,
+        allow_http_callbacks: false,
+        db_file: "unused.db".into(),
+        data_token_seconds: 3_600,
+        credential_types: portitor_dsp::policy::CredentialTypes::default(),
+    };
+    let not_objects = vec![json!(1); 1_001];
+    let mut ports = authenticating(Ports::new(Arc::new(Provider)), CONSUMER);
+    ports.harvest.source = Some(Arc::new(portitor_connector::harvest::FixedSource::new(
+        not_objects,
+    )));
+    let negotiator = portitor_connector::build(&config, ports).unwrap().1;
+    let app = router(negotiator, ApiKey::new(KEY).unwrap());
+    let (s, _, job) = call(&app, get("/v1/harvest-jobs/1")).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(job["counts"]["rejected"], 1_001);
+    let errors = job["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 1_000);
+    assert_eq!(errors.len(), portitor_connector::harvest::MAX_STORED_ERRORS);
+    assert_eq!(errors[999]["position"], 999);
+    assert!(
+        job["summary"]
+            .as_str()
+            .unwrap()
+            .contains("only the first 1000 errors are stored"),
+        "{job}"
+    );
+}
+
 #[tokio::test]
 async fn a_harvest_job_shows_its_entry_errors() {
     let app = harvesting_app();

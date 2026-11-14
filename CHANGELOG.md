@@ -118,6 +118,10 @@ versions may change behaviour and configuration.
   (`dsp(...; portitor <version>)`), so after an upgrade the stored
   datasets are checked again at start (a `bundle` job), and the start run
   checks every entry.
+- Harvest limits: a datasets file larger than 256 MiB fails the run; a
+  job stores at most the first 1000 entry errors (the summary says when
+  more were rejected); a stored SHACL report keeps its first 50 results
+  and says how many more in `resultsNotStored`.
 
 ### Security
 

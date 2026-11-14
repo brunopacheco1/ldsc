@@ -37,8 +37,11 @@ pub use check::{
 };
 pub use copy::ReadCopy;
 pub use memory::InMemoryHarvestStore;
-pub use run::SOURCE_KEY;
-pub use source::{EmptySource, FileSource, FixedSource, HarvestSource, Snapshot, SourceError};
+pub use run::{MAX_REPORT_RESULTS, MAX_STORED_ERRORS, SOURCE_KEY};
+pub use source::{
+    EmptySource, FileSource, FixedSource, HarvestSource, MAX_DATASETS_FILE_BYTES, Snapshot,
+    SourceError,
+};
 
 use crate::system::now_secs;
 

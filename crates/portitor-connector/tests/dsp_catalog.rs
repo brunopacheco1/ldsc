@@ -502,7 +502,10 @@ fn config_from_variables() {
             "PORTITOR_DATA_TOKEN_SECONDS",
         ] {
             let invalid = portitor_connector::Config::from_vars(vars(&[(name, bad)])).unwrap_err();
-            assert!(invalid.to_string().contains(name), "{name}={bad}: {invalid}");
+            assert!(
+                invalid.to_string().contains(name),
+                "{name}={bad}: {invalid}"
+            );
         }
     }
     let one_year = portitor_connector::Config::from_vars(vars(&[
