@@ -215,22 +215,53 @@ TCK v1.2.1 are the targets (latest releases, checked 2026-11-13).
 
 ## 0.6 DCP: issuance and credential-based policies
 
-- Issuer component (optional per participant, one per dataspace): issue a
-  membership credential; status list for revocation.
-- ODRL constraints that check credentials (for example "member of the
-  dataspace").
+Plan approved by the maintainer on 2026-11-14. The schema and vocabulary
+registry moved to 0.7, so each release has one main risk (maintainer,
+2026-11-14).
+
+- Issuer component `portitor-issuer` ([ADR 0018](adr/0018-issuer-component.md)):
+  optional per participant, one per dataspace, run by the authority.
+  DCP issuer metadata, credential request and status, delivery to the
+  holder's Storage API, offers; issues only to participants the authority
+  registered; credential types from a configuration file; both DCP
+  profiles; BitstringStatusList revocation. Its own signed image.
+- The identity component asks an issuer for credentials (holder side of
+  DCP issuance) and accepts their delivery.
+- ODRL constraints that check credentials
+  ([ADR 0019](adr/0019-credential-constraints.md)): left operand
+  `<CredentialType>.<claim path>`, as EDC does, with scopes derived from
+  the policy. Checked at negotiation and again at transfer start.
+- The test-only `test-issuer` tool is removed; demos and the EDC
+  interop test use `portitor-issuer`.
+- Spike (3 days): SHACL engine for ADR 0005 (rudof, a small SHACL Core
+  subset on Oxigraph's RDF crates, or a sidecar), on HealthDCAT-AP
+  release 7 samples. Ends with ADR 0005 updated for the maintainer's
+  decision.
+- Reviews before the release: engineering and testing, readability
+  (`docs/RUST-IDIOMS.md`), documentation (C4 diagrams, OpenAPI, website,
+  DEPLOYING).
+- Exit: DCP TCK v1.2.1 issuer tests (41) green against `portitor-issuer`,
+  and the credential service, verifier and DSP TCK runs still green; a
+  negotiation under a credential constraint succeeds for a holder with
+  the claim and is terminated for one without it; a revoked credential
+  blocks a new negotiation; EDC IdentityHub gets its membership credential
+  from `portitor-issuer` and the EDC interop test stays green.
+
+## 0.7 Schema and vocabulary registry
+
 - Schema and vocabulary registry ([ADR 0005](adr/0005-schema-and-vocabulary-registry.md)):
   the authority builds and signs a bundle of SHACL shapes and SKOS
   vocabularies (for example HealthDCAT-AP); the connector fetches and
   verifies it. The connector's own datasets file (dataset metadata and
   offer policies) is checked against the shapes at start, like every DSP
   message in and out, before anything is published (maintainer,
-  2026-11-12). Starts with a spike on the SHACL engine.
-- Exit: DCP TCK issuance tests green; a revoked credential blocks a
-  negotiation; a dataset that breaks the authority's shapes is not
-  published.
+  2026-11-12). Uses the engine chosen by the 0.6 spike.
+- The catalog `@context` accepts extra prefixes (for example
+  HealthDCAT-AP's).
+- Exit: a dataset that breaks the authority's shapes is not published; a
+  DSP message that breaks them is refused.
 
-## 0.7 Gaia-X Trust Framework (Danube)
+## 0.8 Gaia-X Trust Framework (Danube)
 
 - The identity component obtains and stores the participant's Gaia-X
   credentials (for example LegalPerson, registration number, terms and
@@ -245,14 +276,14 @@ TCK v1.2.1 are the targets (latest releases, checked 2026-11-13).
   from a GXDCH (test environment) and negotiates with an EDC connector
   under a policy that requires it.
 
-## 0.8 Operations
+## 0.9 Operations
 
 - Health and readiness endpoints, structured logs, metrics (OpenTelemetry).
 - Docker Compose for a two-participant demo dataspace, documented
   deployment order.
 - Exit: a new user runs the demo from the website in under 15 minutes.
 
-## 0.9 Hardening and release candidate for 1.0
+## 0.10 Hardening and release candidate for 1.0
 
 - Threat model review, fuzzing on every parser (ClusterFuzzLite),
   benchmarks published.

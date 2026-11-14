@@ -14,6 +14,15 @@ versions may change behaviour and configuration.
 
 ### Added
 
+- ADR 0018 (issuer component) and ADR 0019 (credential constraints in
+  ODRL), both proposed; roadmap: the schema and vocabulary registry moves
+  to 0.7, Gaia-X to 0.8.
+- `portitor-dcp`: the DCP issuance messages `CredentialRequestMessage`
+  and `CredentialStatus` (DCP v1.0.1 sections 6.4 and 6.8), checked
+  against the official schemas.
+- `portitor-issuer`: new crate for the issuer component (work in
+  progress).
+
 - C4 model diagrams (system context, containers, components of both
   images, and the provider negotiation as code) in draw.io format, shown
   in `docs/ARCHITECTURE.md`.
