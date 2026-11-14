@@ -29,6 +29,7 @@ use portitor_dsp::negotiation::{
     ContractNegotiationEventMessage, ContractNegotiationTerminationMessage, ContractOfferMessage,
     Transition,
 };
+use portitor_dsp::policy::credential_scopes;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
@@ -263,6 +264,20 @@ impl Outbox for Consumer {
         &self.link
     }
 
+    /// A request or an acceptance may lead the provider to agree, after it
+    /// asks for the credentials the offer's constraints need: our token
+    /// lets it read them (ADR 0019).
+    fn scopes(&self, out: &Outgoing) -> Vec<String> {
+        if !matches!(out.transition, Transition::Request | Transition::Accept) {
+            return Vec::new();
+        }
+        match self.service.negotiation(&out.consumer_pid) {
+            Ok(negotiation) => credential_scopes(&negotiation.offer, &self.link.credential_types),
+            // the message is still sent; the provider decides without them
+            Err(_) => Vec::new(),
+        }
+    }
+
     fn message(out: &Outgoing) -> Message<'_> {
         Message::new(
             &out.consumer_pid,
@@ -300,7 +315,7 @@ impl Outbox for Consumer {
 /// `GET <callback>/negotiations/{consumerPid}`.
 pub(crate) async fn get(
     State(consumer): State<Arc<Consumer>>,
-    Extension(Caller(caller)): Extension<Caller>,
+    Extension(Caller { id: caller, .. }): Extension<Caller>,
     Path(cpid): Path<String>,
 ) -> Response {
     if let Some(refused) = consumer.refusal(&cpid, &caller) {
@@ -315,7 +330,7 @@ pub(crate) async fn get(
 /// `POST <callback>/negotiations/{consumerPid}/offers`.
 pub(crate) async fn offer(
     State(consumer): State<Arc<Consumer>>,
-    Extension(Caller(caller)): Extension<Caller>,
+    Extension(Caller { id: caller, .. }): Extension<Caller>,
     Path(cpid): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
@@ -332,7 +347,7 @@ pub(crate) async fn offer(
 /// `POST <callback>/negotiations/{consumerPid}/agreement`.
 pub(crate) async fn agreement(
     State(consumer): State<Arc<Consumer>>,
-    Extension(Caller(caller)): Extension<Caller>,
+    Extension(Caller { id: caller, .. }): Extension<Caller>,
     Path(cpid): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
@@ -350,7 +365,7 @@ pub(crate) async fn agreement(
 /// `POST <callback>/negotiations/{consumerPid}/events`.
 pub(crate) async fn event(
     State(consumer): State<Arc<Consumer>>,
-    Extension(Caller(caller)): Extension<Caller>,
+    Extension(Caller { id: caller, .. }): Extension<Caller>,
     Path(cpid): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
@@ -368,7 +383,7 @@ pub(crate) async fn event(
 /// `POST <callback>/negotiations/{consumerPid}/termination`.
 pub(crate) async fn terminate(
     State(consumer): State<Arc<Consumer>>,
-    Extension(Caller(caller)): Extension<Caller>,
+    Extension(Caller { id: caller, .. }): Extension<Caller>,
     Path(cpid): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {

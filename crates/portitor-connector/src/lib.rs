@@ -43,6 +43,7 @@ use portitor_dsp::catalog::{
     read_catalog_request,
 };
 use portitor_dsp::negotiation::provider::Failure;
+use portitor_dsp::policy::CredentialTypes;
 use portitor_dsp::transfer::consumer::{ConsumerTransfer, ConsumerTransferDecision};
 use portitor_dsp::transfer::provider::Failure as TransferFailure;
 use portitor_dsp::{Binding, CatalogError, Dataset, ProtocolVersion, VERSION, VersionResponse};
@@ -96,6 +97,10 @@ pub struct Config {
     /// How long a data access token stays valid, in seconds
     /// (`PORTITOR_DATA_TOKEN_SECONDS`, default one hour).
     pub data_token_seconds: u64,
+    /// The credential types that policies may use, with their DCP scopes
+    /// (`PORTITOR_POLICY_CREDENTIALS`, ADR 0019). An offer with a
+    /// constraint on another type stops the connector at start.
+    pub credential_types: CredentialTypes,
 }
 
 /// The key, in a dataset of the datasets file, that names the upstream
@@ -117,6 +122,8 @@ pub enum ConfigError {
     Removed(&'static str),
     /// A variable has a value that cannot be used.
     Invalid(&'static str, String),
+    /// `PORTITOR_POLICY_CREDENTIALS` cannot be used; the text says why.
+    PolicyCredentials(String),
 }
 
 impl std::fmt::Display for ConfigError {
@@ -129,6 +136,7 @@ impl std::fmt::Display for ConfigError {
             ),
             Self::Removed(msg) => f.write_str(msg),
             Self::Invalid(name, value) => write!(f, "{name} has an invalid value {value:?}"),
+            Self::PolicyCredentials(why) => f.write_str(why),
         }
     }
 }
@@ -139,7 +147,9 @@ impl Config {
     /// Reads `PORTITOR_PARTICIPANT_ID`, `PORTITOR_PUBLIC_URL`,
     /// `PORTITOR_ALLOW_HTTP_CALLBACKS` (`true` to allow), `PORTITOR_DB_FILE`
     /// (default `portitor.db`), `PORTITOR_DATA_TOKEN_SECONDS` (default
-    /// 3600) and, when set, `PORTITOR_DATASETS_FILE` from the environment.
+    /// 3600), `PORTITOR_POLICY_CREDENTIALS` (see
+    /// [`auth::policy_credentials`]) and, when set,
+    /// `PORTITOR_DATASETS_FILE` from the environment.
     /// Without a datasets file the catalog is empty.
     ///
     /// # Errors
@@ -154,7 +164,8 @@ impl Config {
     /// # Errors
     ///
     /// The datasets file cannot be read or parsed, a number is not a
-    /// number, or the removed `PORTITOR_DATASETS` variable is set.
+    /// number, `PORTITOR_POLICY_CREDENTIALS` cannot be used, or the removed
+    /// `PORTITOR_DATASETS` variable is set.
     pub fn from_vars(var: impl Fn(&str) -> Option<OsString>) -> Result<Self, ConfigError> {
         // the variable's value as text, or `default` when it is not set
         let text = |name: &str, default: &str| match var(name) {
@@ -180,6 +191,8 @@ impl Config {
                 }
             }
         };
+        let credential_types =
+            auth::policy_credentials(&var).map_err(ConfigError::PolicyCredentials)?;
         Ok(Self {
             participant_id: text("PORTITOR_PARTICIPANT_ID", "did:web:localhost%3A8080"),
             public_url: text("PORTITOR_PUBLIC_URL", "http://localhost:8080"),
@@ -189,6 +202,7 @@ impl Config {
             db_file: var("PORTITOR_DB_FILE").map_or_else(|| "portitor.db".into(), Into::into),
             sources,
             data_token_seconds,
+            credential_types,
         })
     }
 }
@@ -426,7 +440,13 @@ pub fn build(
 ) -> Result<(Router, Negotiator), DatasetDefinitionError> {
     let endpoint_url = format!("{}{DSP_PATH}", config.public_url.trim_end_matches('/'));
     let service_id = endpoint_url.clone();
-    let datasets = prepare_datasets(config.datasets.clone(), &service_id)?;
+    let datasets = prepare_datasets(
+        config.datasets.clone(),
+        &service_id,
+        &config.credential_types,
+    )?;
+    let mut ports = ports;
+    ports.credential_types = config.credential_types.clone();
     let datasets = InMemoryDatasets::new(datasets);
     let callback_address = format!("{}{CALLBACK_PATH}", config.public_url.trim_end_matches('/'));
     let consumer = Arc::new(consumer::Consumer::new(
@@ -440,7 +460,6 @@ pub fn build(
         callback_address,
         config.allow_http_callbacks,
     ));
-    let mut ports = ports;
     #[cfg(feature = "tck")]
     {
         let stored = ports.transfers.agreements.clone();

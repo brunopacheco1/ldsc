@@ -48,8 +48,10 @@ Check each item and keep the answers in your own runbook.
 - [ ] **Datasets file.** A JSON file with the datasets you offer (see the
   [README](../README.md#interface)). The connector refuses to start if a
   definition breaks a DSP rule or an offer uses a constraint it does not
-  understand (only `dateTime` for now, ADR 0009), so test the file before
-  a rollout.
+  understand (`dateTime`, ADR 0009, and credential claims of the types in
+  `PORTITOR_POLICY_CREDENTIALS`, ADR 0019; see
+  [Credential constraints](#credential-constraints)), so test the file
+  before a rollout.
 - [ ] **Data sources.** For each dataset you transfer, the URL the
   connector fetches its data from (`portitor:source` in the datasets file,
   see the README). Partners never see it. It must be reachable from the
@@ -103,7 +105,46 @@ All configuration is by environment variable. The full table is in the
 | `PORTITOR_STS_CLIENT_ID` | leave the default, `PORTITOR_PARTICIPANT_ID` |
 | `PORTITOR_TRUSTED_ISSUERS` | **required**: comma-separated DIDs trusted to issue `MembershipCredential` |
 | `PORTITOR_DCP_SCOPES` | leave the default, `org.eclipse.dspace.dcp.vc.type:MembershipCredential` (comma-separated). Each must be a DCP scope (`org.eclipse.dspace.dcp.vc.type:<Type>[:access]` or `org.eclipse.dspace.dcp.vc.id:<id>`); the type `VerifiableCredential` is refused, as it would let a partner read every credential. The connector does not start otherwise |
+| `PORTITOR_POLICY_CREDENTIALS` | unset, unless your offers constrain credential claims: the credential types they use, comma-separated, each `Type` or `Type=<scope>` (see [Credential constraints](#credential-constraints)) |
 | `RUST_LOG` | `info` (default); `debug` only while diagnosing |
+
+### Credential constraints
+
+An offer may admit only consumers with a credential claim (ADR 0019),
+for example only data processors in the EU:
+
+```json
+"permission": [{"action": "use", "constraint": [
+  {"leftOperand": "DataProcessorCredential.processing", "operator": "eq", "rightOperand": "eu"}
+]}]
+```
+
+- List each credential type your offers use in
+  `PORTITOR_POLICY_CREDENTIALS`, on the provider **and** on consumers:
+  `DataProcessorCredential` stands for the scope
+  `org.eclipse.dspace.dcp.vc.type:DataProcessorCredential:read`; write
+  `DataProcessorCredential=<scope>` for another one. The scope must ask
+  for that type. `MembershipCredential` is always there, with its scope
+  from `PORTITOR_DCP_SCOPES`.
+- The provider derives the scopes from the offer and asks the consumer's
+  credential service for them at the contract request, and again at each
+  transfer request, so a revoked credential stops new transfers. The
+  consumer's token must allow them: Portitor as consumer adds them itself.
+- Credentials must come from `PORTITOR_TRUSTED_ISSUERS`, as the
+  membership does. Operators: `eq`, `neq` (a text), `isAnyOf`, `isNoneOf`
+  (a list of texts); a claim that is missing or not text never grants
+  access.
+- An EDC participant needs the same mapping, per type, for example:
+
+  ```yaml
+  edc.iam.dcp.scopes.processor.id: "processor-scope"
+  edc.iam.dcp.scopes.processor.type: "POLICY"
+  edc.iam.dcp.scopes.processor.prefix-mapping: "DataProcessorCredential"
+  edc.iam.dcp.scopes.processor.value: "org.eclipse.dspace.dcp.vc.type:DataProcessorCredential:read"
+  ```
+
+  (as in the Minimum Viable Dataspace, commit 17bb5b8,
+  `k8s/provider/application/controlplane-config.yaml`).
 
 ### Private CAs
 
@@ -626,14 +667,18 @@ Backup, restore, upgrade and rollback work as for the connector, with
 In this version (see also [SECURITY-ASSURANCE.md](SECURITY-ASSURANCE.md)):
 
 - Partners are admitted by one credential type (`MembershipCredential`,
-  `PORTITOR_DCP_SCOPES`); no per-dataset credential policies yet.
-  Credential schemas (`credentialSchema`) are not checked.
+  `PORTITOR_DCP_SCOPES`); offers may add credential claims (ADR 0019),
+  but the catalog still shows every offer to every member. Credential
+  schemas (`credentialSchema`) are not checked.
 - STS tokens are not cached: each DSP request costs one STS call, and each
   incoming one a presentation query.
 - One replica per database file; no PostgreSQL adapter yet.
 - Internal callback addresses are not blocked.
-- Policies: only the `dateTime` constraint is understood; prohibitions
-  and duties are carried into agreements but not enforced (ADR 0009).
+- Policies: only `dateTime` and credential claims are understood;
+  prohibitions and duties are carried into agreements but not enforced
+  (ADR 0009). As consumer, the connector does not accept a provider's
+  offer (DSP `OFFERED`) that has credential constraints; requests it
+  sends itself are not affected.
 - No metrics endpoint yet.
 - Transfers: pull only. A data access token ends `PORTITOR_DATA_TOKEN_SECONDS`
   after the transfer starts and is not renewed; the consumer then asks for

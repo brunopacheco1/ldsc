@@ -111,6 +111,7 @@ fn app() -> axum::Router {
             db_file: "unused.db".into(),
             sources: std::collections::BTreeMap::new(),
             data_token_seconds: 3_600,
+            credential_types: portitor_dsp::policy::CredentialTypes::default(),
         },
         ports(),
     )
@@ -336,6 +337,7 @@ async fn example_datasets_file_is_valid() {
             db_file: "unused.db".into(),
             sources: std::collections::BTreeMap::new(),
             data_token_seconds: 3_600,
+            credential_types: portitor_dsp::policy::CredentialTypes::default(),
         },
         ports(),
     )
@@ -349,7 +351,7 @@ async fn example_datasets_file_is_valid() {
     let body: Value =
         serde_json::from_slice(&to_bytes(res.into_body(), 1 << 20).await.unwrap()).unwrap();
     assert_valid("catalog/catalog-schema.json", &body);
-    assert_eq!(body["dataset"].as_array().unwrap().len(), 2);
+    assert_eq!(body["dataset"].as_array().unwrap().len(), 3);
     let weather = body["dataset"]
         .as_array()
         .unwrap()
@@ -372,6 +374,7 @@ fn broken_definitions_stop_the_start() {
             db_file: "unused.db".into(),
             sources: std::collections::BTreeMap::new(),
             data_token_seconds: 3_600,
+            credential_types: portitor_dsp::policy::CredentialTypes::default(),
         },
         ports(),
     )
@@ -466,7 +469,7 @@ fn config_from_variables() {
     assert_eq!(set.participant_id, "did:web:p.example");
     assert!(set.allow_http_callbacks);
     assert_eq!(set.db_file, std::path::PathBuf::from("/data/x.db"));
-    assert_eq!(set.datasets.len(), 2);
+    assert_eq!(set.datasets.len(), 3);
 
     let removed =
         portitor_connector::Config::from_vars(vars(&[("PORTITOR_DATASETS", "a,b")])).unwrap_err();

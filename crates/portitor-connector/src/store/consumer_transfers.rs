@@ -5,7 +5,7 @@
 //! Transfers as consumer, and the agreements the consumer holds, in the
 //! same `SQLite` file as the negotiations (ADR 0014).
 
-use portitor_dsp::negotiation::NegotiationState;
+use portitor_dsp::negotiation::{Agreement, NegotiationState};
 use portitor_dsp::transfer::consumer::{
     AgreementProvider, ConsumerTransfer, ConsumerTransferStore, HeldAgreements, Outgoing,
 };
@@ -162,6 +162,17 @@ impl HeldAgreements for SqliteNegotiations {
         })?;
         Ok(found.into_iter().next())
     }
+
+    fn agreement(&self, agreement_id: &str) -> Result<Option<Agreement>, StoreError> {
+        let sql = "SELECT agreement FROM consumer_negotiation
+                   WHERE state = ?1 AND json_extract(agreement, '$.\"@id\"') = ?2";
+        let finalized = state_text(NegotiationState::Finalized)?;
+        let found = self.query(sql, params![finalized, agreement_id], |row| {
+            let text: String = col(row, 0)?;
+            parsed("agreement", &text)
+        })?;
+        Ok(found.into_iter().next())
+    }
 }
 
 #[cfg(test)]
@@ -263,6 +274,7 @@ mod tests {
         };
         negotiations.insert(&n).unwrap();
         assert_eq!(db.provider_of("urn:uuid:a").unwrap(), None, "only agreed");
+        assert_eq!(db.agreement("urn:uuid:a").unwrap(), None, "only agreed");
 
         n.state = NegotiationState::Finalized;
         n.version = 1;
@@ -273,5 +285,7 @@ mod tests {
         };
         assert_eq!(db.provider_of("urn:uuid:a").unwrap(), Some(held));
         assert_eq!(db.provider_of("urn:uuid:other").unwrap(), None);
+        assert_eq!(db.agreement("urn:uuid:a").unwrap(), n.agreement);
+        assert_eq!(db.agreement("urn:uuid:other").unwrap(), None);
     }
 }

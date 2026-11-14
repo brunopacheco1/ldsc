@@ -165,7 +165,8 @@ impl std::error::Error for DatasetDefinitionError {}
 /// Checks a provider's dataset definitions against the DSP 2025-1 rules
 /// for a dataset in a catalog (at least one offer and one distribution,
 /// each distribution with a format), checks that every offer's constraints
-/// are understood (ADR 0009), and makes every distribution point to
+/// are understood (ADR 0009; credential constraints only on the credential
+/// types in `types`, ADR 0019), and makes every distribution point to
 /// this connector's data service, `service_id`.
 ///
 /// # Errors
@@ -174,6 +175,7 @@ impl std::error::Error for DatasetDefinitionError {}
 pub fn prepare_datasets(
     mut datasets: Vec<Dataset>,
     service_id: &str,
+    types: &crate::policy::CredentialTypes,
 ) -> Result<Vec<Dataset>, DatasetDefinitionError> {
     let mut seen = std::collections::BTreeSet::new();
     for d in &mut datasets {
@@ -193,7 +195,7 @@ pub fn prepare_datasets(
             return Err(DatasetDefinitionError::OfferWithTarget(d.id.clone()));
         }
         for offer in &d.has_policy {
-            crate::policy::validate(offer).map_err(|e| {
+            crate::policy::validate(offer, types).map_err(|e| {
                 DatasetDefinitionError::UnsupportedPolicy {
                     dataset: d.id.clone(),
                     reason: e.to_string(),
@@ -286,6 +288,7 @@ impl<S: DatasetStore> CatalogService<S> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::policy::CredentialTypes;
     use crate::{DatasetType, Distribution, DistributionType, Offer, OfferType, Rule};
 
     fn dataset(id: &str) -> Dataset {
@@ -316,7 +319,7 @@ mod tests {
 
     #[test]
     fn fills_the_access_service() {
-        let out = prepare_datasets(vec![dataset("a")], "svc").unwrap();
+        let out = prepare_datasets(vec![dataset("a")], "svc", &CredentialTypes::default()).unwrap();
         assert_eq!(out[0].distribution[0].access_service, "svc");
     }
 
@@ -377,7 +380,7 @@ mod tests {
             ),
         ];
         for (input, want) in cases {
-            let got = prepare_datasets(input, "svc").unwrap_err();
+            let got = prepare_datasets(input, "svc", &CredentialTypes::default()).unwrap_err();
             assert!(got.to_string().contains("dataset"), "{got}");
             assert_eq!(got, want);
         }
@@ -387,7 +390,7 @@ mod tests {
     fn keeps_a_matching_access_service() {
         let mut d = dataset("a");
         d.distribution[0].access_service = "svc".to_owned();
-        assert!(prepare_datasets(vec![d], "svc").is_ok());
+        assert!(prepare_datasets(vec![d], "svc", &CredentialTypes::default()).is_ok());
     }
 
     #[test]

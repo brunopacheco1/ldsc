@@ -86,6 +86,7 @@ Configuration (environment variables):
 | `PORTITOR_STS_CLIENT_SECRET_FILE` | none (**required**) | File with the STS client secret |
 | `PORTITOR_TRUSTED_ISSUERS` | none (**required**) | Comma-separated DIDs trusted to issue `MembershipCredential` |
 | `PORTITOR_DCP_SCOPES` | `org.eclipse.dspace.dcp.vc.type:MembershipCredential` | Comma-separated scopes asked from callers' credential services, and granted to the counter-party in our tokens |
+| `PORTITOR_POLICY_CREDENTIALS` | none (`MembershipCredential` only) | Comma-separated credential types that offers may constrain, each `Type` (scope `org.eclipse.dspace.dcp.vc.type:<Type>:read`) or `Type=<scope>` ([ADR 0019](docs/adr/0019-credential-constraints.md)) |
 
 As provider, the connector agrees to a request for an offer in its
 catalog, then finalizes once the consumer verifies. It sends its messages
@@ -111,20 +112,36 @@ while the transfer is started and for `PORTITOR_DATA_TOKEN_SECONDS` after
 the start; the connector then streams the source's answer (2xx only, with
 its `Content-Type`). A request for a dataset without a source is refused.
 
-Policies (minimal ODRL, [ADR 0009](docs/adr/0009-minimal-odrl-policies.md)):
-- A permission without constraints permits. One constraint is understood:
-  `dateTime` (when the action is exercised) with `eq`, `neq`, `lt`,
-  `lteq`, `gt` or `gteq`, and a date (`2030-12-31`, the whole day) or a
-  date and time with a time zone (`2030-12-31T23:59:59Z`). `and`,
-  `andSequence`, `or` and `xone` combine them.
+Policies (minimal ODRL, [ADR 0009](docs/adr/0009-minimal-odrl-policies.md),
+[ADR 0019](docs/adr/0019-credential-constraints.md)):
+- A permission without constraints permits. Two kinds of constraint are
+  understood:
+  - `dateTime` (when the action is exercised) with `eq`, `neq`, `lt`,
+    `lteq`, `gt` or `gteq`, and a date (`2030-12-31`, the whole day) or a
+    date and time with a time zone (`2030-12-31T23:59:59Z`);
+  - a credential claim, `<CredentialType>.<claim path>` (for example
+    `MembershipCredential.role` or `DataProcessorCredential.level.name`),
+    with `eq` or `neq` and a text, or `isAnyOf` or `isNoneOf` and a list
+    of texts. The type must be in `PORTITOR_POLICY_CREDENTIALS` (or be
+    `MembershipCredential`). It holds if one of the consumer's verified
+    credentials of that type has the claim, as text, and the comparison is
+    true; a missing claim never grants access.
+
+  `and`, `andSequence`, `or` and `xone` combine them.
 - Anything else is refused (fail closed): a datasets file that uses it
   stops the connector at start.
 - As provider, the connector agrees only if the requested offer has the
   same terms as the catalog offer with that `@id`, and its constraints
-  hold now. Otherwise it terminates the negotiation, saying why.
-- As consumer, it accepts a provider's offer only if its constraints hold
-  now, and verifies an agreement only if it has the terms it asked for or
-  accepted.
+  hold now for the consumer's credentials. For credential constraints it
+  asks the consumer's credential service for the types the offer names.
+  Otherwise it terminates the negotiation, saying why. It checks the
+  agreement again, with fresh credentials, at each transfer request.
+- As consumer, it grants the provider, in its token, the scopes the
+  offer's credential constraints need. It accepts a provider's offer only
+  if its constraints hold now (an offer with credential constraints is not
+  accepted: the consumer cannot check its own credentials as the provider
+  will), and verifies an agreement only if it has the terms it asked for
+  or accepted.
 - Prohibitions and duties are carried into the agreement but not enforced
   yet.
 

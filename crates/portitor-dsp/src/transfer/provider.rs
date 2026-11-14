@@ -25,6 +25,7 @@ use crate::WRITE_ATTEMPTS;
 use crate::catalog::DatasetStore;
 use crate::negotiation::Agreement;
 pub use crate::negotiation::provider::{Environment, StoreError};
+use crate::policy::CallerCredentials;
 
 use super::{
     DataAddress, Role, TransferCompletionMessage, TransferCompletionMessageType, TransferError,
@@ -285,16 +286,41 @@ where
         }
     }
 
+    /// The finalized agreement `agreement_id`, if `caller` is its
+    /// assignee: the adapter derives from it the credentials to ask for
+    /// before [`TransferService::request`] (ADR 0019).
+    ///
+    /// # Errors
+    ///
+    /// The store failed.
+    pub fn agreement(
+        &self,
+        agreement_id: &str,
+        caller: &str,
+    ) -> Result<Option<Agreement>, Failure> {
+        Ok(self
+            .agreements
+            .finalized(agreement_id)
+            .map_err(Failure::Store)?
+            .filter(|a| a.assignee == caller))
+    }
+
     /// `POST /transfers/request`: checks the request against the agreement
-    /// (ADR 0013), saves the new transfer and, if the decider says so,
-    /// starts it.
+    /// (ADR 0013), whose permissions must hold now for a caller with
+    /// `credentials`, its verified credentials (ADR 0019), saves the new
+    /// transfer and, if the decider says so, starts it.
     ///
     /// # Errors
     ///
     /// The request breaks a rule of ADR 0013, or the store failed.
-    pub fn request(&self, msg: &TransferRequestMessage, caller: &str) -> Handled {
+    pub fn request(
+        &self,
+        msg: &TransferRequestMessage,
+        caller: &str,
+        credentials: &CallerCredentials,
+    ) -> Handled {
         let cpid = msg.consumer_pid.as_str();
-        let agreement = self.check_request(msg, caller)?;
+        let agreement = self.check_request(msg, caller, credentials)?;
         let state = next_state(None, Transition::Request, Role::Consumer)
             .map_err(|e| bad("", cpid, &e.to_string()))?;
         let mut transfer = Transfer {
@@ -324,6 +350,7 @@ where
         &self,
         msg: &TransferRequestMessage,
         caller: &str,
+        credentials: &CallerCredentials,
     ) -> Result<Agreement, Failure> {
         let cpid = msg.consumer_pid.as_str();
         if msg.callback_address.is_empty() {
@@ -334,19 +361,16 @@ where
         }
         // an unknown agreement and another consumer's agreement get the
         // same answer, so a caller cannot learn which agreement ids exist
-        let agreement = self
-            .agreements
-            .finalized(&msg.agreement_id)
-            .map_err(Failure::Store)?
-            .filter(|a| a.assignee == caller)
-            .ok_or_else(|| {
-                bad(
-                    "",
-                    cpid,
-                    "no finalized agreement with this id for the caller",
-                )
-            })?;
-        crate::policy::permissions_hold(&agreement, &self.env.now()).map_err(|e| {
+        let agreement = self.agreement(&msg.agreement_id, caller)?.ok_or_else(|| {
+            bad(
+                "",
+                cpid,
+                "no finalized agreement with this id for the caller",
+            )
+        })?;
+        // checked again at each new transfer, with the credentials of this
+        // request: a credential revoked since the agreement stops it
+        crate::policy::permissions_hold(&agreement, &self.env.now(), credentials).map_err(|e| {
             bad(
                 "",
                 cpid,

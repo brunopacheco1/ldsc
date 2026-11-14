@@ -570,9 +570,17 @@ impl<S: ConsumerStore, D: ConsumerDecider, E: Environment> ConsumerService<S, D,
                 Self::termination(negotiation, "terminated by the consumer")
             }
             // accept only an offer whose constraints hold now, verify only
-            // an agreement with the terms we asked for or accepted (ADR 0009)
+            // an agreement with the terms we asked for or accepted (ADR 0009).
+            // The consumer does not know which of its own credentials the
+            // provider will see, so a credential constraint (ADR 0019) never
+            // holds here: it fails closed, and such an offer is not accepted.
             ConsumerDecision::Accept => {
-                match crate::policy::permissions_hold(&negotiation.offer, &self.env.now()) {
+                let no_credentials = crate::policy::CallerCredentials::default();
+                match crate::policy::permissions_hold(
+                    &negotiation.offer,
+                    &self.env.now(),
+                    &no_credentials,
+                ) {
                     Ok(()) => Self::accept(negotiation),
                     Err(e) => Self::termination(negotiation, &e.to_string()),
                 }

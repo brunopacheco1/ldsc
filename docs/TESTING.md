@@ -66,8 +66,12 @@ Where the tests are:
   network needed). `tests/end_to_end.rs` runs two connectors in one
   process, joined by a fake network: the consumer negotiates, requests a
   transfer, fetches the data from the provider's built-in data plane and
-  completes the transfer. The SQLite store is tested on an in-memory
-  database and on a real file.
+  completes the transfer. `tests/credential_constraints.rs` does the same
+  with an offer that needs a credential claim (ADR 0019) and fake DCP
+  ports that stand for the credential services: a holder without the
+  claim is terminated, one with it gets an agreement and a transfer, and
+  once its credential is revoked a new transfer does not start. The
+  SQLite store is tested on an in-memory database and on a real file.
 - `tests/dsp_catalog.rs` also checks that every path in
   [docs/api/openapi.json](api/openapi.json) is served.
 - `tests/management_api.rs` tests the management API and checks that
@@ -402,7 +406,10 @@ identity its `MembershipCredential` the DCP way. Then the checks
 (`scripts/demo-steps.sh`): a catalog request without a token is refused
 (401), one with a token from the consumer's STS is answered; the
 `air-quality` offer copied from the catalog negotiates to `FINALIZED`, the
-same offer id without its constraint is `TERMINATED`. It requests a
+same offer id without its constraint is `TERMINATED`. The
+`member-directory` offer for members (the `memberOf` claim of the demo
+`MembershipCredential`, ADR 0019) is `FINALIZED`; its offer for auditors,
+a `role` claim the demo credential does not have, is `TERMINATED`. It requests a
 transfer under the agreement, fetches the file with the token, checks it
 equals `examples/data/air-quality.csv`, completes the transfer and checks
 that the token is refused afterwards. It needs `curl`, `jq`, `openssl` and

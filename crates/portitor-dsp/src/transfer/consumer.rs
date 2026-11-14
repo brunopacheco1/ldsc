@@ -159,6 +159,18 @@ pub trait HeldAgreements {
     ///
     /// The store cannot be read.
     fn provider_of(&self, agreement_id: &str) -> Result<Option<AgreementProvider>, StoreError>;
+
+    /// The agreement `agreement_id` itself, if we hold it. The adapter
+    /// derives from its policy the scopes our transfer request grants
+    /// the provider (ADR 0019).
+    ///
+    /// # Errors
+    ///
+    /// The store cannot be read.
+    fn agreement(
+        &self,
+        agreement_id: &str,
+    ) -> Result<Option<crate::negotiation::Agreement>, StoreError>;
 }
 
 /// What the consumer does next with a transfer. A step the state machine

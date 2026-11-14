@@ -23,6 +23,7 @@
 //! Every write is a compare-and-update on the negotiation's `version`.
 
 use crate::catalog::DatasetStore;
+use crate::policy::CallerCredentials;
 use crate::{Context, Offer};
 use crate::{WRITE_ATTEMPTS, Write};
 
@@ -135,8 +136,9 @@ pub trait Decider {
 }
 
 /// The default policy: agree to any offer that is in the catalog, and
-/// finalize every verified agreement. Policy evaluation (ODRL constraints)
-/// comes in a later release.
+/// finalize every verified agreement. The service itself refuses to agree
+/// when the offer's terms differ from the catalog or its permissions do
+/// not hold (ADR 0009, ADR 0019), whatever the decider says.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AgreeToCatalogOffers;
 
@@ -226,8 +228,27 @@ impl<S: NegotiationStore, D: Decider, C: DatasetStore, E: Environment> ProviderS
         Ok(ack(&negotiation))
     }
 
+    /// The offer under negotiation `provider_pid`, for its consumer
+    /// `caller`: the adapter derives from it the credentials to ask for
+    /// before an event that may lead to an agreement (ADR 0019).
+    ///
+    /// # Errors
+    ///
+    /// Unknown negotiation, another consumer's negotiation, or store failure.
+    pub fn offer_under_negotiation(
+        &self,
+        provider_pid: &str,
+        caller: &str,
+    ) -> Result<Offer, Failure> {
+        Ok(self.load(provider_pid, "", caller)?.offer)
+    }
+
     /// `POST /negotiations/request` (no `provider_pid`) and
     /// `POST /negotiations/:providerPid/request` (counter-offer).
+    ///
+    /// `credentials` are the caller's verified credentials, against which
+    /// the offer's permissions are evaluated if the provider agrees now
+    /// (ADR 0019).
     ///
     /// # Errors
     ///
@@ -238,10 +259,11 @@ impl<S: NegotiationStore, D: Decider, C: DatasetStore, E: Environment> ProviderS
         provider_pid: Option<&str>,
         msg: ContractRequestMessage,
         caller: &str,
+        credentials: &CallerCredentials,
     ) -> Handled {
         let consumer_pid = msg.consumer_pid.clone();
         let Some(pid) = provider_pid else {
-            return self.start(msg, caller);
+            return self.start(msg, caller, credentials);
         };
         if msg.provider_pid.as_deref().is_some_and(|p| p != pid) {
             return Err(bad(
@@ -250,7 +272,7 @@ impl<S: NegotiationStore, D: Decider, C: DatasetStore, E: Environment> ProviderS
                 "providerPid does not match the path",
             ));
         }
-        self.handle(pid, &consumer_pid, caller, |negotiation| {
+        self.handle(pid, &consumer_pid, caller, credentials, |negotiation| {
             self.check_offer(&msg.offer, pid, &consumer_pid)?;
             receive(negotiation, Transition::Request)?;
             negotiation.offer = msg.offer.clone();
@@ -258,7 +280,12 @@ impl<S: NegotiationStore, D: Decider, C: DatasetStore, E: Environment> ProviderS
         })
     }
 
-    fn start(&self, msg: ContractRequestMessage, caller: &str) -> Handled {
+    fn start(
+        &self,
+        msg: ContractRequestMessage,
+        caller: &str,
+        credentials: &CallerCredentials,
+    ) -> Handled {
         let consumer_pid = msg.consumer_pid;
         let Some(callback_address) = msg.callback_address.filter(|c| !c.is_empty()) else {
             return Err(bad("", &consumer_pid, "callbackAddress is required"));
@@ -277,12 +304,14 @@ impl<S: NegotiationStore, D: Decider, C: DatasetStore, E: Environment> ProviderS
             pending: None,
             version: 0,
         };
-        negotiation.pending = self.next(&negotiation);
+        negotiation.pending = self.next(&negotiation, credentials);
         self.store.insert(&negotiation).map_err(Failure::Store)?;
         Ok((ack(&negotiation), negotiation.pending))
     }
 
     /// `POST /negotiations/:providerPid/events` (`ACCEPTED` only).
+    /// `credentials` are the caller's verified credentials, as for
+    /// [`ProviderService::request`].
     ///
     /// # Errors
     ///
@@ -292,11 +321,18 @@ impl<S: NegotiationStore, D: Decider, C: DatasetStore, E: Environment> ProviderS
         provider_pid: &str,
         msg: &ContractNegotiationEventMessage,
         caller: &str,
+        credentials: &CallerCredentials,
     ) -> Handled {
-        self.handle(provider_pid, &msg.consumer_pid, caller, |negotiation| {
-            check_ids(negotiation, &msg.provider_pid, &msg.consumer_pid)?;
-            receive(negotiation, msg.transition())
-        })
+        self.handle(
+            provider_pid,
+            &msg.consumer_pid,
+            caller,
+            credentials,
+            |negotiation| {
+                check_ids(negotiation, &msg.provider_pid, &msg.consumer_pid)?;
+                receive(negotiation, msg.transition())
+            },
+        )
     }
 
     /// `POST /negotiations/:providerPid/agreement/verification`.
@@ -310,10 +346,17 @@ impl<S: NegotiationStore, D: Decider, C: DatasetStore, E: Environment> ProviderS
         msg: &ContractAgreementVerificationMessage,
         caller: &str,
     ) -> Handled {
-        self.handle(provider_pid, &msg.consumer_pid, caller, |negotiation| {
-            check_ids(negotiation, &msg.provider_pid, &msg.consumer_pid)?;
-            receive(negotiation, Transition::Verify)
-        })
+        let none = CallerCredentials::default();
+        self.handle(
+            provider_pid,
+            &msg.consumer_pid,
+            caller,
+            &none,
+            |negotiation| {
+                check_ids(negotiation, &msg.provider_pid, &msg.consumer_pid)?;
+                receive(negotiation, Transition::Verify)
+            },
+        )
     }
 
     /// `POST /negotiations/:providerPid/termination`.
@@ -327,10 +370,17 @@ impl<S: NegotiationStore, D: Decider, C: DatasetStore, E: Environment> ProviderS
         msg: &ContractNegotiationTerminationMessage,
         caller: &str,
     ) -> Handled {
-        self.handle(provider_pid, &msg.consumer_pid, caller, |negotiation| {
-            check_ids(negotiation, &msg.provider_pid, &msg.consumer_pid)?;
-            receive(negotiation, Transition::Terminate)
-        })
+        let none = CallerCredentials::default();
+        self.handle(
+            provider_pid,
+            &msg.consumer_pid,
+            caller,
+            &none,
+            |negotiation| {
+                check_ids(negotiation, &msg.provider_pid, &msg.consumer_pid)?;
+                receive(negotiation, Transition::Terminate)
+            },
+        )
     }
 
     /// Records that the consumer acknowledged `sent`, and returns what to
@@ -342,7 +392,8 @@ impl<S: NegotiationStore, D: Decider, C: DatasetStore, E: Environment> ProviderS
     ///
     /// Unknown negotiation, or the store failed.
     pub fn delivered(&self, sent: &Outgoing) -> Result<Option<Outgoing>, Failure> {
-        let saved = self.update(&sent.provider_pid, None, |negotiation| {
+        let none = CallerCredentials::default();
+        let saved = self.update(&sent.provider_pid, None, &none, |negotiation| {
             if negotiation.pending.as_ref() != Some(sent) {
                 return Ok(Write::Skip);
             }
@@ -361,7 +412,8 @@ impl<S: NegotiationStore, D: Decider, C: DatasetStore, E: Environment> ProviderS
     ///
     /// Unknown negotiation, or store failure.
     pub fn abort(&self, sent: &Outgoing, reason: &str) -> Result<Option<Outgoing>, Failure> {
-        let saved = self.update(&sent.provider_pid, None, |negotiation| {
+        let none = CallerCredentials::default();
+        let saved = self.update(&sent.provider_pid, None, &none, |negotiation| {
             if negotiation.state.is_terminal() || negotiation.pending.as_ref() != Some(sent) {
                 return Ok(Write::Skip);
             }
@@ -388,16 +440,17 @@ impl<S: NegotiationStore, D: Decider, C: DatasetStore, E: Environment> ProviderS
     }
 
     /// Applies a consumer's message with `receive`, then decides the next
-    /// message and saves it as pending with the new state. Returns the
-    /// acknowledgement and that message.
+    /// message (with the caller's `credentials`) and saves it as pending
+    /// with the new state. Returns the acknowledgement and that message.
     fn handle(
         &self,
         pid: &str,
         cpid: &str,
         caller: &str,
+        credentials: &CallerCredentials,
         receive: impl Fn(&mut Negotiation) -> Result<(), Failure>,
     ) -> Handled {
-        let saved = self.update(pid, Some((cpid, caller)), |negotiation| {
+        let saved = self.update(pid, Some((cpid, caller)), credentials, |negotiation| {
             receive(negotiation)?;
             Ok(Write::Settle)
         })?;
@@ -408,12 +461,13 @@ impl<S: NegotiationStore, D: Decider, C: DatasetStore, E: Environment> ProviderS
     /// Reads a negotiation, changes it and writes it if its version is
     /// unchanged; otherwise reads it again and repeats, a few times.
     /// `caller` (consumer pid, participant) limits it to that consumer's
-    /// negotiation. Returns what was written, or `None` for
-    /// `Write::Skip`.
+    /// negotiation; `credentials` are the caller's, for the next decision.
+    /// Returns what was written, or `None` for `Write::Skip`.
     fn update(
         &self,
         pid: &str,
         caller: Option<(&str, &str)>,
+        credentials: &CallerCredentials,
         change: impl Fn(&mut Negotiation) -> Result<Write, Failure>,
     ) -> Result<Option<Negotiation>, Failure> {
         let (cpid, participant) = match caller {
@@ -433,7 +487,7 @@ impl<S: NegotiationStore, D: Decider, C: DatasetStore, E: Environment> ProviderS
             }
             match change(&mut negotiation)? {
                 Write::Skip => return Ok(None),
-                Write::Settle => negotiation.pending = self.next(&negotiation),
+                Write::Settle => negotiation.pending = self.next(&negotiation, credentials),
                 Write::AsIs => {}
             }
             let expected = negotiation.version;
@@ -453,7 +507,7 @@ impl<S: NegotiationStore, D: Decider, C: DatasetStore, E: Environment> ProviderS
         ))
     }
 
-    fn next(&self, negotiation: &Negotiation) -> Option<Outgoing> {
+    fn next(&self, negotiation: &Negotiation, credentials: &CallerCredentials) -> Option<Outgoing> {
         if negotiation.state.is_terminal() {
             return None;
         }
@@ -464,8 +518,8 @@ impl<S: NegotiationStore, D: Decider, C: DatasetStore, E: Environment> ProviderS
             }
             Decision::Offer => Some(Self::offer(negotiation)),
             // never agree to terms that are not the catalog's, or whose
-            // constraints do not hold now (ADR 0009)
-            Decision::Agree => Some(match self.agreeable(negotiation) {
+            // constraints do not hold now for this caller (ADR 0009, 0019)
+            Decision::Agree => Some(match self.agreeable(negotiation, credentials) {
                 Ok(()) => self.agreement(negotiation),
                 Err(reason) => Self::termination(negotiation, &reason),
             }),
@@ -531,8 +585,12 @@ impl<S: NegotiationStore, D: Decider, C: DatasetStore, E: Environment> ProviderS
     }
 
     /// The negotiated offer has the terms of the catalog offer with its id,
-    /// and its permissions hold now.
-    fn agreeable(&self, negotiation: &Negotiation) -> Result<(), String> {
+    /// and its permissions hold now for a caller with `credentials`.
+    fn agreeable(
+        &self,
+        negotiation: &Negotiation,
+        credentials: &CallerCredentials,
+    ) -> Result<(), String> {
         let listed = self
             .catalog
             .get(negotiation.dataset_id())
@@ -545,7 +603,7 @@ impl<S: NegotiationStore, D: Decider, C: DatasetStore, E: Environment> ProviderS
         if !crate::policy::same_terms(&listed, &negotiation.offer) {
             return Err("the offer's terms differ from the catalog".to_owned());
         }
-        crate::policy::permissions_hold(&negotiation.offer, &self.env.now())
+        crate::policy::permissions_hold(&negotiation.offer, &self.env.now(), credentials)
             .map_err(|e| e.to_string())
     }
 

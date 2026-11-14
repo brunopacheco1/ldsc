@@ -2,23 +2,42 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Minimal ODRL policy evaluation (ADR 0009). Pure functions, no I/O.
+//! Minimal ODRL policy evaluation (ADR 0009, ADR 0019). Pure functions,
+//! no I/O.
 //!
-//! One constraint type is understood: the left operand `dateTime` (the
-//! time the action is exercised) with the operators `eq`, `neq`, `lt`,
-//! `lteq`, `gt` and `gteq`, and the logical constraints `and`,
-//! `andSequence`, `or` and `xone` over such constraints. A rule without
-//! constraints permits (permit all).
+//! Two kinds of constraint are understood:
+//!
+//! - the left operand `dateTime` (the time the action is exercised) with
+//!   the operators `eq`, `neq`, `lt`, `lteq`, `gt` and `gteq` (ADR 0009);
+//! - a credential constraint (ADR 0019): the left operand
+//!   `<CredentialType>.<claim path>`, for a type the operator configured
+//!   ([`CredentialTypes`]), with `eq` or `neq` and a text, or `isAnyOf` or
+//!   `isNoneOf` and a list of texts. It holds if at least one of the
+//!   caller's verified credentials of that type has the claim and the
+//!   comparison is true; a missing claim never makes it hold.
+//!
+//! The logical constraints `and`, `andSequence`, `or` and `xone` combine
+//! them. A rule without constraints permits (permit all).
 //!
 //! Anything else (another left operand or operator, a right operand that
-//! is not a date or a date and time with a time zone) is **not
-//! understood**, and a policy that is not understood never holds: it fails
-//! closed.
+//! is not a date or a date and time with a time zone, a credential type
+//! that is not configured) is **not understood**, and a policy that is not
+//! understood never holds: it fails closed.
 //!
 //! Only permissions are evaluated, because they decide whether an
 //! agreement may be made now. Prohibitions and duties are terms of the
 //! agreement; they are carried into it unchanged and are not enforced in
 //! this version.
+//!
+//! [`credential_scopes`] derives, from the same left operands, the DCP
+//! scopes a verifier needs to read the credentials: both sides use it, so
+//! the consumer's token allows what the provider asks for.
+
+mod credentials;
+
+pub use credentials::{
+    CallerCredentials, CredentialTypes, DEFAULT_MEMBERSHIP_SCOPE, HeldCredential, MEMBERSHIP,
+};
 
 use crate::negotiation::Agreement;
 use portitor_time::{Span, parse as parse_time};
@@ -30,7 +49,8 @@ use crate::{AtomicConstraint, Constraint, LogicalConstraint, Offer, Rule};
 pub enum PolicyError {
     /// The policy uses something this version does not understand.
     Unsupported(String),
-    /// A constraint is understood but does not hold at this time.
+    /// A constraint is understood but does not hold now, or not for this
+    /// caller.
     NotSatisfied(String),
 }
 
@@ -47,37 +67,80 @@ impl std::error::Error for PolicyError {}
 
 /// Checks that every constraint of every permission of `offer` is
 /// understood, without evaluating it (for example when the provider's
-/// datasets are loaded).
+/// datasets are loaded). Credential constraints must name a type in
+/// `types`.
 ///
 /// # Errors
 ///
 /// The first constraint that is not understood.
-pub fn validate(offer: &Offer) -> Result<(), PolicyError> {
+pub fn validate(offer: &Offer, types: &CredentialTypes) -> Result<(), PolicyError> {
     for c in offer.permission.iter().flat_map(|r| &r.constraint) {
-        check(c, None)?;
+        check(c, &Mode::Validate(types))?;
     }
     Ok(())
 }
 
 /// Whether every permission of `policy` (an offer or an agreement) holds
 /// at `now` (an `xsd:dateTime` with a time zone, as
-/// [`crate::negotiation::provider::Environment::now`] returns). The
-/// constraints of one rule must all hold.
+/// [`crate::negotiation::provider::Environment::now`] returns), for a
+/// caller with `credentials`. The constraints of one rule must all hold.
 ///
 /// # Errors
 ///
-/// A constraint is not understood, or does not hold at `now`.
-pub fn permissions_hold<'a>(policy: impl Into<Terms<'a>>, now: &str) -> Result<(), PolicyError> {
+/// A constraint is not understood, or does not hold.
+pub fn permissions_hold<'a>(
+    policy: impl Into<Terms<'a>>,
+    now: &str,
+    credentials: &CallerCredentials,
+) -> Result<(), PolicyError> {
     let terms = policy.into();
     let now = parse_time(now)
         .ok_or_else(|| PolicyError::Unsupported(format!("current time {now:?}")))?
         .start;
+    let mode = Mode::Evaluate { now, credentials };
     for c in terms.permission.iter().flat_map(|r| &r.constraint) {
-        if !check(c, Some(now))? {
+        if !check(c, &mode)? {
             return Err(PolicyError::NotSatisfied(describe(c)));
         }
     }
     Ok(())
+}
+
+/// The DCP scopes a verifier needs to evaluate the credential constraints
+/// in `policy`'s permissions: the scope of each credential type they name,
+/// once each, in order of first use (ADR 0019). Types not in `types` are
+/// left out (their constraints are not understood, so they fail anyway),
+/// and so is everything else. Empty for a policy without credential
+/// constraints.
+#[must_use]
+pub fn credential_scopes<'a>(policy: impl Into<Terms<'a>>, types: &CredentialTypes) -> Vec<String> {
+    let terms = policy.into();
+    let mut scopes = Vec::new();
+    for c in terms.permission.iter().flat_map(|r| &r.constraint) {
+        collect_scopes(c, types, &mut scopes);
+    }
+    scopes
+}
+
+fn collect_scopes(c: &Constraint, types: &CredentialTypes, scopes: &mut Vec<String>) {
+    match c {
+        Constraint::Atomic(a) => {
+            let Some((credential_type, _)) = credentials::split_left_operand(&a.left_operand)
+            else {
+                return;
+            };
+            if let Some(scope) = types.scope(credential_type)
+                && !scopes.iter().any(|s| s == scope)
+            {
+                scopes.push(scope.to_owned());
+            }
+        }
+        Constraint::Logical(l) => {
+            for part in logical_parts(l).1 {
+                collect_scopes(part, types, scopes);
+            }
+        }
+    }
 }
 
 /// The terms of a policy (an offer or an agreement): what [`same_terms`]
@@ -132,45 +195,83 @@ fn same_rules(a: &[Rule], b: &[Rule]) -> bool {
         })
 }
 
-/// Checks (with `now`: evaluates) one constraint. Without `now` it only
-/// checks that the constraint is understood and returns `true`.
-fn check(c: &Constraint, now: Option<i128>) -> Result<bool, PolicyError> {
+/// What [`check`] does with a constraint.
+enum Mode<'a> {
+    /// Only check that it is understood; credential constraints must name
+    /// one of these types.
+    Validate(&'a CredentialTypes),
+    /// Evaluate it at `now` (nanoseconds, as [`portitor_time::Span`]) for
+    /// a caller with `credentials`.
+    Evaluate {
+        now: i128,
+        credentials: &'a CallerCredentials,
+    },
+}
+
+impl Mode<'_> {
+    /// The credential types that are understood.
+    fn understood(&self) -> &CredentialTypes {
+        match self {
+            Self::Validate(types) => types,
+            Self::Evaluate { credentials, .. } => &credentials.understood,
+        }
+    }
+}
+
+/// The name and the parts of a logical constraint.
+fn logical_parts(l: &LogicalConstraint) -> (&'static str, &[Constraint]) {
+    match l {
+        LogicalConstraint::And(p) => ("and", p),
+        LogicalConstraint::AndSequence(p) => ("andSequence", p),
+        LogicalConstraint::Or(p) => ("or", p),
+        LogicalConstraint::Xone(p) => ("xone", p),
+    }
+}
+
+/// Checks, or evaluates, one constraint (see [`Mode`]). When only
+/// checking, returns `true` for every understood constraint.
+fn check(c: &Constraint, mode: &Mode<'_>) -> Result<bool, PolicyError> {
     match c {
-        Constraint::Atomic(a) => atomic(a, now),
+        Constraint::Atomic(a) => atomic(a, mode),
         Constraint::Logical(l) => {
-            let (kind, parts) = match l {
-                LogicalConstraint::And(p) => ("and", p),
-                LogicalConstraint::AndSequence(p) => ("andSequence", p),
-                LogicalConstraint::Or(p) => ("or", p),
-                LogicalConstraint::Xone(p) => ("xone", p),
-            };
+            let (kind, parts) = logical_parts(l);
             if parts.is_empty() {
                 return Err(PolicyError::Unsupported(format!("empty {kind}")));
             }
             // evaluate every part, so an unsupported one is never skipped
             let mut held = 0;
             for p in parts {
-                if check(p, now)? {
+                if check(p, mode)? {
                     held += 1;
                 }
             }
-            Ok(now.is_none()
-                || match l {
-                    LogicalConstraint::And(_) | LogicalConstraint::AndSequence(_) => {
-                        held == parts.len()
-                    }
-                    LogicalConstraint::Or(_) => held > 0,
-                    LogicalConstraint::Xone(_) => held == 1,
-                })
+            if matches!(mode, Mode::Validate(_)) {
+                return Ok(true);
+            }
+            Ok(match l {
+                LogicalConstraint::And(_) | LogicalConstraint::AndSequence(_) => {
+                    held == parts.len()
+                }
+                LogicalConstraint::Or(_) => held > 0,
+                LogicalConstraint::Xone(_) => held == 1,
+            })
         }
     }
 }
 
-fn atomic(a: &AtomicConstraint, now: Option<i128>) -> Result<bool, PolicyError> {
-    let unsupported = || PolicyError::Unsupported(describe_atomic(a));
-    if short(&a.left_operand) != Some("dateTime") {
-        return Err(unsupported());
+fn atomic(a: &AtomicConstraint, mode: &Mode<'_>) -> Result<bool, PolicyError> {
+    if short(&a.left_operand) == Some("dateTime") {
+        return date_time(a, mode);
     }
+    if credentials::split_left_operand(&a.left_operand).is_some() {
+        return credential(a, mode);
+    }
+    Err(PolicyError::Unsupported(describe_atomic(a)))
+}
+
+/// A `dateTime` constraint (ADR 0009).
+fn date_time(a: &AtomicConstraint, mode: &Mode<'_>) -> Result<bool, PolicyError> {
+    let unsupported = || PolicyError::Unsupported(describe_atomic(a));
     let right = match &a.right_operand {
         serde_json::Value::String(s) => s.as_str(),
         serde_json::Value::Object(o) => o
@@ -189,7 +290,38 @@ fn atomic(a: &AtomicConstraint, now: Option<i128>) -> Result<bool, PolicyError> 
         "gteq" => |t, s| s.start <= t,
         _ => return Err(unsupported()),
     };
-    Ok(now.is_none_or(|t| compare(t, span)))
+    match mode {
+        Mode::Validate(_) => Ok(true),
+        Mode::Evaluate { now, .. } => Ok(compare(*now, span)),
+    }
+}
+
+/// A credential constraint (ADR 0019).
+fn credential(a: &AtomicConstraint, mode: &Mode<'_>) -> Result<bool, PolicyError> {
+    let unsupported = || PolicyError::Unsupported(describe_atomic(a));
+    let Some((credential_type, path)) = credentials::split_left_operand(&a.left_operand) else {
+        return Err(unsupported());
+    };
+    if mode.understood().scope(credential_type).is_none() {
+        return Err(PolicyError::Unsupported(format!(
+            "{}: the credential type {credential_type} is not configured",
+            describe_atomic(a)
+        )));
+    }
+    let operator = short(&a.operator).unwrap_or_default();
+    let comparison = credentials::comparison(operator, &a.right_operand).ok_or_else(unsupported)?;
+    let constraint = credentials::CredentialConstraint {
+        credential_type,
+        path,
+        comparison,
+    };
+    match mode {
+        Mode::Validate(_) => Ok(true),
+        Mode::Evaluate {
+            credentials: caller,
+            ..
+        } => Ok(credentials::holds(&constraint, &caller.held)),
+    }
 }
 
 /// The short name of an ODRL term written in compact JSON-LD (`lteq`),
@@ -216,3 +348,6 @@ fn describe_atomic(a: &AtomicConstraint) -> String {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod credential_tests;

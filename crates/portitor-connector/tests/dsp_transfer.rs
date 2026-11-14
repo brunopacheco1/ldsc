@@ -138,6 +138,7 @@ fn config() -> Config {
         db_file: "unused.db".into(),
         sources: std::collections::BTreeMap::new(),
         data_token_seconds: 3_600,
+        credential_types: portitor_dsp::policy::CredentialTypes::default(),
     }
 }
 

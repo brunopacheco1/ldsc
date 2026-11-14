@@ -46,6 +46,7 @@ use portitor_dsp::negotiation::consumer::{
 };
 use portitor_dsp::negotiation::provider::{AgreeToCatalogOffers, Decider, Decision, Negotiation};
 use portitor_dsp::negotiation::{Agreement, AgreementType, ContractNegotiationError};
+use portitor_dsp::policy::HeldCredential;
 use portitor_dsp::transfer::consumer::{
     ConsumerTransfer, ConsumerTransferDecider, ConsumerTransferDecision,
 };
@@ -234,9 +235,22 @@ impl CallerVerifier for TckVerifier {
         authorization: Option<&'a str>,
     ) -> BoxFuture<'a, Result<Caller, String>> {
         if self.fixed.is_some() && authorization == self.fixed.as_deref() {
-            return Box::pin(async { Ok(Caller(TCK_PARTICIPANT.to_owned())) });
+            return Box::pin(async { Ok(Caller::new(TCK_PARTICIPANT)) });
         }
         self.inner.verify(authorization)
+    }
+
+    /// The TCK holds no credentials, and its offers have no credential
+    /// constraints: it gets none.
+    fn credentials<'a>(
+        &'a self,
+        caller: &'a Caller,
+        scopes: &'a [String],
+    ) -> BoxFuture<'a, Result<Vec<HeldCredential>, String>> {
+        if caller.id == TCK_PARTICIPANT {
+            return Box::pin(async { Ok(Vec::new()) });
+        }
+        self.inner.credentials(caller, scopes)
     }
 }
 
@@ -250,13 +264,17 @@ pub struct TckProver {
 }
 
 impl Prover for TckProver {
-    fn authorization<'a>(&'a self, audience: &'a str) -> BoxFuture<'a, Result<String, String>> {
+    fn authorization<'a>(
+        &'a self,
+        audience: &'a str,
+        scopes: &'a [String],
+    ) -> BoxFuture<'a, Result<String, String>> {
         if audience == TCK_PARTICIPANT
             && let Some(fixed) = self.fixed.clone()
         {
             return Box::pin(async move { Ok(fixed) });
         }
-        self.inner.authorization(audience)
+        self.inner.authorization(audience, scopes)
     }
 }
 
@@ -558,10 +576,11 @@ mod tests {
             fixed: fixed.clone(),
             inner: Arc::new(crate::auth::RefuseAll),
         };
-        assert_eq!(
-            verifier.verify(Some("Bearer tck")).await.unwrap(),
-            Caller(TCK_PARTICIPANT.to_owned())
-        );
+        let tck = verifier.verify(Some("Bearer tck")).await.unwrap();
+        assert_eq!(tck, Caller::new(TCK_PARTICIPANT));
+        assert_eq!(verifier.credentials(&tck, &[]).await, Ok(Vec::new()));
+        let other = Caller::new("did:web:other");
+        assert!(verifier.credentials(&other, &[]).await.is_err());
         assert!(verifier.verify(Some("Bearer other")).await.is_err());
         assert!(verifier.verify(None).await.is_err());
         let open = TckVerifier {
@@ -574,9 +593,9 @@ mod tests {
             inner: Arc::new(crate::auth::NoTokens),
         };
         assert_eq!(
-            prover.authorization(TCK_PARTICIPANT).await.unwrap(),
+            prover.authorization(TCK_PARTICIPANT, &[]).await.unwrap(),
             "Bearer tck"
         );
-        assert!(prover.authorization("did:web:other").await.is_err());
+        assert!(prover.authorization("did:web:other", &[]).await.is_err());
     }
 }

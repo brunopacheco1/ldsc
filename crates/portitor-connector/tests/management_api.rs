@@ -50,6 +50,7 @@ fn app() -> Router {
         db_file: "unused.db".into(),
         sources: std::collections::BTreeMap::new(),
         data_token_seconds: 3_600,
+        credential_types: portitor_dsp::policy::CredentialTypes::default(),
     };
     let ports = authenticating(Ports::new(Arc::new(Provider)), CONSUMER);
     let (_, negotiator) = portitor_connector::build(&config, ports).unwrap();

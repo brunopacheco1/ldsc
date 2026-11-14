@@ -12,9 +12,13 @@
 #    MembershipCredential and answers; copy the air-quality offer unchanged.
 # 2. Negotiate it through the consumer's management API: FINALIZED.
 # 3. The same offer id without its constraint: TERMINATED (ADR 0009).
-# 4. Request a transfer under the agreement: STARTED, with a data address.
-# 5. Fetch the data with the token: it equals the expected file.
-# 6. Complete the transfer: COMPLETED, the token is gone and refused.
+# 4. Credential constraints (ADR 0019): the member-directory offer for
+#    members (the memberOf claim of the consumer's MembershipCredential):
+#    FINALIZED; its offer for auditors (a role claim the demo credential
+#    does not have): TERMINATED.
+# 5. Request a transfer under the agreement: STARTED, with a data address.
+# 6. Fetch the data with the token: it equals the expected file.
+# 7. Complete the transfer: COMPLETED, the token is gone and refused.
 #
 # Environment:
 #   PROVIDER    the provider's base URL, as the consumer reaches it
@@ -109,11 +113,12 @@ OFFER=$(jq -c '.dataset[] | select(.["@id"] == "air-quality") | .hasPolicy[0]' <
 [[ -n $OFFER ]] || fail "no air-quality offer in the catalog"
 echo "provider $PROVIDER_ID offers: $OFFER"
 
-negotiate() { # offer -> prints the ended negotiation
-  local offer=$1
+negotiate() { # offer [dataset, default air-quality] -> prints the ended negotiation
+  local offer=$1 dataset=${2:-air-quality}
   local body pid
   body=$(jq -nc --arg addr "$PROVIDER/$DSP" --arg id "$PROVIDER_ID" --argjson offer "$offer" \
-    '{providerAddress: $addr, providerId: $id, datasetId: "air-quality", offer: $offer}')
+    --arg dataset "$dataset" \
+    '{providerAddress: $addr, providerId: $id, datasetId: $dataset, offer: $offer}')
   pid=$(api POST /v1/negotiations "$body" | jq -r '.consumerPid') || fail "start negotiation"
   until_state "/v1/negotiations/$pid" 'FINALIZED|TERMINATED'
 }
@@ -130,6 +135,25 @@ CHANGED=$(jq -c 'del(.permission[0].constraint)' <<<"$OFFER")
 REFUSED=$(negotiate "$CHANGED")
 jq '{consumerPid, providerPid, state}' <<<"$REFUSED"
 [[ $(jq -r '.state' <<<"$REFUSED") == TERMINATED ]] || fail "expected TERMINATED"
+
+member_offer() { # offer id in member-directory
+  jq -c --arg id "$1" '.dataset[] | select(.["@id"] == "member-directory")
+    | .hasPolicy[] | select(.["@id"] == $id)' <<<"$CATALOG"
+}
+
+step "Negotiate the members' offer: the provider checks the consumer's MembershipCredential claim"
+MEMBERS=$(member_offer member-directory:offer:members)
+[[ -n $MEMBERS ]] || fail "no members' offer in the catalog"
+VIEW=$(negotiate "$MEMBERS" member-directory)
+jq '{state, constraint: .agreement.permission[0].constraint}' <<<"$VIEW"
+[[ $(jq -r '.state' <<<"$VIEW") == FINALIZED ]] || fail "expected FINALIZED: $VIEW"
+
+step "Negotiate the auditors' offer: the consumer's credential has no role claim, the provider refuses"
+AUDITORS=$(member_offer member-directory:offer:auditors)
+[[ -n $AUDITORS ]] || fail "no auditors' offer in the catalog"
+VIEW=$(negotiate "$AUDITORS" member-directory)
+jq '{state}' <<<"$VIEW"
+[[ $(jq -r '.state' <<<"$VIEW") == TERMINATED ]] || fail "expected TERMINATED: $VIEW"
 
 step "Request a transfer under agreement $AGREEMENT: the provider starts it"
 TPID=$(api POST /v1/transfers "$(jq -nc --arg a "$AGREEMENT" '{agreementId: $a}')" |
@@ -155,4 +179,4 @@ DONE=$(until_state "/v1/transfers/$TPID" 'COMPLETED|TERMINATED')
 STATUS=$(curl -s -o /dev/null -w '%{http_code}' "$ENDPOINT" -H "authorization: Bearer $TOKEN")
 [[ $STATUS == 401 ]] || fail "after completion the data plane answered $STATUS, not 401"
 
-step "Done: the consumer authenticated with DCP, a contract agreed, changed terms refused, data transferred and the transfer completed"
+step "Done: the consumer authenticated with DCP, a contract agreed, changed terms refused, credential claims checked, data transferred and the transfer completed"
