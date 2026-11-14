@@ -128,6 +128,56 @@ example the EU Interoperability Test Bed SHACL validator, or Apache Jena.
   - The SHACL `MessageGuard` adapter checks negotiation and transfer
     messages against the bundle's shapes for each message `@type`.
 
+## Spike result (2026-11-14)
+
+Full report, with sources: [docs/spikes/0.6-shacl-engine.md](../spikes/0.6-shacl-engine.md).
+The maintainer decides; this ADR stays Proposed.
+
+Facts measured:
+- **Correctness.** rudof, a small SHACL Core prototype of our own and the
+  EU ITB validator give the same results on samples we wrote. A valid
+  HealthDCAT-AP dataset passes. An invalid one gives exactly its 7 known
+  violations, plus 1 from the vocabulary shapes. Caveat: the official
+  release 7 host was blocked from the spike, so we used a third-party
+  copy of release 7 `public-shapes.ttl` and `range.ttl`, and the release
+  8 vocabulary shapes. Release 8 exists.
+- **rudof `shacl` 0.3.39 fails `cargo deny check` with our `deny.toml`.**
+  The reasons: MPL-2.0 and CDLA-Permissive-2.0 licences; reqwest is a
+  fixed dependency of the `shacl` crate itself, and through it the banned
+  base64 `simd-unsafe` feature comes in; two unmaintained crates; two
+  quick-xml advisories, through `oxrdfxml`, with no fix. It adds 235
+  crates (140 we don't have yet) and 4.3 MiB to a static musl binary. It
+  builds on Rust 1.89 and runs without RocksDB.
+- **An own subset on `oxrdf`, `oxttl` and `oxjsonld`** passes
+  `cargo deny`, adds 22 crates (11 new) and 0.6 MiB, and builds on Rust
+  1.89. The shapes use 9 constraint components (`nodeKind`, `minCount`,
+  `node`, `class`, `hasValue`, `maxCount`, `datatype`, `or`, `pattern`),
+  only `sh:targetClass`, and `sh:alternativePath`. Estimate: 1 to 2
+  weeks with tests.
+- **The ITB sidecar** (Jena and TopBraid SHACL, EUPL-1.2): a 787 MB image
+  that uses about 284 MiB of memory when idle.
+- **JSON-LD.** `oxjsonld` loads `@context` documents only through a
+  callback we supply, and has no network code. A DSP 2025-1 dataset
+  converts with the contexts taken from local files only.
+- **Code lists dominate memory.** 453k triples take about 600 MiB in any
+  engine; reduced to `skos:inScheme` and `rdf:type`, they take about
+  60 MiB, with the same results. They are published as RDF/XML, whose
+  Rust parser has the open advisories above.
+
+Recommendation: implement Option 1 as **our own SHACL Core subset** on
+Oxigraph's RDF crates (`oxrdf`, `oxttl`, `oxjsonld`), not rudof.
+- The validator refuses shapes that use components it does not support.
+- The ITB image is used only in tests, as a reference engine.
+- The signed bundle carries code lists as reduced N-Triples.
+
+Risks:
+- bugs in our own engine, to be caught by the W3C test cases and by a
+  comparison with ITB;
+- new constraint components in later HealthDCAT-AP releases (release 8
+  adds one SPARQL rule);
+- rudof can be looked at again if it makes its HTTP and CLI dependencies
+  optional.
+
 ## Consequences
 
 - Validation adds latency per message. It is acceptable for catalog
