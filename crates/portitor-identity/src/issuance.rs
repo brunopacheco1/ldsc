@@ -182,6 +182,35 @@ pub(crate) async fn ask_issuer(
     credential_ids: Vec<String>,
     holder_pid: Option<String>,
 ) -> Result<CredentialRequest, AskError> {
+    let service = check_request(identity, issuer, &credential_ids).await?;
+    let now = now_secs();
+    let access_token_id = new_uuid();
+    let access_token = sign_access_token(identity, issuer, &access_token_id, now)
+        .map_err(|e| AskError::Issuer(format!("cannot sign: {e}")))?;
+    let holder_pid = holder_pid
+        .filter(|pid| !pid.is_empty())
+        .unwrap_or_else(new_uuid);
+    let request = CredentialRequest {
+        credential_ids,
+        access_token_id: Some(access_token_id),
+        ..CredentialRequest::recorded(holder_pid, issuer.to_owned(), now)
+    };
+    // recorded before it is sent: a quick issuer may deliver before it
+    // answers
+    if !identity.store.add_request(&request)? {
+        return Err(AskError::Conflict);
+    }
+    send(identity, &service.base_url, request, access_token).await
+}
+
+/// The checks before anything is recorded: a trusted issuer, at least
+/// one id, and every id in the issuer's metadata. Returns the issuer's
+/// `IssuerService`.
+async fn check_request(
+    identity: &Identity,
+    issuer: &str,
+    credential_ids: &[String],
+) -> Result<IssuerService, AskError> {
     // before any lookup: an untrusted DID could name any URL
     if !identity.trusts(issuer) {
         return Err(AskError::Refused(
@@ -193,11 +222,12 @@ pub(crate) async fn ask_issuer(
             "credentialIds must name at least one credential".to_owned(),
         ));
     }
-    let (service, metadata) = issuer_metadata(identity, issuer)
+    let service = issuer_metadata(identity, issuer)
         .await
         .map_err(AskError::Refused)?;
-    for id in &credential_ids {
-        let listed = metadata
+    for id in credential_ids {
+        let listed = service
+            .metadata
             .credentials_supported
             .iter()
             .any(|supported| &supported.id == id);
@@ -205,14 +235,22 @@ pub(crate) async fn ask_issuer(
             return Err(AskError::Refused(format!("the issuer does not offer {id}")));
         }
     }
+    Ok(service)
+}
 
-    let now = now_secs();
-    let access_token_id = new_uuid();
-    let access_token = AccessToken::new(
+/// The access token the issuer must send back with its delivery (DCP
+/// 6.1, step 7), with the id `access_token_id`, valid from `now`.
+fn sign_access_token(
+    identity: &Identity,
+    issuer: &str,
+    access_token_id: &str,
+    now: u64,
+) -> Result<String, portitor_dcp::Error> {
+    AccessToken::new(
         &identity.participant_id,
         TokenFrame {
             audience: issuer,
-            jti: &access_token_id,
+            jti: access_token_id,
             issued_at: now,
             expires_at: now + ISSUANCE_TOKEN_SECONDS,
         },
@@ -221,23 +259,21 @@ pub(crate) async fn ask_issuer(
         &[],
     )
     .sign(identity.signer())
-    .map_err(|e| AskError::Issuer(format!("cannot sign: {e}")))?;
-    let holder_pid = holder_pid
-        .filter(|pid| !pid.is_empty())
-        .unwrap_or_else(new_uuid);
-    let request = CredentialRequest {
-        credential_ids: credential_ids.clone(),
-        access_token_id: Some(access_token_id),
-        ..CredentialRequest::recorded(holder_pid.clone(), issuer.to_owned(), now)
-    };
-    // recorded before it is sent: a quick issuer may deliver before it
-    // answers
-    if !identity.store.add_request(&request)? {
-        return Err(AskError::Conflict);
-    }
+}
 
-    let url = format!("{service}/credentials");
-    let message = CredentialRequestMessage::new(holder_pid.clone(), credential_ids);
+/// Sends the recorded `request` to the issuer's service at `base_url`,
+/// with `access_token`, and records what came of it.
+async fn send(
+    identity: &Identity,
+    base_url: &str,
+    request: CredentialRequest,
+    access_token: String,
+) -> Result<CredentialRequest, AskError> {
+    let issuer = request.issuer.as_str();
+    let holder_pid = request.holder_pid.as_str();
+    let url = format!("{base_url}/credentials");
+    let message =
+        CredentialRequestMessage::new(holder_pid.to_owned(), request.credential_ids.clone());
     let sent = match id_token(identity, issuer, Some(access_token)) {
         Ok(token) => {
             identity
@@ -252,14 +288,14 @@ pub(crate) async fn ask_issuer(
         Err(SendError::Refused(reason)) => {
             // nothing reached the issuer, or it refused: a later delivery
             // for this holderPid is not wanted
-            identity.store.withdraw_request(&holder_pid)?;
+            identity.store.withdraw_request(holder_pid)?;
             tracing::info!(%issuer, %reason, "credential request not sent");
             return Err(AskError::Issuer(reason));
         }
         Err(SendError::Unknown(reason)) => {
             // the issuer may have taken it: keep the request open, so its
             // delivery is accepted, and say why its answer is unknown
-            identity.store.set_send_error(&holder_pid, &reason)?;
+            identity.store.set_send_error(holder_pid, &reason)?;
             tracing::warn!(%issuer, %holder_pid, %reason, "credential request outcome unknown; kept open");
             return Err(AskError::Unknown(CredentialRequest {
                 send_error: Some(reason),
@@ -267,9 +303,9 @@ pub(crate) async fn ask_issuer(
             }));
         }
     };
-    let status_url = location.and_then(|location| status_url(&url, &location, &service));
+    let status_url = location.and_then(|location| status_url(&url, &location, base_url));
     if let Some(status_url) = &status_url {
-        identity.store.set_status_url(&holder_pid, status_url)?;
+        identity.store.set_status_url(holder_pid, status_url)?;
     } else {
         tracing::warn!(%issuer, "the issuer gave no usable Location for the request");
     }
@@ -301,9 +337,16 @@ pub(crate) async fn issuer_status(
     Ok(status)
 }
 
-/// The base URL of the `IssuerService` of `issuer` (DCP 6.2), without a
-/// trailing `/`, and the issuer's metadata (DCP 6.7), which must name
-/// `issuer`.
+/// An issuer's `IssuerService`, as [`issuer_metadata`] read it.
+pub(crate) struct IssuerService {
+    /// Its base URL (DCP 6.2), without a trailing `/`.
+    pub base_url: String,
+    /// The issuer's metadata (DCP 6.7).
+    pub metadata: IssuerMetadata,
+}
+
+/// The `IssuerService` of `issuer`: its base URL and its metadata, which
+/// must name `issuer`.
 ///
 /// # Errors
 /// The DID document cannot be read or has no `IssuerService`, or the
@@ -311,7 +354,7 @@ pub(crate) async fn issuer_status(
 pub(crate) async fn issuer_metadata(
     identity: &Identity,
     issuer: &str,
-) -> Result<(String, IssuerMetadata), String> {
+) -> Result<IssuerService, String> {
     let document = identity
         .directory
         .did_document(issuer)
@@ -320,8 +363,8 @@ pub(crate) async fn issuer_metadata(
     let Some(service) = document.service_url("IssuerService") else {
         return Err("the issuer's DID document has no IssuerService".to_owned());
     };
-    let service = service.trim_end_matches('/').to_owned();
-    let url = format!("{service}/metadata");
+    let base_url = service.trim_end_matches('/').to_owned();
+    let url = format!("{base_url}/metadata");
     let json = identity
         .directory
         .json(&url)
@@ -332,7 +375,7 @@ pub(crate) async fn issuer_metadata(
     if metadata.issuer != issuer {
         return Err("the issuer metadata names another issuer".to_owned());
     }
-    Ok((service, metadata))
+    Ok(IssuerService { base_url, metadata })
 }
 
 /// A self-issued ID token from this participant for `audience` (DCP

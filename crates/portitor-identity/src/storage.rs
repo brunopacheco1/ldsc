@@ -103,7 +103,9 @@ enum Stored {
 /// Checks a delivery and stores it.
 async fn store_delivery(identity: &Identity, delivery: Delivery<'_>) -> Result<Stored, Response> {
     let Delivery {
-        issuer, message, ..
+        issuer,
+        access_token,
+        message,
     } = delivery;
     // DCP 6.5 makes holderPid optional, but without it the message cannot
     // be matched to a request, and Portitor accepts nothing it did not ask
@@ -116,7 +118,7 @@ async fn store_delivery(identity: &Identity, delivery: Delivery<'_>) -> Result<S
         Ok(_) => return Err(bad_request("no credential request with this holderPid")),
         Err(e) => return Err(internal_error("identity store", &e)),
     };
-    check_access_token(identity, &request, issuer, delivery.access_token)
+    check_access_token(identity, &request, issuer, access_token)
         .map_err(|reason| refused(&reason))?;
     let status = match message.status {
         IssuanceStatus::Issued => RequestStatus::Issued,
@@ -180,13 +182,31 @@ fn check_access_token(
     issuer: &str,
     access_token: Option<&str>,
 ) -> Result<(), String> {
-    let Some(token) = access_token else {
-        if request.access_token_id.is_some() {
-            return Err("the delivery does not carry our access token".to_owned());
+    // (the token the delivery carries, the id of the one we sent)
+    match (access_token, request.access_token_id.as_deref()) {
+        // a request only recorded, delivered without a token
+        (None, None) => Ok(()),
+        (None, Some(_)) => Err("the delivery does not carry our access token".to_owned()),
+        // a token we did not ask back must still be ours and valid
+        (Some(token), None) => verify_access_token(identity, token, issuer).map(|_access| ()),
+        (Some(token), Some(expected_id)) => {
+            let access = verify_access_token(identity, token, issuer)?;
+            if access.jti == expected_id {
+                Ok(())
+            } else {
+                Err("the access token is for another request".to_owned())
+            }
         }
-        return Ok(());
-    };
-    let access = AccessToken::verify(
+    }
+}
+
+/// `token`, checked: signed by this participant, for `issuer`, valid now.
+fn verify_access_token(
+    identity: &Identity,
+    token: &str,
+    issuer: &str,
+) -> Result<AccessToken, String> {
+    AccessToken::verify(
         token,
         &identity.key.public_jwk(),
         &identity.participant_id,
@@ -194,13 +214,7 @@ fn check_access_token(
         now_secs(),
         LEEWAY,
     )
-    .map_err(|e| format!("access token: {e}"))?;
-    match request.access_token_id.as_deref() {
-        Some(expected) if access.jti != expected => {
-            Err("the access token is for another request".to_owned())
-        }
-        _ => Ok(()),
-    }
+    .map_err(|e| format!("access token: {e}"))
 }
 
 /// One delivered credential, checked: a JWT in a format Portitor stores,
@@ -287,7 +301,7 @@ async fn complete_sparse(
         return Ok(offered);
     }
     let supported = match issuer_metadata(identity, issuer).await {
-        Ok((_service, metadata)) => metadata.credentials_supported,
+        Ok(service) => service.metadata.credentials_supported,
         Err(reason) => return Err(bad_request(&reason)),
     };
     let mut complete = Vec::new();
