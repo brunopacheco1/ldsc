@@ -53,7 +53,7 @@ mod shape;
 mod validate;
 mod vocab;
 
-pub use error::{DataError, LoadError};
+pub use error::{DataError, LoadError, Warning};
 pub use jsonld::{Contexts, jsonld_to_graph};
 pub use oxrdf;
 pub use oxrdf::Graph;
@@ -93,7 +93,7 @@ pub struct Shapes {
     /// Shared, so several sets of shapes can use one copy of large code
     /// lists ([`Shapes::load_with_vocabulary`]).
     vocabulary: std::sync::Arc<Graph>,
-    warnings: Vec<String>,
+    warnings: Vec<Warning>,
 }
 
 impl std::fmt::Debug for Shapes {
@@ -146,11 +146,11 @@ impl Shapes {
         })
     }
 
-    /// Plain-English notes about terms the engine ignored while loading
+    /// Notes about terms the engine ignored while loading
     /// (`sh:extends`, `sh:shape`, a `sh:property` without `sh:path`),
-    /// sorted, each once.
+    /// each once, sorted by their text.
     #[must_use]
-    pub fn warnings(&self) -> &[String] {
+    pub fn warnings(&self) -> &[Warning] {
         &self.warnings
     }
 

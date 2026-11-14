@@ -10,7 +10,8 @@
 //! term and the shape. Two terms outside SHACL Core that upstream shapes
 //! use, `sh:extends` and `sh:shape`, are ignored with a warning.
 
-use crate::error::LoadError;
+use crate::error::{LoadError, Warning};
+use crate::graph::as_node;
 use crate::path::Path;
 use crate::report::{Severity, owned_term_text};
 use crate::shape::{Constraint, NodeKind, Shape, ShapeId};
@@ -35,8 +36,8 @@ const MAX_PATTERN_SIZE: usize = 1 << 20;
 pub(crate) struct Loaded {
     /// All shapes, in a fixed order; a [`ShapeId`] is a position here.
     pub shapes: Vec<Shape>,
-    /// Plain-English warnings, sorted, each once.
-    pub warnings: Vec<String>,
+    /// The warnings, each once, sorted by their text.
+    pub warnings: Vec<Warning>,
 }
 
 /// Reads the shapes in `graph`.
@@ -58,7 +59,7 @@ pub(crate) fn load_shapes(graph: &Graph) -> Result<Loaded, LoadError> {
     loader.check_path_terms_used()?;
     Ok(Loaded {
         shapes,
-        warnings: loader.warnings.into_iter().collect(),
+        warnings: sorted_by_text(loader.warnings),
     })
 }
 
@@ -69,7 +70,7 @@ struct Loader<'a> {
     ids: HashMap<NamedOrBlankNode, ShapeId>,
     /// The display name of each shape, by position.
     names: Vec<String>,
-    warnings: BTreeSet<String>,
+    warnings: BTreeSet<Warning>,
     /// Blank nodes read as (parts of) property paths.
     path_nodes: HashSet<NamedOrBlankNode>,
 }
@@ -106,13 +107,13 @@ impl Loader<'_> {
         for predicate in [vocab::NODE, vocab::PROPERTY] {
             for triple in self.graph.triples_for_predicate(predicate) {
                 let owner = triple.subject.into_owned();
-                found.insert(self.shape_value(&owner, predicate, triple.object.into_owned())?);
+                found.insert(self.shape_value(&owner, predicate, &triple.object.into_owned())?);
             }
         }
         for triple in self.graph.triples_for_predicate(vocab::OR) {
             let owner = triple.subject.into_owned();
             for member in self.list(&triple.object.into_owned(), &self.node_text(&owner))? {
-                found.insert(self.shape_value(&owner, vocab::OR, member)?);
+                found.insert(self.shape_value(&owner, vocab::OR, &member)?);
             }
         }
         let mut named = Vec::new();
@@ -135,18 +136,14 @@ impl Loader<'_> {
         &self,
         owner: &NamedOrBlankNode,
         predicate: NamedNodeRef<'_>,
-        value: Term,
+        value: &Term,
     ) -> Result<NamedOrBlankNode, LoadError> {
-        match value {
-            Term::NamedNode(node) => Ok(node.into()),
-            Term::BlankNode(node) => Ok(node.into()),
-            Term::Literal(literal) => Err(LoadError::Invalid {
-                shape: self.node_text(owner),
-                reason: format!(
-                    "the value of {predicate} must be a shape, not the literal {literal}"
-                ),
-            }),
-        }
+        as_node(value).ok_or_else(|| {
+            invalid(
+                &self.node_text(owner),
+                format!("the value of {predicate} must be a shape, not the literal {value}"),
+            )
+        })
     }
 
     /// Gives every shape its position and display name. A blank node
@@ -252,10 +249,10 @@ impl Loader<'_> {
             let predicate = triple.predicate.as_str();
             if let Some(local) = vocab::shacl_local_name(predicate) {
                 if IGNORED_PREDICATES.contains(&local) {
-                    self.warnings.insert(format!(
-                        "sh:{local} on {} is not part of SHACL Core and is ignored",
-                        self.node_text(&subject)
-                    ));
+                    self.warnings.insert(Warning::NotShaclCore {
+                        term: local.to_owned(),
+                        shape: self.node_text(&subject),
+                    });
                 } else if !ACCEPTED_PREDICATES.contains(&local) {
                     problems.insert((predicate.to_owned(), self.node_text(&subject)));
                 }
@@ -288,10 +285,9 @@ impl Loader<'_> {
             }
         }
         match problems.into_iter().next() {
-            Some((shape, term)) => Err(LoadError::Invalid {
-                shape,
-                reason: format!("{term} is used outside a sh:path"),
-            }),
+            Some((shape, term)) => {
+                Err(invalid(&shape, format!("{term} is used outside a sh:path")))
+            }
             None => Ok(()),
         }
     }
@@ -301,97 +297,20 @@ impl Loader<'_> {
     /// Reads the shape at position `id`.
     fn read_shape(&mut self, id: ShapeId, node: &NamedOrBlankNode) -> Result<Shape, LoadError> {
         let name = self.names[id].clone();
-        let invalid = |reason: String| LoadError::Invalid {
-            shape: name.clone(),
-            reason,
-        };
         let types = self.objects(node, rdf::TYPE);
-        let is_node_shape = types.contains(&Term::from(vocab::NODE_SHAPE.into_owned()));
-        let is_property_shape = types.contains(&Term::from(vocab::PROPERTY_SHAPE.into_owned()));
-
-        let path = match self.objects(node, vocab::PATH).as_slice() {
-            [] => None,
-            [path] => Some(self.read_path(path, &name, 0)?),
-            _ => return Err(invalid("more than one sh:path".to_owned())),
-        };
-        if path.is_some() && is_node_shape {
-            return Err(invalid("a sh:NodeShape cannot have a sh:path".to_owned()));
-        }
-        if path.is_none() && is_property_shape {
-            return Err(invalid("a sh:PropertyShape needs a sh:path".to_owned()));
-        }
-        if path.is_none() && self.is_property_value(node) {
-            // Not valid SHACL (SHACL 2.3: a property shape has exactly
-            // one sh:path). Jena and TopBraid (the EU ITB validator)
-            // check it as a node shape on the same focus node, and
-            // HealthDCAT-AP relies on that, so the engine does the same,
-            // and says so.
-            self.warnings.insert(format!(
-                "{name} is a value of sh:property without sh:path; it is checked as a node shape"
-            ));
-        }
-
-        let mut target_classes = Vec::new();
-        for class in self.objects(node, vocab::TARGET_CLASS) {
-            if class.is_literal() {
-                return Err(invalid(format!("sh:targetClass {class} is not a class")));
-            }
-            target_classes.push(class);
-        }
-        // implicit class target (SHACL 2.1.3.3): a shape that is also a class
-        let is_class = types.contains(&Term::from(rdfs::CLASS.into_owned()));
-        if is_class
-            && (is_node_shape || is_property_shape)
-            && let NamedOrBlankNode::NamedNode(iri) = node
-        {
-            target_classes.push(iri.clone().into());
-        }
+        let path = self.read_path_of(node, &types, &name)?;
+        let target_classes = self.read_target_classes(node, &types, &name)?;
         let target_nodes = self.objects(node, vocab::TARGET_NODE);
-
-        let severity = match self.objects(node, vocab::SEVERITY).as_slice() {
-            [] => Severity::Violation,
-            [Term::NamedNode(iri)] if iri.as_ref() == vocab::VIOLATION => Severity::Violation,
-            [Term::NamedNode(iri)] if iri.as_ref() == vocab::WARNING => Severity::Warning,
-            [Term::NamedNode(iri)] if iri.as_ref() == vocab::INFO => Severity::Info,
-            [other] => {
-                return Err(invalid(format!(
-                    "sh:severity {other} is not supported; use sh:Violation, sh:Warning or sh:Info"
-                )));
-            }
-            _ => return Err(invalid("more than one sh:severity".to_owned())),
-        };
-        let message = self.message(node).map_err(&invalid)?;
-        let deactivated = match self.objects(node, vocab::DEACTIVATED).as_slice() {
-            [] => false,
-            [Term::Literal(literal)] if literal.datatype() == xsd::BOOLEAN => {
-                match literal.value() {
-                    "true" | "1" => true,
-                    "false" | "0" => false,
-                    other => {
-                        return Err(invalid(format!("sh:deactivated {other} is not a boolean")));
-                    }
-                }
-            }
-            _ => return Err(invalid("sh:deactivated must be one boolean".to_owned())),
-        };
-
+        let severity = self.read_severity(node, &name)?;
+        let message = self
+            .message(node)
+            .map_err(|reason| invalid(&name, reason))?;
+        let deactivated = self.read_deactivated(node, &name)?;
         let mut constraints = self.read_constraints(node, &name)?;
-        let is_node = path.is_none();
-        for constraint in &constraints {
-            if is_node
-                && matches!(
-                    constraint,
-                    Constraint::MinCount(_) | Constraint::MaxCount(_)
-                )
-            {
-                return Err(invalid(format!(
-                    "sh:{} needs a sh:path (a property shape)",
-                    lower_first(constraint.component_name())
-                )));
-            }
+        if path.is_none() {
+            refuse_counts_on_node_shape(&constraints, &name)?;
         }
         constraints.extend(self.read_or(node, &name)?);
-
         let mut properties = Vec::new();
         for value in self.objects(node, vocab::PROPERTY) {
             properties.push(self.shape_id(&value, &name)?);
@@ -409,6 +328,105 @@ impl Loader<'_> {
             constraints,
             properties,
         })
+    }
+
+    /// `sh:path`, at most one: `None` for a node shape. It must fit the
+    /// shape's type (`sh:NodeShape` has none, `sh:PropertyShape` one).
+    fn read_path_of(
+        &mut self,
+        node: &NamedOrBlankNode,
+        types: &[Term],
+        name: &str,
+    ) -> Result<Option<Path>, LoadError> {
+        let is_node_shape = types.contains(&Term::from(vocab::NODE_SHAPE.into_owned()));
+        let is_property_shape = types.contains(&Term::from(vocab::PROPERTY_SHAPE.into_owned()));
+        let path = match self.objects(node, vocab::PATH).as_slice() {
+            [] => None,
+            [path] => Some(self.read_path(path, name, 0)?),
+            _ => return Err(invalid(name, "more than one sh:path")),
+        };
+        if path.is_some() && is_node_shape {
+            return Err(invalid(name, "a sh:NodeShape cannot have a sh:path"));
+        }
+        if path.is_none() && is_property_shape {
+            return Err(invalid(name, "a sh:PropertyShape needs a sh:path"));
+        }
+        if path.is_none() && self.is_property_value(node) {
+            // Not valid SHACL (SHACL 2.3: a property shape has exactly
+            // one sh:path). Jena and TopBraid (the EU ITB validator)
+            // check it as a node shape on the same focus node, and
+            // HealthDCAT-AP relies on that, so the engine does the same,
+            // and says so.
+            self.warnings.insert(Warning::PropertyWithoutPath {
+                shape: name.to_owned(),
+            });
+        }
+        Ok(path)
+    }
+
+    /// `sh:targetClass`, plus the implicit class target (SHACL 2.1.3.3):
+    /// a shape that is also an `rdfs:Class` targets its own instances.
+    fn read_target_classes(
+        &self,
+        node: &NamedOrBlankNode,
+        types: &[Term],
+        name: &str,
+    ) -> Result<Vec<Term>, LoadError> {
+        let mut target_classes = Vec::new();
+        for class in self.objects(node, vocab::TARGET_CLASS) {
+            if class.is_literal() {
+                return Err(invalid(
+                    name,
+                    format!("sh:targetClass {class} is not a class"),
+                ));
+            }
+            target_classes.push(class);
+        }
+        let has_type = |class: NamedNodeRef<'_>| types.contains(&Term::from(class.into_owned()));
+        let is_shape = has_type(vocab::NODE_SHAPE) || has_type(vocab::PROPERTY_SHAPE);
+        if has_type(rdfs::CLASS)
+            && is_shape
+            && let NamedOrBlankNode::NamedNode(iri) = node
+        {
+            target_classes.push(iri.clone().into());
+        }
+        Ok(target_classes)
+    }
+
+    /// `sh:severity`: at most one of `sh:Violation` (the default),
+    /// `sh:Warning` and `sh:Info`.
+    fn read_severity(&self, node: &NamedOrBlankNode, name: &str) -> Result<Severity, LoadError> {
+        match self.objects(node, vocab::SEVERITY).as_slice() {
+            [] => Ok(Severity::Violation),
+            [Term::NamedNode(iri)] if iri.as_ref() == vocab::VIOLATION => Ok(Severity::Violation),
+            [Term::NamedNode(iri)] if iri.as_ref() == vocab::WARNING => Ok(Severity::Warning),
+            [Term::NamedNode(iri)] if iri.as_ref() == vocab::INFO => Ok(Severity::Info),
+            [other] => Err(invalid(
+                name,
+                format!(
+                    "sh:severity {other} is not supported; use sh:Violation, sh:Warning or sh:Info"
+                ),
+            )),
+            _ => Err(invalid(name, "more than one sh:severity")),
+        }
+    }
+
+    /// `sh:deactivated`: at most one `xsd:boolean`; `false` when absent.
+    fn read_deactivated(&self, node: &NamedOrBlankNode, name: &str) -> Result<bool, LoadError> {
+        match self.objects(node, vocab::DEACTIVATED).as_slice() {
+            [] => Ok(false),
+            [Term::Literal(literal)] if literal.datatype() == xsd::BOOLEAN => {
+                match literal.value() {
+                    "true" | "1" => Ok(true),
+                    "false" | "0" => Ok(false),
+                    other => Err(invalid(
+                        name,
+                        format!("sh:deactivated {other} is not a boolean"),
+                    )),
+                }
+            }
+            _ => Err(invalid(name, "sh:deactivated must be one boolean")),
+        }
     }
 
     /// Whether `node` is the value of some `sh:property`.
@@ -444,10 +462,7 @@ impl Loader<'_> {
         node: &NamedOrBlankNode,
         name: &str,
     ) -> Result<Vec<Constraint>, LoadError> {
-        let invalid = |reason: String| LoadError::Invalid {
-            shape: name.to_owned(),
-            reason,
-        };
+        let invalid = |reason: String| invalid(name, reason);
         let mut constraints = Vec::new();
         for class in self.objects(node, vocab::CLASS) {
             if class.is_literal() {
@@ -474,10 +489,10 @@ impl Loader<'_> {
             constraints.push(Constraint::NodeKind(kind));
         }
         for count in self.objects(node, vocab::MIN_COUNT) {
-            constraints.push(Constraint::MinCount(count_value(&count).map_err(&invalid)?));
+            constraints.push(Constraint::MinCount(count_value(&count).map_err(invalid)?));
         }
         for count in self.objects(node, vocab::MAX_COUNT) {
-            constraints.push(Constraint::MaxCount(count_value(&count).map_err(&invalid)?));
+            constraints.push(Constraint::MaxCount(count_value(&count).map_err(invalid)?));
         }
         for value in self.objects(node, vocab::HAS_VALUE) {
             constraints.push(Constraint::HasValue(value));
@@ -498,7 +513,7 @@ impl Loader<'_> {
             let Term::Literal(literal) = pattern else {
                 return Err(invalid(format!("sh:pattern {pattern} is not a literal")));
             };
-            constraints.push(compile_pattern(literal.value(), flags.as_deref()).map_err(&invalid)?);
+            constraints.push(compile_pattern(literal.value(), flags.as_deref()).map_err(invalid)?);
         }
         Ok(constraints)
     }
@@ -521,31 +536,24 @@ impl Loader<'_> {
     /// shape that has no statements at all is refused: it would accept
     /// every node, which is most likely a typo or a missing file.
     fn shape_id(&self, value: &Term, referrer: &str) -> Result<ShapeId, LoadError> {
-        let node = match value {
-            Term::NamedNode(iri) => NamedOrBlankNode::from(iri.clone()),
-            Term::BlankNode(blank) => NamedOrBlankNode::from(blank.clone()),
-            Term::Literal(_) => {
-                return Err(LoadError::Invalid {
-                    shape: referrer.to_owned(),
-                    reason: format!("{value} is not a shape"),
-                });
-            }
+        let Some(node) = as_node(value) else {
+            return Err(invalid(referrer, format!("{value} is not a shape")));
         };
         if self.graph.triples_for_subject(&node).next().is_none() {
-            return Err(LoadError::Invalid {
-                shape: referrer.to_owned(),
-                reason: format!(
+            return Err(invalid(
+                referrer,
+                format!(
                     "it refers to the shape {}, which is not defined",
                     self.node_text(&node)
                 ),
-            });
+            ));
         }
         match self.ids.get(&node) {
             Some(&id) => Ok(id),
-            None => Err(LoadError::Invalid {
-                shape: referrer.to_owned(),
-                reason: format!("{} is not a shape", self.node_text(&node)),
-            }),
+            None => Err(invalid(
+                referrer,
+                format!("{} is not a shape", self.node_text(&node)),
+            )),
         }
     }
 
@@ -555,92 +563,90 @@ impl Loader<'_> {
     /// one of: an RDF list (sequence path), `sh:inversePath`,
     /// `sh:alternativePath`.
     fn read_path(&mut self, term: &Term, shape: &str, depth: usize) -> Result<Path, LoadError> {
-        let invalid = |reason: String| LoadError::Invalid {
-            shape: shape.to_owned(),
-            reason,
-        };
         if depth > MAX_PATH_DEPTH {
-            return Err(invalid(format!(
-                "sh:path nests deeper than {MAX_PATH_DEPTH} levels"
-            )));
+            return Err(invalid(
+                shape,
+                format!("sh:path nests deeper than {MAX_PATH_DEPTH} levels"),
+            ));
         }
         let node = match term {
             Term::NamedNode(iri) => return Ok(Path::Property(iri.clone())),
             Term::BlankNode(blank) => NamedOrBlankNode::from(blank.clone()),
             Term::Literal(literal) => {
-                return Err(invalid(format!("sh:path {literal} is not a path")));
+                return Err(invalid(shape, format!("sh:path {literal} is not a path")));
             }
         };
         let is_list = !self.objects(&node, rdf::FIRST).is_empty();
         let inverse = self.objects(&node, vocab::INVERSE_PATH);
         let alternative = self.objects(&node, vocab::ALTERNATIVE_PATH);
+        // `usize::from(bool)` is 1 for true: counts how many of the three
+        // forms are present
         let forms = usize::from(is_list)
             + usize::from(!inverse.is_empty())
             + usize::from(!alternative.is_empty());
         if forms != 1 {
-            return Err(invalid(format!(
-                "the path {} is not exactly one of: a list, sh:inversePath, sh:alternativePath",
-                self.node_text(&node)
-            )));
+            return Err(invalid(
+                shape,
+                format!(
+                    "the path {} is not exactly one of: a list, sh:inversePath, sh:alternativePath",
+                    self.node_text(&node)
+                ),
+            ));
         }
         self.path_nodes.insert(node.clone());
         if is_list {
-            let steps = self.list(term, shape)?;
-            if steps.len() < 2 {
-                return Err(invalid(
-                    "a sequence path needs at least two members".to_owned(),
-                ));
-            }
-            let mut paths = Vec::new();
-            for step in &steps {
-                paths.push(self.read_path(step, shape, depth + 1)?);
-            }
-            return Ok(Path::Sequence(paths));
+            let steps = self.read_member_paths(term, shape, depth, "a sequence path")?;
+            return Ok(Path::Sequence(steps));
         }
         if let [inner] = inverse.as_slice() {
-            return Ok(Path::Inverse(Box::new(self.read_path(
-                inner,
-                shape,
-                depth + 1,
-            )?)));
+            let inner = self.read_path(inner, shape, depth + 1)?;
+            return Ok(Path::Inverse(Box::new(inner)));
         }
         if let [list] = alternative.as_slice() {
-            let choices = self.list(list, shape)?;
-            if choices.len() < 2 {
-                return Err(invalid(
-                    "sh:alternativePath needs at least two members".to_owned(),
-                ));
-            }
-            let mut paths = Vec::new();
-            for choice in &choices {
-                paths.push(self.read_path(choice, shape, depth + 1)?);
-            }
-            return Ok(Path::Alternative(paths));
+            let choices = self.read_member_paths(list, shape, depth, "sh:alternativePath")?;
+            return Ok(Path::Alternative(choices));
         }
         Err(invalid(
-            "sh:inversePath or sh:alternativePath has more than one value".to_owned(),
+            shape,
+            "sh:inversePath or sh:alternativePath has more than one value",
         ))
+    }
+
+    /// The members of the RDF list `list`, each read as a path one level
+    /// deeper: the steps of a sequence path or the choices of an
+    /// alternative path. `what` names the path in the error when it has
+    /// fewer than two members.
+    fn read_member_paths(
+        &mut self,
+        list: &Term,
+        shape: &str,
+        depth: usize,
+        what: &str,
+    ) -> Result<Vec<Path>, LoadError> {
+        let members = self.list(list, shape)?;
+        if members.len() < 2 {
+            return Err(invalid(shape, format!("{what} needs at least two members")));
+        }
+        let mut paths = Vec::new();
+        for member in &members {
+            paths.push(self.read_path(member, shape, depth + 1)?);
+        }
+        Ok(paths)
     }
 
     /// The members of an RDF list (`rdf:first`, `rdf:rest`, `rdf:nil`).
     /// A list that is broken, loops or is too long is refused.
     fn list(&self, head: &Term, shape: &str) -> Result<Vec<Term>, LoadError> {
-        let invalid = |reason: &str| LoadError::Invalid {
-            shape: shape.to_owned(),
-            reason: reason.to_owned(),
-        };
         let nil: Term = rdf::NIL.into_owned().into();
         let mut members = Vec::new();
         let mut seen: HashSet<Term> = HashSet::new();
         let mut current = head.clone();
         while current != nil {
             if !seen.insert(current.clone()) || members.len() >= MAX_LIST_LENGTH {
-                return Err(invalid("an RDF list loops or is too long"));
+                return Err(invalid(shape, "an RDF list loops or is too long"));
             }
-            let node = match &current {
-                Term::NamedNode(iri) => NamedOrBlankNode::from(iri.clone()),
-                Term::BlankNode(blank) => NamedOrBlankNode::from(blank.clone()),
-                Term::Literal(_) => return Err(invalid("an RDF list ends in a literal")),
+            let Some(node) = as_node(&current) else {
+                return Err(invalid(shape, "an RDF list ends in a literal"));
             };
             let (firsts, rests) = (
                 self.objects(&node, rdf::FIRST),
@@ -648,6 +654,7 @@ impl Loader<'_> {
             );
             let ([first], [rest]) = (firsts.as_slice(), rests.as_slice()) else {
                 return Err(invalid(
+                    shape,
                     "an RDF list node needs exactly one rdf:first and one rdf:rest",
                 ));
             };
@@ -667,6 +674,44 @@ impl Loader<'_> {
         // a fixed order, so errors and names do not change between runs
         values.sort_by_key(owned_term_text);
         values
+    }
+}
+
+/// The warnings sorted by their text, so the order is the one a reader
+/// of the text expects, and the same on every run.
+fn sorted_by_text(warnings: BTreeSet<Warning>) -> Vec<Warning> {
+    let mut sorted: Vec<Warning> = warnings.into_iter().collect();
+    sorted.sort_by_cached_key(ToString::to_string);
+    sorted
+}
+
+/// The error for a malformed shape: [`LoadError::Invalid`] with the
+/// shape's name and the reason.
+fn invalid(shape: &str, reason: impl Into<String>) -> LoadError {
+    LoadError::Invalid {
+        shape: shape.to_owned(),
+        reason: reason.into(),
+    }
+}
+
+/// `sh:minCount` and `sh:maxCount` count the values of a path, so a node
+/// shape (no `sh:path`) cannot have them.
+fn refuse_counts_on_node_shape(constraints: &[Constraint], name: &str) -> Result<(), LoadError> {
+    let count = constraints.iter().find(|constraint| {
+        matches!(
+            constraint,
+            Constraint::MinCount(_) | Constraint::MaxCount(_)
+        )
+    });
+    match count {
+        Some(constraint) => Err(invalid(
+            name,
+            format!(
+                "sh:{} needs a sh:path (a property shape)",
+                lower_first(constraint.component_name())
+            ),
+        )),
+        None => Ok(()),
     }
 }
 
