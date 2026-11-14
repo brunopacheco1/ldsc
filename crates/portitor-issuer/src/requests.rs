@@ -55,8 +55,9 @@ async fn caller(issuer: &Issuer, headers: &HeaderMap) -> Result<Claims, Response
         used_token_ids: &issuer.used_token_ids,
     };
     let registered = |claims: &Claims| is_registered(issuer, &claims.sub);
-    let resolve = |did: String| async move { issuer.directory.did_document(&did).await };
-    authenticate(headers, audience, registered, resolve).await
+    // `&*` turns the shared pointer (`Arc<dyn Directory>`) into a plain
+    // borrow of the directory it points to
+    authenticate(headers, audience, registered, &*issuer.directory).await
 }
 
 /// Whether `did` is a registered participant. A store error counts as

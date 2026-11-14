@@ -15,6 +15,7 @@ use axum::http::{Request, StatusCode, header};
 use common::*;
 use portitor_dcp::message::{CredentialStatus, RequestStatus};
 use portitor_dcp::{DidDocument, JtiCache, unverified_claims, validate_self_issued};
+use portitor_runtime::http::HttpError;
 use portitor_runtime::system::now_secs;
 use serde_json::{Value, json};
 
@@ -269,7 +270,7 @@ async fn only_ids_from_the_issuer_metadata_are_asked_for() {
 #[tokio::test]
 async fn a_request_the_issuer_did_not_take_is_not_kept() {
     let world = world();
-    *world.issuer_service.refusal.lock().unwrap() = Some("HTTP 401 Unauthorized".to_owned());
+    *world.issuer_service.refusal.lock().unwrap() = Some(HttpError::Status(401));
     let (status, body) = ask(&world, &[MEMBERSHIP]).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
     let holder_pid = world.issuer_service.requests()[0]
@@ -546,13 +547,14 @@ async fn request_view(world: &World, holder_pid: &str) -> Value {
 async fn a_request_whose_answer_is_unknown_stays_open() {
     // no answer in time, a server error, or "try later": the issuer may
     // have taken the request, so its delivery must still be accepted
-    for failure in [
-        "no answer within 10s",
-        "HTTP 503 Service Unavailable",
-        "HTTP 429 Too Many Requests",
+    for error in [
+        HttpError::NoAnswer("no answer within 10s".to_owned()),
+        HttpError::Status(503),
+        HttpError::Status(429),
     ] {
+        let failure = error.to_string();
         let world = world();
-        *world.issuer_service.refusal.lock().unwrap() = Some(failure.to_owned());
+        *world.issuer_service.refusal.lock().unwrap() = Some(error);
         let (status, body) = ask(&world, &[MEMBERSHIP]).await;
         assert_eq!(status, StatusCode::ACCEPTED, "{failure}: {body}");
         assert_eq!(body["sendError"], failure);

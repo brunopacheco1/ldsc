@@ -43,6 +43,7 @@ pub(crate) async fn authenticate(
         Callers::Anyone => true,
         Callers::TrustedIssuers => identity.trusts(&claimed.sub) && identity.trusts(&claimed.iss),
     };
-    let resolve = |did: String| async move { identity.directory.did_document(&did).await };
-    portitor_runtime::caller::authenticate(headers, audience, admit, resolve).await
+    // `&*` turns the shared pointer (`Arc<dyn Directory>`) into a plain
+    // borrow of the directory it points to
+    portitor_runtime::caller::authenticate(headers, audience, admit, &*identity.directory).await
 }

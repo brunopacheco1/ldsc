@@ -25,13 +25,13 @@ use axum::Router;
 use axum::routing::{get, post};
 use portitor_dcp::message::IssuerMetadata;
 use portitor_dcp::{JtiCache, SigningKey};
+use portitor_runtime::directory::Directory;
 use portitor_runtime::http::Sender;
 
 pub mod config;
 pub mod definitions;
 pub mod delivery;
 pub mod did_document;
-pub mod directory;
 pub mod issue;
 pub mod management;
 pub mod requests;
@@ -40,7 +40,6 @@ pub mod store;
 
 use config::Config;
 use definitions::Definition;
-use directory::Directory;
 use status_lists::StatusLists;
 use store::IssuerStore;
 

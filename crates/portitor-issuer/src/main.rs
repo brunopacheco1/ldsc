@@ -9,10 +9,10 @@ use std::sync::Arc;
 
 use portitor_dcp::SigningKey;
 use portitor_issuer::config::Config;
-use portitor_issuer::directory::WebDirectory;
 use portitor_issuer::store::SqliteStore;
 use portitor_issuer::{Issuer, Ports, definitions};
 use portitor_runtime::api_key::ApiKey;
+use portitor_runtime::directory::WebDirectory;
 use portitor_runtime::http::HttpSender;
 use portitor_runtime::serve::{
     MAX_CONCURRENT_REQUESTS, REQUEST_TIMEOUT, bind_management, init_logging, serve, with_limits,

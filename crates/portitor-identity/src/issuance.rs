@@ -29,13 +29,13 @@
 //!
 //! [`IssuerClient`] is the port for the two calls to the issuer;
 //! [`HttpIssuerClient`] the adapter. The issuer's DID document and
-//! metadata are read through [`crate::directory::Directory`].
+//! metadata are read through [`portitor_runtime::directory::Directory`].
 
 use portitor_dcp::Claims;
 use portitor_dcp::holder::{AccessToken, TokenFrame};
 use portitor_dcp::message::{CredentialRequestMessage, CredentialStatus, IssuerMetadata};
 use portitor_runtime::BoxFuture;
-use portitor_runtime::http::{HttpSender, Sender as _, answered_status};
+use portitor_runtime::http::{HttpError, HttpSender, Sender as _};
 use portitor_runtime::system::{new_uuid, now_secs};
 
 use crate::store::{CredentialRequest, StoreError};
@@ -63,10 +63,12 @@ impl SendError {
     /// The error of the shared HTTP client, sorted by the status the
     /// issuer answered with, if any.
     #[must_use]
-    pub fn from_http(error: String) -> Self {
-        match answered_status(&error) {
-            Some(status) if is_definite_refusal(status) => Self::Refused(error),
-            _ => Self::Unknown(error),
+    pub fn from_http(error: &HttpError) -> Self {
+        match error {
+            HttpError::Status(status) if is_definite_refusal(*status) => {
+                Self::Refused(error.to_string())
+            }
+            HttpError::Status(_) | HttpError::NoAnswer(_) => Self::Unknown(error.to_string()),
         }
     }
 }
@@ -132,7 +134,7 @@ impl IssuerClient for HttpIssuerClient {
             self.http
                 .post_for_location(url, &body, &authorization)
                 .await
-                .map_err(SendError::from_http)
+                .map_err(|error| SendError::from_http(&error))
         })
     }
 
@@ -419,23 +421,26 @@ mod tests {
 
     #[test]
     fn only_a_definite_client_error_is_a_refusal() {
-        let sorted = |error: &str| SendError::from_http(error.to_owned());
-        for refused in [
-            "HTTP 400 Bad Request",
-            "HTTP 401 Unauthorized",
-            "HTTP 409 Conflict",
-        ] {
-            assert_eq!(sorted(refused), SendError::Refused(refused.to_owned()));
+        for code in [400, 401, 409] {
+            let error = HttpError::Status(code);
+            assert_eq!(
+                SendError::from_http(&error),
+                SendError::Refused(error.to_string())
+            );
         }
-        for unknown in [
-            "HTTP 408 Request Timeout",
-            "HTTP 429 Too Many Requests",
-            "HTTP 500 Internal Server Error",
-            "HTTP 503 Service Unavailable",
-            "no answer within 10s",
-            "client error (Connect)",
+        let no_answer = |reason: &str| HttpError::NoAnswer(reason.to_owned());
+        for error in [
+            HttpError::Status(408),
+            HttpError::Status(429),
+            HttpError::Status(500),
+            HttpError::Status(503),
+            no_answer("no answer within 10s"),
+            no_answer("client error (Connect)"),
         ] {
-            assert_eq!(sorted(unknown), SendError::Unknown(unknown.to_owned()));
+            assert_eq!(
+                SendError::from_http(&error),
+                SendError::Unknown(error.to_string())
+            );
         }
     }
 

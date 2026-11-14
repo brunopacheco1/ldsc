@@ -24,11 +24,11 @@ use axum::Router;
 use axum::routing::{get, post};
 use portitor_dcp::{JtiCache, SigningKey};
 use portitor_runtime::api_key::ApiKey;
+use portitor_runtime::directory::Directory;
 
 mod caller;
 pub mod config;
 pub mod did_document;
-pub mod directory;
 pub mod issuance;
 pub mod management;
 pub mod presentation;
@@ -37,7 +37,6 @@ pub mod store;
 pub mod sts;
 
 use config::Config;
-use directory::Directory;
 use issuance::IssuerClient;
 use store::IdentityStore;
 

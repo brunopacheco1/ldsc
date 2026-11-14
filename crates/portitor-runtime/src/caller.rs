@@ -9,13 +9,14 @@
 //! document is resolved and the token checked step by step
 //! (`portitor_dcp::validate_self_issued`).
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Mutex, PoisonError};
 
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
-use portitor_dcp::{Claims, DidDocument, JtiCache, unverified_claims, validate_self_issued};
+use portitor_dcp::{Claims, JtiCache, unverified_claims, validate_self_issued};
 
 use crate::api_key::problem;
+use crate::directory::Directory;
 use crate::http::bearer_token_in;
 use crate::system::now_secs;
 
@@ -38,21 +39,17 @@ pub struct Audience<'a> {
 /// `admit` sees the token's claims **before** they are verified, and
 /// before the caller's DID is resolved: a service that only takes calls
 /// from known DIDs says no there, so an unknown caller cannot make it
-/// fetch a URL of its choice. `resolve` reads the DID document of a DID
-/// (`sub`).
+/// fetch a URL of its choice. `directory` reads the DID document of the
+/// caller (`sub`).
 ///
 /// # Errors
 /// The answer to send: 401 with `WWW-Authenticate: Bearer`.
-pub async fn authenticate<Resolve, Resolving>(
+pub async fn authenticate(
     headers: &HeaderMap,
     audience: Audience<'_>,
     admit: impl FnOnce(&Claims) -> bool,
-    resolve: Resolve,
-) -> Result<Claims, Response>
-where
-    Resolve: FnOnce(String) -> Resolving,
-    Resolving: Future<Output = Result<Arc<DidDocument>, String>>,
-{
+    directory: &dyn Directory,
+) -> Result<Claims, Response> {
     // DCP 4.3.1 and the DCP TCK want the `Bearer` prefix: a bare token
     // is refused
     let Some(token) = bearer_token_in(headers) else {
@@ -62,7 +59,8 @@ where
     if !admit(&claimed) {
         return Err(refused("caller not admitted"));
     }
-    let document = resolve(claimed.sub.clone())
+    let document = directory
+        .did_document(&claimed.sub)
         .await
         .map_err(|e| refused(&format!("cannot resolve {}: {e}", claimed.sub)))?;
     // the lock is taken only now, after the last `await`, and held for
@@ -100,10 +98,48 @@ pub fn refused(reason: &str) -> Response {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use portitor_dcp::{Relationship, SigningKey, VerificationMethod};
+    use crate::BoxFuture;
+    use portitor_dcp::{DidDocument, Relationship, SigningKey, VerificationMethod};
+    use serde_json::Value;
+    use std::sync::Arc;
 
     const CALLER: &str = "did:web:caller.example";
     const SERVICE: &str = "did:web:service.example";
+
+    /// Answers every DID with `document`, or with an error if there is
+    /// none; counts the lookups.
+    struct OneDocument {
+        document: Option<Arc<DidDocument>>,
+        lookups: Mutex<u32>,
+    }
+
+    impl OneDocument {
+        fn new(document: Option<Arc<DidDocument>>) -> Self {
+            Self {
+                document,
+                lookups: Mutex::new(0),
+            }
+        }
+
+        fn lookups(&self) -> u32 {
+            *self.lookups.lock().unwrap()
+        }
+    }
+
+    impl Directory for OneDocument {
+        fn did_document<'a>(
+            &'a self,
+            _did: &'a str,
+        ) -> BoxFuture<'a, Result<Arc<DidDocument>, String>> {
+            *self.lookups.lock().unwrap() += 1;
+            let found = self.document.clone().ok_or_else(|| "no".to_owned());
+            Box::pin(async move { found })
+        }
+
+        fn json<'a>(&'a self, _url: &'a str) -> BoxFuture<'a, Result<Value, String>> {
+            Box::pin(async { Err("not used".to_owned()) })
+        }
+    }
 
     fn caller() -> (SigningKey, Arc<DidDocument>) {
         let key = SigningKey::generate().unwrap();
@@ -155,15 +191,12 @@ mod tests {
             used_token_ids: &used,
         };
         let bearer = headers(&format!("Bearer {}", token(&key, "j-1")));
-        let resolve = |_did: String| {
-            let document = Arc::clone(&document);
-            async move { Ok::<_, String>(document) }
-        };
-        let claims = authenticate(&bearer, audience, |_| true, resolve)
+        let directory = OneDocument::new(Some(document));
+        let claims = authenticate(&bearer, audience, |_| true, &directory)
             .await
             .unwrap();
         assert_eq!(claims.sub, CALLER);
-        let again = authenticate(&bearer, audience, |_| true, resolve).await;
+        let again = authenticate(&bearer, audience, |_| true, &directory).await;
         assert_eq!(again.unwrap_err().status(), StatusCode::UNAUTHORIZED);
     }
 
@@ -176,32 +209,26 @@ mod tests {
             leeway: 0,
             used_token_ids: &used,
         };
-        let found = |_did: String| {
-            let document = Arc::clone(&document);
-            async move { Ok::<_, String>(document) }
-        };
+        let found = OneDocument::new(Some(document));
         let bare = headers(&token(&key, "j-2"));
-        let response = authenticate(&bare, audience, |_| true, found)
+        let response = authenticate(&bare, audience, |_| true, &found)
             .await
             .unwrap_err();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(response.headers()[header::WWW_AUTHENTICATE], "Bearer");
 
         let bearer = headers(&format!("Bearer {}", token(&key, "j-3")));
-        // not admitted: the DID is never resolved (this resolver panics if
-        // it is called)
-        let must_not_resolve =
-            |did: String| -> std::future::Ready<Result<Arc<DidDocument>, String>> {
-                panic!("{did} was resolved although it was not admitted")
-            };
-        let not_admitted = authenticate(&bearer, audience, |_| false, must_not_resolve).await;
+        // not admitted: the DID is never resolved
+        let before = found.lookups();
+        let not_admitted = authenticate(&bearer, audience, |_| false, &found).await;
         assert_eq!(not_admitted.unwrap_err().status(), StatusCode::UNAUTHORIZED);
-        let unresolvable = |_did: String| async { Err::<Arc<DidDocument>, _>("no".to_owned()) };
-        let not_resolved = authenticate(&bearer, audience, |_| true, unresolvable).await;
+        assert_eq!(found.lookups(), before, "resolved although not admitted");
+        let unresolvable = OneDocument::new(None);
+        let not_resolved = authenticate(&bearer, audience, |_| true, &unresolvable).await;
         assert_eq!(not_resolved.unwrap_err().status(), StatusCode::UNAUTHORIZED);
         // neither attempt used up the token id
         assert!(
-            authenticate(&bearer, audience, |_| true, found)
+            authenticate(&bearer, audience, |_| true, &found)
                 .await
                 .is_ok()
         );

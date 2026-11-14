@@ -23,12 +23,12 @@ use portitor_dcp::{
     validate_self_issued,
 };
 use portitor_issuer::config::Config;
-use portitor_issuer::directory::Directory;
 use portitor_issuer::management::openapi_json;
 use portitor_issuer::store::{CredentialRequest, IssuerStore, SqliteStore};
 use portitor_issuer::{Issuer, Ports, definitions, delivery, issue};
 use portitor_runtime::BoxFuture;
 use portitor_runtime::api_key::ApiKey;
+use portitor_runtime::directory::Directory;
 use portitor_runtime::http::Sender;
 use portitor_runtime::system::{new_uuid, now_secs};
 use serde_json::{Value, json};
@@ -137,6 +137,11 @@ impl Directory for FakeDirectory {
         self.looked_up.lock().unwrap().push(did.to_owned());
         let found = self.documents.lock().unwrap().get(did).cloned();
         Box::pin(async move { found.ok_or_else(|| format!("no document for {did}")) })
+    }
+
+    /// The issuer reads no JSON documents.
+    fn json<'a>(&'a self, url: &'a str) -> BoxFuture<'a, Result<Value, String>> {
+        Box::pin(async move { Err(format!("not served: {url}")) })
     }
 }
 

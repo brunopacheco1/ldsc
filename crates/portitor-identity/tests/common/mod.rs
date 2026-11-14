@@ -15,12 +15,13 @@ use axum::http::{Request, StatusCode, header};
 use portitor_dcp::message::{CredentialRequestMessage, CredentialStatus};
 use portitor_dcp::{Claims, DidDocument, Relationship, Service, SigningKey, VerificationMethod};
 use portitor_identity::config::Config;
-use portitor_identity::directory::Directory;
 use portitor_identity::issuance::{IssuerClient, SendError};
 use portitor_identity::store::{IdentityStore, SqliteStore};
 use portitor_identity::{Identity, Ports};
 use portitor_runtime::BoxFuture;
 use portitor_runtime::api_key::ApiKey;
+use portitor_runtime::directory::Directory;
+use portitor_runtime::http::HttpError;
 use portitor_runtime::system::{new_uuid, now_secs};
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
@@ -180,7 +181,7 @@ pub struct ReceivedRequest {
 pub struct FakeIssuer {
     pub received: Mutex<Vec<ReceivedRequest>>,
     pub location: Mutex<Option<String>>,
-    pub refusal: Mutex<Option<String>>,
+    pub refusal: Mutex<Option<HttpError>>,
     pub status: Mutex<Option<CredentialStatus>>,
     /// The (URL, ID token) of each status read.
     pub status_reads: Mutex<Vec<(String, String)>>,
@@ -206,7 +207,7 @@ impl IssuerClient for FakeIssuer {
             id_token: id_token.to_owned(),
         });
         let answer = match self.refusal.lock().unwrap().clone() {
-            Some(reason) => Err(SendError::from_http(reason)),
+            Some(error) => Err(SendError::from_http(&error)),
             None => Ok(self.location.lock().unwrap().clone()),
         };
         Box::pin(async move { answer })

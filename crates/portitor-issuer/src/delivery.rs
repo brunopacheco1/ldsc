@@ -60,6 +60,9 @@ pub fn retry_delay(failed: u32) -> u64 {
 /// and 5xx answers, are worth another try.
 #[must_use]
 pub fn is_permanent(error: &str) -> bool {
+    // the delivery goes through the `Sender` port, whose errors are text;
+    // `answered_status` reads the status back from the text that
+    // `HttpError` writes (`HTTP 404 Not Found`)
     match answered_status(error) {
         Some(401 | 408 | 429) | None => false,
         Some(code) => (400..500).contains(&code),
