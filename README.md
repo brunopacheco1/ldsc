@@ -76,11 +76,11 @@ Configuration (environment variables):
 | `PORTITOR_PUBLIC_URL` | `http://localhost:8080` | Public base URL; the DSP endpoint is this plus `/dsp/2025-1`, the consumer callback address this plus `/dsp/2025-1/callback` |
 | `PORTITOR_DATASETS_FILE` | none (empty catalog) | JSON file with the datasets to offer, harvested into a read copy at start and at each run ([ADR 0020](docs/adr/0020-dataset-harvest.md)) |
 | `PORTITOR_HARVEST_INTERVAL_SECONDS` | `3600` | Seconds between two harvest runs; `0` harvests only at start |
-| `PORTITOR_BUNDLE_URL` | none (no SHACL checks) | `https://` base URL of one version folder of the authority's signed schema and vocabulary bundle ([ADR 0005](docs/adr/0005-schema-and-vocabulary-registry.md)) |
+| `PORTITOR_BUNDLE_URL` | none (no SHACL checks) | `https://` base URL of one version folder of the authority's signed schema and vocabulary bundle ([ADR 0005](docs/adr/0005-schema-and-vocabulary-registry.md)); `http://` only with `PORTITOR_ALLOW_HTTP_CALLBACKS` |
 | `PORTITOR_BUNDLE_DIR` | none | A local bundle version folder instead of the URL (development and tests) |
 | `PORTITOR_BUNDLE_VERSION` | none (**required** with a bundle) | The pinned bundle version |
 | `PORTITOR_BUNDLE_AUTHORITY` | none (**required** with a bundle) | The authority's `did:web` DID; its DID document lists the bundle key |
-| `PORTITOR_BUNDLE_CACHE_DIR` | `bundle-cache` next to `PORTITOR_DB_FILE` (`/data/bundle-cache` in the image) | Where the verified bundle is kept, for a start while the authority's host is down |
+| `PORTITOR_BUNDLE_CACHE_DIR` | `bundle-cache` next to `PORTITOR_DB_FILE` (`/data/bundle-cache` in the image) | Where the verified bundle is kept; used only when the authority's host or DID document cannot be reached at start |
 | `PORTITOR_DB_FILE` | `portitor.db` (`/data/portitor.db` in the image) | SQLite file that keeps negotiations; one connector per file |
 | `PORTITOR_MANAGEMENT_API_KEY_FILE` | none (management API off) | File with the management API key (at least 32 characters, for example `openssl rand -hex 32`) |
 | `PORTITOR_MANAGEMENT_BIND` | `127.0.0.1:8081` | Address of the management API |
@@ -250,13 +250,19 @@ and shown at `GET /v1/harvest-jobs`.
 With the authority's signed schema and vocabulary bundle
 (`PORTITOR_BUNDLE_*`, [ADR 0005](docs/adr/0005-schema-and-vocabulary-registry.md)),
 each dataset is also checked against the SHACL shapes for its
-`dct:accessRights` level, with Portitor's own SHACL Core engine
-(`portitor-shacl`). HealthDCAT-AP release 8 is the baseline:
+`dct:accessRights` value, with Portitor's own SHACL Core engine
+(`portitor-shacl`); a dataset that passes is served with
+`"dct:conformsTo": {"@id": "<the bundle's profile>", "@type": "dct:Standard"}`.
+Its `@id` must then be an absolute IRI, and every term outside the DSP
+context's prefixes must be a full IRI (for example
+`http://healthdataportal.eu/ns/health#healthCategory`): the catalog's
+`@context` is always the DSP context alone. If the bundle has message
+shapes, DSP negotiation and transfer messages are checked against them
+too. HealthDCAT-AP release 8 is the baseline:
 [examples/bundle/healthdcat-ap-r8](examples/bundle/healthdcat-ap-r8) holds
 the sources of a demo bundle, `scripts/demo-bundle.sh` builds and signs
 it, and [examples/healthdcat-datasets.json](examples/healthdcat-datasets.json)
 has datasets written for it. See [DEPLOYING](docs/DEPLOYING.md#schema-and-vocabulary-bundle).
-<!-- verify with D -->
 
 To see two participants agree a contract and transfer a file, run the demo
 in Docker Compose (needs Docker, `curl`, `jq` and `openssl`):
@@ -268,14 +274,20 @@ scripts/demo-compose.sh
 It starts the data space's issuer (`portitor-issuer`), a provider and a
 consumer, each a connector with its identity component, and a small web
 server that holds the provider's data ([examples/compose](examples/compose)).
+The issuer also serves the HealthDCAT-AP demo bundle, which the script
+builds and signs first; the provider pins it and offers
+[examples/healthdcat-datasets.json](examples/healthdcat-datasets.json).
 The script registers both participants at the issuer, and each identity
 asks it for its credentials. Then it checks that the provider refuses a catalog request
 without a DCP token, reads the catalog with a token from the consumer's
-STS, agrees a contract, checks that changed terms are refused, checks
-offers that ask for credential claims, transfers
-[examples/data/air-quality.csv](examples/data/air-quality.csv), fetches it
-with the token and completes the transfer; last, once the issuer revokes
-the consumer's `DataProcessorCredential`, a new transfer that needs it is
+STS (the two valid datasets with `dct:conformsTo`; `bed-occupancy` is
+missing, and the provider's harvest job shows its SHACL report), agrees a
+contract, checks that changed terms are refused, checks offers that ask
+for credential claims, transfers
+[examples/data/hospital-admissions.csv](examples/data/hospital-admissions.csv),
+fetches it with the token and completes the transfer, transfers the
+restricted dataset to a member; last, once the issuer revokes the
+consumer's `DataProcessorCredential`, a new transfer that needs it is
 refused. It stops everything at the end;
 `KEEP=1` leaves it running. `scripts/demo.sh` does the same without Docker
 (needs Python 3 as well).

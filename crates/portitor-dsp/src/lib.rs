@@ -285,61 +285,13 @@ type_tag!(
 );
 
 /// The `@context` of a DSP message: an array that must contain [`CONTEXT`].
-///
-/// A provider may add prefix definitions for its metadata profile
-/// ([`Context::with_prefixes`], ADR 0005): they are written as one inline
-/// object after the URLs, for example
-/// `["https://w3id.org/dspace/2025/1/context.jsonld", {"healthdcatap": "http://healthdataportal.eu/ns/health#"}]`.
-/// Reading accepts URLs only, as the DSP 2025-1 context schema
-/// (`context-schema.json`) requires, so a message we receive is read as before.
-///
-/// It is kept as one list (not a list and a map) so that every message type
-/// stays as small as before: error types that hold a message are moved
-/// around a lot (Clippy's `result_large_err` rule).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
-pub struct Context(Vec<ContextEntry>);
-
-/// One entry of a [`Context`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(untagged)]
-enum ContextEntry {
-    /// A context URL, written as a string.
-    Url(String),
-    /// Prefix (or term) name to IRI, written as an object.
-    Prefixes(std::collections::BTreeMap<String, String>),
-}
+pub struct Context(Vec<String>);
 
 impl Default for Context {
     fn default() -> Self {
-        Self(vec![ContextEntry::Url(CONTEXT.to_owned())])
-    }
-}
-
-impl Context {
-    /// [`CONTEXT`], then one inline object with `prefixes` (name to IRI),
-    /// if there are any. Used for the catalog and dataset answers when the
-    /// dataspace's bundle defines prefixes. The caller checks the names and
-    /// IRIs.
-    #[must_use]
-    pub fn with_prefixes(prefixes: std::collections::BTreeMap<String, String>) -> Self {
-        let mut context = Self::default();
-        if !prefixes.is_empty() {
-            context.0.push(ContextEntry::Prefixes(prefixes));
-        }
-        context
-    }
-
-    /// The prefixes of the inline object (empty for a plain DSP context).
-    #[must_use]
-    pub fn prefixes(&self) -> std::collections::BTreeMap<String, String> {
-        let mut found = std::collections::BTreeMap::new();
-        for entry in &self.0 {
-            if let ContextEntry::Prefixes(prefixes) = entry {
-                found.extend(prefixes.clone());
-            }
-        }
-        found
+        Self(vec![CONTEXT.to_owned()])
     }
 }
 
@@ -347,7 +299,7 @@ impl<'de> Deserialize<'de> for Context {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let v = Vec::<String>::deserialize(d)?;
         if v.iter().any(|c| c == CONTEXT) {
-            Ok(Self(v.into_iter().map(ContextEntry::Url).collect()))
+            Ok(Self(v))
         } else {
             Err(D::Error::custom(format!("@context must contain {CONTEXT}")))
         }
@@ -641,34 +593,6 @@ mod tests {
     fn rejects_missing_context() {
         let raw = r#"{"@context":["https://example.org"],"@type":"CatalogRequestMessage"}"#;
         assert!(serde_json::from_str::<CatalogRequestMessage>(raw).is_err());
-    }
-
-    #[test]
-    fn context_with_prefixes_is_written_as_one_inline_object() {
-        assert_eq!(
-            serde_json::to_value(Context::default()).unwrap(),
-            serde_json::json!([CONTEXT])
-        );
-        let prefixes = std::collections::BTreeMap::from([(
-            "healthdcatap".to_owned(),
-            "http://healthdataportal.eu/ns/health#".to_owned(),
-        )]);
-        let context = Context::with_prefixes(prefixes.clone());
-        assert_eq!(context.prefixes(), prefixes);
-        assert_eq!(
-            serde_json::to_value(&context).unwrap(),
-            serde_json::json!([CONTEXT, {"healthdcatap": "http://healthdataportal.eu/ns/health#"}])
-        );
-        // empty prefixes: the plain DSP context
-        assert_eq!(
-            Context::with_prefixes(std::collections::BTreeMap::new()),
-            Context::default()
-        );
-        // reading follows the DSP context schema: URLs only
-        let inline = format!(
-            r#"{{"@context":["{CONTEXT}",{{"x":"urn:x:"}}],"@type":"CatalogRequestMessage"}}"#
-        );
-        assert!(serde_json::from_str::<CatalogRequestMessage>(&inline).is_err());
     }
 
     #[test]

@@ -38,6 +38,8 @@ jsonschema.workspace = true
 portitor-issuer = { path = "../portitor-issuer" }
 tower = { version = "0.5", features = ["util"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# reads the log lines a test expects (src/outbox.rs)
+tracing-subscriber.workspace = true
 
 [features]
 default = ["data-plane"]

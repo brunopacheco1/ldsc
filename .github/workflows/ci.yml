@@ -42,7 +42,7 @@ jobs:
         run: |
           # web servers and clients, async I/O, databases, TLS
           io='axum|hyper|hyper-util|hyper-rustls|tokio|mio|socket2|reqwest|ureq|rusqlite|libsqlite3-sys|sqlx|postgres|rustls'
-          for c in portitor-dsp portitor-dcp portitor-dps portitor-time; do
+          for c in portitor-dsp portitor-dcp portitor-dps portitor-time portitor-shacl; do
             if cargo tree -p "$c" -e normal --prefix none | grep -E "^($io) "; then
               echo "::error::$c depends on an I/O crate"; exit 1
             fi

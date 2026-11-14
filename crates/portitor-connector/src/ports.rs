@@ -92,10 +92,6 @@ pub struct Ports {
     /// read copy, and optionally another source than the datasets file and
     /// a check after the DSP rules.
     pub harvest: crate::harvest::HarvestPorts,
-    /// The `@context` of the catalog and dataset answers: the plain DSP
-    /// 2025-1 context, or with the prefixes of the dataspace's bundle
-    /// ([`Ports::use_bundle_rules`]).
-    pub catalog_context: portitor_dsp::Context,
     /// The credential types that policies may use (ADR 0019): which scopes
     /// to ask for, and grant, for an offer's credential constraints.
     /// [`crate::build`] sets it from [`crate::Config::credential_types`].
@@ -137,7 +133,6 @@ impl Ports {
             consumer_store: Shared(Arc::new(consumer_negotiations)),
             consumer_decider: default_consumer_decider(),
             harvest: crate::harvest::HarvestPorts::default(),
-            catalog_context: portitor_dsp::Context::default(),
             credential_types: CredentialTypes::default(),
         }
     }
@@ -165,14 +160,12 @@ impl Ports {
 }
 
 impl Ports {
-    /// Applies the rules of the dataspace's bundle (ADR 0005): the catalog
-    /// serves the bundle's prefixes in its `@context`, the harvest checks
-    /// each dataset against the bundle's SHACL shapes after the DSP rules
-    /// (when the bundle has `datasets` shapes), and, when the bundle has `messages` shapes, DSP messages are checked
-    /// against them in both directions. Without a call, none of this
-    /// happens.
+    /// Applies the rules of the dataspace's bundle (ADR 0005): the harvest
+    /// checks each dataset against the bundle's SHACL shapes after the DSP
+    /// rules (when the bundle has `datasets` shapes), and DSP messages are
+    /// checked against its `messages` shapes in both directions (when it
+    /// has any). Without a call, none of this happens.
     pub fn use_bundle_rules(&mut self, rules: &crate::shacl::BundleRules) {
-        self.catalog_context = rules.context().clone();
         if let Some(check) = rules.dataset_check() {
             self.harvest.extra_check = Some(check as _);
         }

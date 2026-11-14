@@ -227,23 +227,51 @@ async fn attempt(
     reached: impl FnOnce(Value) -> bool,
 ) -> Outcome {
     let pid = msg.pid;
-    let error = match send(link, msg, scopes).await {
+    let failure = match send(link, msg, scopes).await {
         Ok(answer) => return Outcome::Acknowledged(answer),
-        Err(error) => error,
+        Err(failure) => failure,
+    };
+    // a message the rules refused was not sent now, but an earlier copy
+    // (before a restart with other rules) may have arrived: ask as well
+    let (rejected, error) = match failure {
+        SendFailure::Rejected(error) => (true, error),
+        SendFailure::Failed(error) => (false, error),
     };
     if arrived(link, msg.status_url, msg.audience, reached).await {
         tracing::info!(%pid, %error, "message had arrived before");
         Outcome::ArrivedBefore
     } else if msg.first {
-        tracing::warn!(%pid, %error, "counter-party not reachable; process not started");
+        if rejected {
+            tracing::warn!(%pid, %error, "message breaks the dataspace's message rules; not sent, process not started");
+        } else {
+            tracing::warn!(%pid, %error, "counter-party not reachable; process not started");
+        }
         Outcome::NotStarted
     } else if msg.terminating {
-        tracing::warn!(%pid, %error, "termination not acknowledged");
+        if rejected {
+            tracing::warn!(%pid, %error, "termination breaks the dataspace's message rules; not sent");
+        } else {
+            tracing::warn!(%pid, %error, "termination not acknowledged");
+        }
         Outcome::TerminationUnanswered
     } else {
-        tracing::warn!(%pid, %error, "counter-party not reachable; terminating");
+        if rejected {
+            tracing::warn!(%pid, %error, "message breaks the dataspace's message rules; not sent, terminating");
+        } else {
+            tracing::warn!(%pid, %error, "counter-party not reachable; terminating");
+        }
         Outcome::Unreachable
     }
+}
+
+/// Why [`send`] got no answer.
+enum SendFailure {
+    /// The dataspace's message rules (the guard) refused the message: it
+    /// was not sent.
+    Rejected(String),
+    /// It was sent, or could not be, without an answer: no token, the
+    /// counter-party down or refusing.
+    Failed(String),
 }
 
 /// Whether the counter-party `audience`'s state at `status_url` passes
@@ -275,7 +303,7 @@ pub(crate) async fn arrived(
 /// the link's retry policy says. Each try gets a new token, which also
 /// grants `scopes`: a token is good for one request only. Returns the
 /// counter-party's answer.
-async fn send(link: &Link, msg: &Message<'_>, scopes: &[String]) -> Result<Value, String> {
+async fn send(link: &Link, msg: &Message<'_>, scopes: &[String]) -> Result<Value, SendFailure> {
     let (url, body) = (msg.url, msg.body);
     let message_type = body
         .get("@type")
@@ -283,7 +311,7 @@ async fn send(link: &Link, msg: &Message<'_>, scopes: &[String]) -> Result<Value
         .unwrap_or_default();
     link.guard
         .check(Direction::Outbound, message_type, body)
-        .map_err(|r| r.to_string())?;
+        .map_err(|rejection| SendFailure::Rejected(rejection.to_string()))?;
     let mut delay = link.retry.first_delay;
     let mut last = String::from("not sent");
     for attempt in 0..link.retry.attempts.max(1) {
@@ -303,5 +331,159 @@ async fn send(link: &Link, msg: &Message<'_>, scopes: &[String]) -> Result<Value
             Err(e) => last = e,
         }
     }
-    Err(last)
+    Err(SendFailure::Failed(last))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use std::io::Write;
+    use std::sync::Mutex;
+
+    use portitor_dsp::guard::Rejection;
+    use portitor_runtime::BoxFuture;
+
+    use super::*;
+
+    /// Takes every message, answering `null`.
+    struct Accepts;
+
+    impl Sender for Accepts {
+        fn post<'a>(&'a self, _: &'a str, _: &'a Value) -> BoxFuture<'a, Result<Value, String>> {
+            Box::pin(async { Ok(Value::Null) })
+        }
+    }
+
+    /// Answers nothing.
+    struct Down;
+
+    impl Sender for Down {
+        fn post<'a>(&'a self, _: &'a str, _: &'a Value) -> BoxFuture<'a, Result<Value, String>> {
+            Box::pin(async { Err("connection refused".to_owned()) })
+        }
+    }
+
+    /// A prover with a fixed token.
+    struct FixedToken;
+
+    impl Prover for FixedToken {
+        fn authorization<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a [String],
+        ) -> BoxFuture<'a, Result<String, String>> {
+            Box::pin(async { Ok("Bearer t".to_owned()) })
+        }
+    }
+
+    /// Refuses every message.
+    struct RefusesAll;
+
+    impl MessageGuard for RefusesAll {
+        fn check(&self, _: Direction, _: &str, _: &Value) -> Result<(), Rejection> {
+            Err(Rejection {
+                reasons: vec!["SHACL: a constraint is needed".to_owned()],
+            })
+        }
+    }
+
+    /// The log, as the subscriber writes it.
+    #[derive(Clone, Default)]
+    struct Log(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Log {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Sends one message (first, or a later one) through `sender` and the
+    /// guard `guard`; returns the outcome's name and the log.
+    fn attempt_logged(
+        sender: Arc<dyn Sender>,
+        guard: Arc<dyn MessageGuard + Send + Sync>,
+        first: bool,
+    ) -> (&'static str, String) {
+        let mut ports = Ports::new(sender);
+        ports.prover = Arc::new(FixedToken);
+        ports.guard = guard;
+        ports.retry = Retry {
+            attempts: 1,
+            first_delay: std::time::Duration::from_millis(1),
+        };
+        let link = Link::new(&ports);
+        let body = serde_json::json!({"@type": "ContractRequestMessage"});
+        let msg = Message::new(
+            "urn:uuid:1",
+            "https://p.example/dsp",
+            &body,
+            "",
+            "did:web:p.example",
+        )
+        .first(first);
+        let log = Log::default();
+        let writer = log.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .finish();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let outcome = tracing::subscriber::with_default(subscriber, || {
+            runtime.block_on(attempt(&link, &msg, &[], |_| false))
+        });
+        let name = match outcome {
+            Outcome::Acknowledged(_) => "acknowledged",
+            Outcome::ArrivedBefore => "arrived before",
+            Outcome::NotStarted => "not started",
+            Outcome::TerminationUnanswered => "termination unanswered",
+            Outcome::Unreachable => "unreachable",
+        };
+        let text = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+        (name, text)
+    }
+
+    #[test]
+    fn a_message_the_rules_refuse_is_logged_as_a_rejection() {
+        for (first, outcome, line) in [
+            (
+                false,
+                "unreachable",
+                "message breaks the dataspace's message rules; not sent, terminating",
+            ),
+            (
+                true,
+                "not started",
+                "message breaks the dataspace's message rules; not sent, process not started",
+            ),
+        ] {
+            let (name, log) = attempt_logged(Arc::new(Accepts), Arc::new(RefusesAll), first);
+            assert_eq!(name, outcome);
+            assert!(log.contains(line), "{log}");
+            assert!(
+                log.contains("message rejected: SHACL: a constraint is needed"),
+                "{log}"
+            );
+            assert!(!log.contains("not reachable"), "{log}");
+        }
+    }
+
+    #[test]
+    fn a_counter_party_that_does_not_answer_is_logged_as_not_reachable() {
+        let allow_all: Arc<dyn MessageGuard + Send + Sync> =
+            Arc::new(portitor_dsp::guard::AllowAll);
+        let (name, log) = attempt_logged(Arc::new(Down), allow_all, false);
+        assert_eq!(name, "unreachable");
+        assert!(
+            log.contains("counter-party not reachable; terminating"),
+            "{log}"
+        );
+        assert!(!log.contains("message rules"), "{log}");
+    }
 }

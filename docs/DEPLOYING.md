@@ -219,10 +219,10 @@ that the latest job's `outcome` is `succeeded`.
 From 0.7 a dataspace authority can publish a signed bundle of SHACL
 shapes, code lists and JSON-LD contexts (ADR 0005); HealthDCAT-AP
 release 8 is the baseline. With a bundle the connector checks each
-harvested dataset against the shapes for its `dct:accessRights` value,
-and DSP messages against the message shapes; a dataset that passes
-carries `dct:conformsTo` with the bundle's profile in the catalog.
-<!-- verify with D -->
+harvested dataset against the shapes for its `dct:accessRights` value
+and, if the bundle has message shapes, DSP negotiation and transfer
+messages against them. A dataset that passes is served with
+`"dct:conformsTo": {"@id": "<the bundle's profile>", "@type": "dct:Standard"}`.
 
 - Set `PORTITOR_BUNDLE_URL`, `PORTITOR_BUNDLE_VERSION` and
   `PORTITOR_BUNDLE_AUTHORITY` from what the authority gives you. Without
@@ -240,21 +240,48 @@ carries `dct:conformsTo` with the bundle's profile in the catalog.
 - A bundle that was read but fails a check (signature, key, authority,
   version or a digest) stops the start; the cache does not replace it.
   So does a bundle that cannot be loaded at all (no download and no
-  usable cache).
+  usable cache), and one whose shapes, vocabulary or contexts the
+  connector cannot use (for example a SHACL term the engine does not
+  implement): the log line `portitor-connector stopped` says why. Start
+  the connector after the authority's issuer, or let it restart.
 - A new version needs a restart with the new `PORTITOR_BUNDLE_VERSION`.
   The stored datasets are then checked again; those that fail are
   hidden.
-- JSON-LD contexts are taken only from the bundle (and the DSP contexts
-  built in); the connector never fetches a context from the network. <!-- verify with D -->
+- The catalog's `@context` is always the DSP 2025-1 context alone, with
+  or without a bundle. The connector never fetches a JSON-LD context from
+  the network: it has its own copy of the DSP 2025-1 contexts, and a
+  bundle's `context` files serve only to read DSP messages whose
+  `@context` names their URL (for the message check). A message that
+  names any other context URL is refused when the bundle has message
+  shapes.
+- Datasets are checked as the catalog serves them: read with the DSP
+  context only. Each dataset needs an absolute IRI as `@id` (JSON-LD
+  drops a relative one, and with it every statement about the dataset)
+  and a `dct:accessRights` IRI the bundle has shapes for; otherwise it is
+  rejected. Without a bundle, neither is needed.
+- Message rules: an inbound negotiation or transfer message that breaks
+  them is answered 400 with the DSP error, and nothing changes; an
+  outbound one is not sent and the negotiation or transfer ends (logged
+  as `message breaks the dataspace's message rules; not sent, ...`).
+  Catalog requests are not checked.
 - What the engine checks: the SHACL Core subset of `portitor-shacl`.
   `sh:extends` and `sh:shape` are ignored with a warning, so DCAT-AP's
   "date or date and time" check on `dct:issued` and `dct:modified` is not
   done. Class targets apply only to nodes typed in the dataset itself.
 
-Write HealthDCAT-AP datasets as DSP 2025-1 `Dataset` objects, with the
-bundle's prefixes (for example `healthdcatap:` and `dcatap:`), as in
+Write HealthDCAT-AP datasets as DSP 2025-1 `Dataset` objects, as in
 [examples/healthdcat-datasets.json](../examples/healthdcat-datasets.json).
-DSP 2025-1 and DCAT-AP do not agree on everything:
+Use the `dct:`, `dcat:`, `odrl:`, `xsd:` and `dspace:` prefixes of the
+DSP context, and write every other term as a full IRI, for example
+`"http://healthdataportal.eu/ns/health#healthCategory"` or
+`"@type": "http://xmlns.com/foaf/0.1/Agent"`. Other prefixes are not
+supported: the DSP 2025-1 JSON Schema allows only URL strings in
+`@context`, and EDC 1.0.0-RC7 does not fetch remote contexts by default
+(`edc.jsonld.http.enabled` and `edc.jsonld.https.enabled` are `false`),
+so a consumer could not read a prefix the catalog does not define. A
+prefixed name the DSP context does not know is read as an IRI of its own
+(`healthdcatap:hdab` is not `http://healthdataportal.eu/ns/health#hdab`),
+so the shapes do not see it. DSP 2025-1 and DCAT-AP do not agree on everything:
 
 - The DSP context makes `dcat:endpointURL` a text, while DCAT-AP needs an
   IRI.
@@ -648,6 +675,9 @@ DID, so usually not).
 | Log message (level) | Meaning | What to do |
 |---|---|---|
 | `counter-party not reachable; terminating` (WARN) | A message to a partner failed after 4 tries (0.5 s, 1 s, 2 s apart) and the partner's state does not show it arrived; the negotiation or transfer is terminated | Check the partner's address, DNS, TLS trust and your egress rules |
+| `message breaks the dataspace's message rules; not sent, terminating` (WARN) | With bundle message shapes: our own message failed them (`error` lists the SHACL reasons), so it was not sent and the negotiation or transfer is terminated; `..., process not started` for a consumer's first request, `termination breaks ...; not sent` for a termination | Check the offer or policy against the authority's rules |
+| `outbound DSP message breaks the dataspace's message rules; not sent` (WARN) | The same breach, logged by the check itself with `message_type` and `reasons` | As above |
+| `inbound DSP message breaks the dataspace's message rules; answered 400` (INFO) | A partner's negotiation or transfer message failed the bundle's message shapes; it got HTTP 400 and nothing changed | Nothing, unless the partner asks |
 | `message had arrived before` (INFO) | A send failed, but the partner's state shows it had received the message (a lost answer, or a resend after a restart); the negotiation goes on | Nothing |
 | `sending pending negotiation messages again` (INFO, at start) | Messages saved but not acknowledged before the last stop are being sent | Nothing |
 | `counter-party not reachable; process not started` (WARN) | The first request of a negotiation or transfer we started as consumer failed after 4 tries; it ends without a message, as the provider never knew it | Same as above |
@@ -669,6 +699,9 @@ DID, so usually not).
 | `bundle downloaded and verified` (INFO, at start) | The pinned bundle was downloaded and passed every check | Nothing |
 | `bundle download failed; using the cached copy, checked again` (WARN, at start) | The authority's host or DID document could not be reached; the cached copy is used | Check the network to the authority; nothing breaks meanwhile |
 | `bundle verified, but not written to the cache` (WARN) | The cache folder is not writable | Check `PORTITOR_BUNDLE_CACHE_DIR` and the volume |
+| `bundle rules in force` (INFO, at start) | The bundle's `version`, `profile`, the `access_rights` it has dataset shapes for, and whether it has `message_shapes` | Nothing |
+| `bundle shapes: ignored by the SHACL engine` (INFO or WARN, at start) | A SHACL term the engine ignores (`sh:extends`, `sh:shape`, `sh:property` without `sh:path` at INFO: expected for HealthDCAT-AP and DCAT-AP; anything else at WARN) | Nothing at INFO; at WARN, ask the authority |
+| `bundle context: not used` (WARN, at start) | The bundle has a `context` file for a DSP 2025-1 context URL; the connector's own copy is used | Nothing |
 
 ### Backup and restore
 
@@ -763,7 +796,14 @@ against the authority's signed bundle (ADR 0005).
    at the next restart. `PORTITOR_HARVEST_INTERVAL_SECONDS=0` keeps the
    0.6 rhythm (read only at start).
 4. The bundle settings are new and optional. Without them nothing
-   changes in what the catalog shows.
+   changes in what the catalog shows, except that a distribution now
+   keeps its own metadata (`@id`, `dcat:accessURL`, other properties).
+   With a bundle, each dataset needs an absolute IRI as `@id`, a
+   `dct:accessRights` IRI the bundle has shapes for, and full IRIs for
+   terms outside the DSP context; a dataset without them is rejected
+   (logged, shown in the harvest job), the connector still starts.
+   The verified bundle is kept in `/data/bundle-cache` (next to the
+   database), so keep `/data` on a volume.
 5. The issuer can serve bundles and list a bundle key
    (`PORTITOR_ISSUER_BUNDLE_DIR`, `PORTITOR_ISSUER_BUNDLE_KEY_FILE`, both
    optional; [section 7](#7-run-the-issuer-dataspace-authority-only)).
@@ -877,9 +917,11 @@ Who gets what (ADR 0018, amended during the 0.6 review):
 
 ### Schema and vocabulary bundle (optional)
 
-The authority can publish a signed bundle of SHACL shapes, code lists and
-JSON-LD contexts that connectors check datasets and DSP messages against
-(ADR 0005).
+The authority can publish a signed bundle of SHACL shapes and code lists
+that connectors check datasets and DSP messages against (ADR 0005). A
+bundle may also hold JSON-LD contexts (role `context`); connectors use them
+only to read DSP messages whose `@context` names their URL, never in the
+catalog.
 
 1. Make a **bundle key**, apart from the issuer key:
    `openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out bundle-key.pem`.

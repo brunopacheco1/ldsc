@@ -4,8 +4,9 @@
 
 //! The bundle's rules through HTTP (ADR 0005, ADR 0020): the HealthDCAT-AP
 //! release 8 shapes and the DCAT-AP 3.0.0 shapes they import, vendored in
-//! `portitor-shacl/tests/data/`, check the harvested datasets; the
-//! catalog serves the bundle's prefixes and `dct:conformsTo`; a small
+//! `portitor-shacl/tests/data/`, check the harvested datasets, written
+//! with full IRIs; the catalog serves `dct:conformsTo` and the plain DSP
+//! `@context`; a small
 //! ODRL rule checks DSP messages in both directions.
 //!
 //! The bundles are built in process with `portitor_dcp::bundle` (digests
@@ -37,7 +38,6 @@ use common::{CONSUMER, PROVIDER, authenticating, bearer};
 
 const PUBLIC: &str = "http://publications.europa.eu/resource/authority/access-right/PUBLIC";
 const PROFILE: &str = "https://healthdcat-ap.example/release-8";
-const PREFIXES_URL: &str = "https://authority.example/contexts/healthdcat-ap.jsonld";
 const KEY: &str = "test-only-0123456789abcdef0123456789abcdef";
 const DSP: &str = "/dsp/2025-1";
 
@@ -71,8 +71,7 @@ struct File {
 }
 
 /// The public profile: HealthDCAT-AP release 8 and the DCAT-AP 3.0.0 files
-/// it imports as dataset shapes for `PUBLIC`, a few code-list triples, and
-/// the HealthDCAT-AP prefixes as a context.
+/// it imports as dataset shapes for `PUBLIC`, and a few code-list triples.
 fn health_files() -> Vec<File> {
     let mut files = Vec::new();
     for shapes in [
@@ -98,21 +97,6 @@ fn health_files() -> Vec<File> {
         media_type: MediaType::NTriples,
         role: Role::Vocabulary {},
         text: data("samples/codelists-sample.nt"),
-    });
-    let prefixes = json!({"@context": {
-        "dcatap": "http://data.europa.eu/r5r/",
-        "healthdcatap": "http://healthdataportal.eu/ns/health#",
-        "cv": "http://data.europa.eu/m8g/",
-        "foaf": "http://xmlns.com/foaf/0.1/",
-        "eli": "http://data.europa.eu/eli/ontology#"
-    }});
-    files.push(File {
-        path: "healthdcat-ap.jsonld".to_owned(),
-        media_type: MediaType::JsonLd,
-        role: Role::Context {
-            url: PREFIXES_URL.to_owned(),
-        },
-        text: prefixes.to_string(),
     });
     files
 }
@@ -153,14 +137,43 @@ fn rules(bundle: &VerifiedBundle) -> BundleRules {
     BundleRules::from_bundle(bundle).unwrap()
 }
 
+/// Writes every key and `@type` that uses one of `prefixes` as a full IRI.
+fn expand(value: &mut Value, prefixes: &serde_json::Map<String, Value>) {
+    let full = |text: &str| -> Option<String> {
+        let (prefix, rest) = text.split_once(':')?;
+        Some(format!("{}{rest}", prefixes.get(prefix)?.as_str()?))
+    };
+    match value {
+        Value::Object(fields) => {
+            let old = std::mem::take(fields);
+            for (key, mut item) in old {
+                if key == "@type"
+                    && let Some(name) = item.as_str().and_then(full)
+                {
+                    item = json!(name);
+                }
+                expand(&mut item, prefixes);
+                fields.insert(full(&key).unwrap_or(key), item);
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(|item| expand(item, prefixes)),
+        _ => {}
+    }
+}
+
 /// A valid HealthDCAT-AP public dataset as a datasets file entry: the
-/// engine's DSP JSON-LD sample without its `@context` (the connector
-/// serves one), with `id`, and with its distribution's access service
-/// left for the connector to fill.
+/// engine's DSP JSON-LD sample with full IRIs for every term outside the
+/// DSP context (the catalog serves the DSP context only), without its
+/// `@context`, with `id`, and with its distribution's access service left
+/// for the connector to fill.
 fn health_entry(id: &str) -> Value {
     let mut entry: Value = serde_json::from_str(&data("samples/public-valid-dsp.jsonld")).unwrap();
+    // the sample's own prefixes: the second entry of its @context
+    let prefixes = entry["@context"][1].as_object().unwrap().clone();
     let fields = entry.as_object_mut().unwrap();
     fields.remove("@context");
+    expand(&mut entry, &prefixes);
+    let fields = entry.as_object_mut().unwrap();
     fields.insert("@id".to_owned(), json!(id));
     entry["hasPolicy"][0]["@id"] = json!(format!("{id}:offer"));
     entry["distribution"][0]
@@ -174,8 +187,11 @@ fn health_entry(id: &str) -> Value {
 /// body, and an age that is not a number.
 fn invalid_entry(id: &str) -> Value {
     let mut entry = health_entry(id);
-    entry.as_object_mut().unwrap().remove("healthdcatap:hdab");
-    entry["healthdcatap:minTypicalAge"] =
+    entry
+        .as_object_mut()
+        .unwrap()
+        .remove("http://healthdataportal.eu/ns/health#hdab");
+    entry["http://healthdataportal.eu/ns/health#minTypicalAge"] =
         json!({"@value": "eighteen", "@type": "xsd:nonNegativeInteger"});
     entry
 }
@@ -306,23 +322,15 @@ async fn valid_datasets_are_served_with_the_profile_and_invalid_ones_are_rejecte
         dataset_ids(&catalog),
         ["urn:example:health-1", "urn:example:health-4"]
     );
-    assert_eq!(
-        catalog["@context"],
-        json!([CONTEXT, {
-            "cv": "http://data.europa.eu/m8g/",
-            "dcatap": "http://data.europa.eu/r5r/",
-            "eli": "http://data.europa.eu/eli/ontology#",
-            "foaf": "http://xmlns.com/foaf/0.1/",
-            "healthdcatap": "http://healthdataportal.eu/ns/health#"
-        }])
-    );
+    // the DSP context only: the DSP JSON Schema allows URL strings only
+    assert_eq!(catalog["@context"], json!([CONTEXT]));
     let served = &catalog["dataset"][0];
     assert_eq!(
         served["dct:conformsTo"],
         json!({"@id": PROFILE, "@type": "dct:Standard"})
     );
     assert_eq!(
-        served["healthdcatap:healthCategory"]["@id"],
+        served["http://healthdataportal.eu/ns/health#healthCategory"]["@id"],
         "https://hdeu-dcat.data.health.europa.eu/resource/authority/healthcategories/HRAD"
     );
     // a dataset request answers with the same @context

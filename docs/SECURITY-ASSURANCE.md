@@ -83,8 +83,9 @@ dataspace participants over HTTPS.
 
 1. **Remote participants** reach the DSP and DCP endpoints. Everything that
    crosses is parsed into types and validated before the domain sees it.
-   With a bundle, DSP messages are also checked against its shapes
-   (0.7). <!-- verify with D -->
+   With a bundle that has message shapes, DSP negotiation and transfer
+   messages are also checked against them, in and out (0.7); catalog
+   requests are not.
 2. **The DID web** (`did:web` documents fetched over HTTPS) is resolved
    through a port; the domain checks the keys it returns.
 3. **The data plane** receives signals only from its own control plane

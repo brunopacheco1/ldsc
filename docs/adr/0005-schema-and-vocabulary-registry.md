@@ -155,7 +155,21 @@ SHACL 1.2 draft).
   - `messages`: shapes for DSP messages;
   - `vocabulary`: ontologies and code lists, as data for `sh:class`
     checks;
-  - `context`: a JSON-LD context, with the URL it stands for.
+  - `context`: a JSON-LD context, with the URL it stands for. It is used
+    only to read DSP messages whose `@context` names that URL (the
+    message check); it is never served, and never fetched. A bundle file
+    for the DSP 2025-1 context URLs is not used: the connector's own copy
+    wins.
+- The catalog `@context` stays the DSP 2025-1 context URL alone, with or
+  without a bundle (maintainer, 2026-11-14): the DSP JSON Schema
+  (`context-schema.json`) allows only URL strings in `@context`, and EDC
+  RC7 does not fetch remote contexts by default
+  (`edc.jsonld.http.enabled` and `edc.jsonld.https.enabled` are `false`).
+  So datasets write every term outside the DSP context's prefixes
+  (`dct`, `dcat`, `odrl`, `xsd`, `dspace`) as a full IRI, for example
+  `http://healthdataportal.eu/ns/health#healthCategory`, and the SHACL
+  check reads each dataset with the DSP context only, as the catalog
+  serves it.
 - `manifest.jws` is a compact JWS (ES256) over the bytes of
   `manifest.json`, signed with a **bundle key** of the authority: its own
   verification method in the authority's `did:web` document, separate
@@ -233,9 +247,9 @@ distribution) stays Proposed until 0.7.
   which is not a DSP message exchange.
 - 0.2 to 0.5 keep dataset metadata as JSON-LD and don't interpret it.
   `ldsc_dsp::Metadata` already does this (0.2).
-- The catalog `@context` must accept extra entries (prefix definitions as
-  objects, not only URLs) before a profile such as HealthDCAT-AP can be
-  served. Planned for 0.6.
+- A profile such as HealthDCAT-AP is served with full IRIs for its terms
+  under the plain DSP `@context` (decided 2026-11-14, see "Bundle
+  format"); prefix definitions in the catalog `@context` are not used.
 - A JSON-LD processor and possibly an RDF library become dependencies.
   Each needs its own justification and a licence check in the 0.6 pull
   requests.

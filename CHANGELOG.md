@@ -53,16 +53,33 @@ versions may change behaviour and configuration.
   (`PORTITOR_BUNDLE_CACHE_DIR`) used only when the source cannot be
   reached.
 - With a bundle, each harvested dataset is checked against the SHACL
-  shapes for its `dct:accessRights` level, and DSP messages against the
-  message shapes (SHACL `MessageGuard`); datasets that pass carry
-  `dct:conformsTo`, and the catalog `@context` gets the prefixes of the
-  bundle's contexts. <!-- verify with D -->
+  shapes for its `dct:accessRights` value (read with the DSP context only;
+  its `@id` must be an absolute IRI); a dataset with violations is
+  rejected with the SHACL report in its harvest job, one that passes is
+  served with `"dct:conformsTo": {"@id": <profile>, "@type": "dct:Standard"}`.
+  With message shapes, DSP negotiation and transfer messages are checked
+  in and out (SHACL `MessageGuard`): an inbound one that fails is answered
+  400, an outbound one is not sent and its process ends (logged as a
+  rule breach, not as an unreachable counter-party). The catalog
+  `@context` stays the DSP context alone: write metadata terms outside it
+  as full IRIs. A bundle's `context` files serve only to read messages
+  whose `@context` names them. A bundle that cannot be loaded, or whose
+  shapes the engine refuses, stops the start.
 - Demo bundle sources for HealthDCAT-AP release 8
   (`examples/bundle/healthdcat-ap-r8`: release 8 and DCAT-AP 3.0.0
-  shapes, reduced code lists, a JSON-LD context),
-  `scripts/demo-bundle.sh` to build and sign it,
-  `scripts/reduce_code_lists.py` to make the reduced code lists, and
-  `examples/healthdcat-datasets.json`.
+  shapes, reduced code lists), `scripts/demo-bundle.sh` to build and
+  sign it, `scripts/reduce_code_lists.py` to make the reduced code lists,
+  and `examples/healthdcat-datasets.json` (full IRIs; two datasets that
+  pass, `bed-occupancy` with 7 violations).
+- The demos (`scripts/demo.sh`, `scripts/demo-compose.sh`) run with the
+  demo bundle: the issuer builds and serves it, the provider pins it and
+  offers the HealthDCAT-AP datasets (the catalog shows `dct:conformsTo`,
+  the harvest job the SHACL report of `bed-occupancy`); the restricted
+  dataset is transferred under its `MembershipCredential` constraint.
+  The EDC interop test runs with the bundle too: EDC reads a
+  HealthDCAT-AP dataset with full-IRI metadata, negotiates and transfers
+  it. `scripts/dcp-issuer-tck.sh` has a `BUNDLE_KEY=1` variant (the DID
+  document lists `#bundle-key`), run in CI as well.
 - New fuzz targets: `shacl_load`, `shacl_jsonld`, `bundle_manifest`.
 - ADR 0020 (datasets harvested into a read copy) proposed, and ADR 0005
   updated with the bundle format for 0.7; ROADMAP 0.7 rewritten for the
@@ -70,6 +87,15 @@ versions may change behaviour and configuration.
 
 ### Changed
 
+- A distribution in the catalog keeps its own metadata (`@id`,
+  `dcat:accessURL`, DCAT-AP properties); before, only `@type`, `format`
+  and `accessService` were served.
+- The Compose demo and `scripts/demo.sh` use
+  `examples/healthdcat-datasets.json` instead of `examples/datasets.json`
+  and `examples/compose/datasets.json` (removed); its offers cover the
+  same checks (changed terms, member and auditor offers, the
+  `DataProcessorCredential` offer and its revocation). The provider's
+  management API is on `127.0.0.1:18081` in the Compose demo.
 - **Behaviour change:** a datasets file that cannot be read, or a dataset
   that breaks a rule (including a credential constraint on a type not in
   `PORTITOR_POLICY_CREDENTIALS`, or a `portitor:source` that is not an

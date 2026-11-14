@@ -28,7 +28,7 @@ did_web() { # host:port
 AUTHORITY=$(did_web "$ISSUER_ADDRESS")
 # what the issuer can issue (ids, types, the claims copied into credentialSubject)
 ISSUER_CREDENTIALS=examples/issuer-credentials.json
-# the claim the demo's member-directory offer checks (ADR 0019)
+# the claim the demo's members' offers check (ADR 0019)
 MEMBER_OF="Portitor interop dataspace"
 
 fail() {
@@ -61,21 +61,21 @@ PYTHON
   PIDS+=($!)
 }
 
-start_issuer() { # the authority's portitor-issuer, with a new key and database
+start_issuer() { # [more VAR=value settings]: the authority's portitor-issuer, with a new key and database
   local dir=$WORK/issuer
   mkdir -p "$dir"
   openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$dir/issuer-key.pem" 2>/dev/null
   openssl rand -hex 32 >"$dir/management.key"
-  PORTITOR_PARTICIPANT_ID=$AUTHORITY \
-  PORTITOR_BIND=$ISSUER_ADDRESS \
-  PORTITOR_ISSUER_SERVICE_URL=http://$ISSUER_ADDRESS/issuer \
-  PORTITOR_ISSUER_KEY_FILE="$dir/issuer-key.pem" \
-  PORTITOR_ISSUER_CREDENTIALS_FILE=$ISSUER_CREDENTIALS \
-  PORTITOR_DB_FILE="$dir/issuer.db" \
-  PORTITOR_MANAGEMENT_BIND=$ISSUER_MANAGEMENT \
-  PORTITOR_MANAGEMENT_API_KEY_FILE="$dir/management.key" \
-  PORTITOR_ALLOW_HTTP_CALLBACKS=true \
-    "$ISSUER" >"$WORK/issuer.log" 2>&1 &
+  env PORTITOR_PARTICIPANT_ID="$AUTHORITY" \
+    PORTITOR_BIND="$ISSUER_ADDRESS" \
+    PORTITOR_ISSUER_SERVICE_URL="http://$ISSUER_ADDRESS/issuer" \
+    PORTITOR_ISSUER_KEY_FILE="$dir/issuer-key.pem" \
+    PORTITOR_ISSUER_CREDENTIALS_FILE="$ISSUER_CREDENTIALS" \
+    PORTITOR_DB_FILE="$dir/issuer.db" \
+    PORTITOR_MANAGEMENT_BIND="$ISSUER_MANAGEMENT" \
+    PORTITOR_MANAGEMENT_API_KEY_FILE="$dir/management.key" \
+    PORTITOR_ALLOW_HTTP_CALLBACKS=true \
+    "$@" "$ISSUER" >"$WORK/issuer.log" 2>&1 &
   PIDS+=($!)
 }
 

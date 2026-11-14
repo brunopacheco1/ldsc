@@ -255,8 +255,6 @@ pub struct CatalogService<S> {
     catalog_id: String,
     participant_id: String,
     service: DataService,
-    /// The `@context` of catalog and dataset answers.
-    context: Context,
 }
 
 impl<S: DatasetStore> CatalogService<S> {
@@ -277,16 +275,7 @@ impl<S: DatasetStore> CatalogService<S> {
                 kind: DataServiceType,
                 endpoint_url,
             },
-            context: Context::default(),
         }
-    }
-
-    /// Serves `context` as the `@context` of catalog and dataset answers
-    /// instead of the plain DSP context, for example with the prefixes of
-    /// the dataspace's metadata profile ([`Context::with_prefixes`]).
-    #[must_use]
-    pub fn with_context(self, context: Context) -> Self {
-        Self { context, ..self }
     }
 
     /// Answers a `CatalogRequestMessage`. Filters are not supported, so a
@@ -302,7 +291,7 @@ impl<S: DatasetStore> CatalogService<S> {
             ));
         }
         Outcome::Ok(Catalog {
-            context: self.context.clone(),
+            context: Context::default(),
             id: self.catalog_id.clone(),
             kind: CatalogType,
             participant_id: self.participant_id.clone(),
@@ -315,7 +304,7 @@ impl<S: DatasetStore> CatalogService<S> {
     pub fn dataset(&self, id: &str) -> Outcome<Dataset> {
         match self.store.get(id) {
             Some(mut d) => {
-                d.context = Some(self.context.clone());
+                d.context = Some(Context::default());
                 Outcome::Ok(d)
             }
             None => Outcome::NotFound(CatalogError::new("404", "dataset not found")),

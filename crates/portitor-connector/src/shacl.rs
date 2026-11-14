@@ -4,20 +4,22 @@
 
 //! The dataspace's rules from the authority's signed bundle (ADR 0005),
 //! as the connector applies them. [`BundleRules::from_bundle`] reads a
-//! [`VerifiedBundle`] once at start and gives three things:
+//! [`VerifiedBundle`] once at start and gives two things:
 //!
-//! - the `@context` of the catalog and dataset answers: the DSP 2025-1
-//!   context URL, then one inline object with the prefixes of the bundle's
-//!   `context` files ([`BundleRules::context`]);
 //! - [`ShaclDatasetCheck`], the harvest check (ADR 0020, step 3) that
-//!   validates each dataset against the shapes for its `dct:accessRights`;
+//!   validates each dataset against the shapes for its `dct:accessRights`,
+//!   read with the DSP 2025-1 context only, as the catalog serves it;
 //! - [`ShaclGuard`], the [`MessageGuard`] that validates DSP messages
 //!   against the bundle's `messages` shapes, when it has any.
 //!
-//! JSON-LD contexts come only from the connector's own copy of the DSP
-//! 2025-1 context (and the ODRL profile it imports) and from the bundle's
-//! `context` files. Nothing is fetched from the network: a document that
-//! names any other context URL is refused.
+//! The catalog's `@context` is always the DSP 2025-1 context URL alone:
+//! the DSP JSON Schema allows only URL strings there, so metadata terms
+//! outside the DSP context's prefixes (`dct`, `dcat`, `odrl`, ...) are
+//! written as full IRIs. JSON-LD contexts come only from the connector's
+//! own copy of the DSP 2025-1 context (and the ODRL profile it imports)
+//! and, for DSP messages, from the bundle's `context` files. Nothing is
+//! fetched from the network: a document that names any other context URL
+//! is refused.
 //!
 //! One set of shapes is loaded per `dct:accessRights` value: the public,
 //! restricted and non-public files of a profile use the same shape IRIs,
@@ -28,7 +30,7 @@ use std::sync::Arc;
 
 use portitor_dcp::bundle::{BundleFile, MediaType, VerifiedBundle};
 use portitor_dsp::guard::{Direction, MessageGuard, Rejection};
-use portitor_dsp::{CONTEXT, Context, Dataset};
+use portitor_dsp::{CONTEXT, Dataset};
 use portitor_shacl::oxrdf::{NamedNode, NamedNodeRef, TermRef};
 use portitor_shacl::{
     Contexts, Document, Format, Graph, LoadError, Report, Severity, Shapes, ValidationResult,
@@ -100,7 +102,6 @@ impl std::error::Error for RulesError {}
 #[derive(Debug, Clone)]
 pub struct BundleRules {
     version: String,
-    context: Context,
     dataset_check: Arc<ShaclDatasetCheck>,
     guard: Option<Arc<ShaclGuard>>,
     context_notes: Vec<String>,
@@ -117,8 +118,7 @@ impl BundleRules {
     /// the shapes (for example a SHACL term it does not implement).
     pub fn from_bundle(bundle: &VerifiedBundle) -> Result<Self, RulesError> {
         let mut context_notes = Vec::new();
-        let (prefixes, contexts) = read_contexts(bundle, &mut context_notes)?;
-        let context = Context::with_prefixes(prefixes);
+        let contexts = read_contexts(bundle, &mut context_notes)?;
         let vocabulary = Arc::new(load_vocabulary(bundle)?);
         let mut shape_notes = BTreeSet::new();
         let mut by_access_right = BTreeMap::new();
@@ -140,32 +140,19 @@ impl BundleRules {
                 contexts: contexts.clone(),
             }))
         };
-        let served_context = serde_json::to_value(&context).map_err(|e| RulesError::Context {
-            url: CONTEXT.to_owned(),
-            reason: e.to_string(),
-        })?;
         let dataset_check = Arc::new(ShaclDatasetCheck {
             version: bundle.version().to_owned(),
             profile: bundle.profile().to_owned(),
-            served_context,
             contexts,
             by_access_right,
         });
         Ok(Self {
             version: bundle.version().to_owned(),
-            context,
             dataset_check,
             guard,
             context_notes,
             shape_notes: shape_notes.into_iter().collect(),
         })
-    }
-
-    /// The `@context` of the catalog and dataset answers, and of the
-    /// dataset check.
-    #[must_use]
-    pub fn context(&self) -> &Context {
-        &self.context
     }
 
     /// The harvest check, when the bundle has `datasets` shapes. A bundle
@@ -186,7 +173,7 @@ impl BundleRules {
         self.guard.clone()
     }
 
-    /// What was left out of the served `@context`, and why, one line each.
+    /// The bundle `context` files that are not used, and why, one line each.
     #[must_use]
     pub fn context_notes(&self) -> &[String] {
         &self.context_notes
@@ -205,7 +192,7 @@ impl BundleRules {
     /// expected and logged at info; any other note at warn.
     pub fn log_start(&self) {
         for note in &self.context_notes {
-            tracing::warn!(note = %note, "bundle context: left out of the served @context");
+            tracing::warn!(note = %note, "bundle context: not used");
         }
         for note in &self.shape_notes {
             if is_expected_shape_note(note) {
@@ -225,7 +212,6 @@ impl BundleRules {
             profile = %self.dataset_check.profile,
             access_rights = ?access_rights,
             message_shapes = self.guard.is_some(),
-            prefixes = ?self.context.prefixes().keys().collect::<Vec<_>>(),
             "bundle rules in force"
         );
     }
@@ -252,36 +238,12 @@ fn embedded_contexts() -> Result<Contexts, RulesError> {
     Ok(contexts)
 }
 
-/// The names the DSP 2025-1 context defines at its top level (prefixes
-/// such as `dct` and terms such as `Dataset`). The context is
-/// `@protected`, so another definition of one of them would make every
-/// document fail; a bundle prefix with such a name is left out.
-fn dsp_top_level_terms() -> BTreeMap<String, Value> {
-    let mut terms = BTreeMap::new();
-    let Ok(document) = serde_json::from_str::<Value>(DSP_CONTEXT_DOCUMENT) else {
-        return terms;
-    };
-    if let Some(Value::Object(definitions)) = document.get("@context") {
-        for (name, definition) in definitions {
-            terms.insert(name.clone(), definition.clone());
-        }
-    }
-    terms
-}
-
-/// Reads the bundle's `context` files: the prefixes for the served
-/// `@context` (simple definitions only: a name and an absolute IRI), and
-/// every context document a JSON-LD reader may use (the embedded DSP ones
-/// and the bundle's, by URL). What is left out is noted in `notes`.
-fn read_contexts(
-    bundle: &VerifiedBundle,
-    notes: &mut Vec<String>,
-) -> Result<(BTreeMap<String, String>, Contexts), RulesError> {
+/// Every context document a JSON-LD reader may use for DSP messages:
+/// the embedded DSP 2025-1 ones and the bundle's `context` files, by the
+/// URL each stands for. A bundle file for a DSP context URL is not used
+/// (the embedded copy wins); that is noted in `notes`.
+fn read_contexts(bundle: &VerifiedBundle, notes: &mut Vec<String>) -> Result<Contexts, RulesError> {
     let mut contexts = embedded_contexts()?;
-    let dsp_terms = dsp_top_level_terms();
-    let mut prefixes: BTreeMap<String, String> = BTreeMap::new();
-    // where each prefix came from, for the note on a second definition
-    let mut defined_in: BTreeMap<String, String> = BTreeMap::new();
     for (url, bytes) in bundle.contexts() {
         if url == CONTEXT || url == DSP_ODRL_PROFILE {
             notes.push(format!(
@@ -295,83 +257,27 @@ fn read_contexts(
         };
         let document: Value =
             serde_json::from_slice(bytes).map_err(|e| context_error(format!("not JSON: {e}")))?;
-        let definitions = context_objects(&document, url, notes).map_err(context_error)?;
-        for (name, definition) in definitions {
-            let Some(iri) = simple_prefix(&name, &definition) else {
-                if name != "@version" {
-                    notes.push(format!(
-                        "{name} in the context for {url} is not a simple prefix (a name and an absolute IRI); it is left out of the served @context"
-                    ));
-                }
-                continue;
-            };
-            if let Some(dsp_definition) = dsp_terms.get(&name) {
-                if dsp_definition.as_str() != Some(iri.as_str()) {
-                    notes.push(format!(
-                        "prefix {name} in the context for {url} would redefine a term of the DSP 2025-1 context (protected); it is left out"
-                    ));
-                }
-                // the same IRI as DSP's: already defined, nothing to add
-                continue;
-            }
-            match prefixes.get(&name) {
-                Some(first) if *first != iri => {
-                    let first_url = defined_in.get(&name).cloned().unwrap_or_default();
-                    notes.push(format!(
-                        "prefix {name} is {first} in the context for {first_url} and {iri} in the context for {url}; the first is used"
-                    ));
-                }
-                Some(_) => {}
-                None => {
-                    prefixes.insert(name.clone(), iri);
-                    defined_in.insert(name, url.to_owned());
-                }
-            }
-        }
+        check_context_document(&document).map_err(context_error)?;
         contexts.insert(url, document);
     }
-    Ok((prefixes, contexts))
+    Ok(contexts)
 }
 
-/// The term definitions of a context document: its `@context` object, or
-/// the objects of its `@context` array. A URL inside the array is noted
-/// and not followed.
-fn context_objects(
-    document: &Value,
-    url: &str,
-    notes: &mut Vec<String>,
-) -> Result<Vec<(String, Value)>, String> {
-    let mut definitions = Vec::new();
-    let items = match document.get("@context") {
-        Some(Value::Object(object)) => vec![Value::Object(object.clone())],
-        Some(Value::Array(items)) => items.clone(),
-        _ => return Err("no @context object".to_owned()),
-    };
-    for item in items {
-        match item {
-            Value::Object(object) => {
-                for (name, definition) in object {
-                    definitions.push((name, definition));
+/// Checks that a document is a JSON-LD context: an `@context` object, or
+/// an array of objects and URLs.
+fn check_context_document(document: &Value) -> Result<(), String> {
+    match document.get("@context") {
+        Some(Value::Object(_)) => Ok(()),
+        Some(Value::Array(items)) => {
+            for item in items {
+                if !matches!(item, Value::Object(_) | Value::String(_)) {
+                    return Err("an entry of @context is neither an object nor a URL".to_owned());
                 }
             }
-            Value::String(other) => notes.push(format!(
-                "the context for {url} refers to {other}; it is not followed for the served @context"
-            )),
-            _ => return Err("an entry of @context is neither an object nor a URL".to_owned()),
+            Ok(())
         }
+        _ => Err("no @context object".to_owned()),
     }
-    Ok(definitions)
-}
-
-/// The IRI of a simple prefix definition: a name that is not a keyword
-/// and has no `:`, and an absolute IRI as its value. `None` for anything
-/// else (an expanded term definition, `@vocab`, a compact IRI, ...).
-fn simple_prefix(name: &str, definition: &Value) -> Option<String> {
-    if name.starts_with('@') || name.contains(':') || name.is_empty() {
-        return None;
-    }
-    let iri = definition.as_str()?;
-    NamedNode::new(iri).ok().map(NamedNode::into_string)
 }
 
 /// The vocabulary files as one graph, shared by every set of shapes.
@@ -429,9 +335,10 @@ fn documents_of<'a>(files: &[BundleFile<'a>]) -> Result<Vec<Document<'a>>, Rules
 }
 
 /// Adapter: the harvest check against the bundle's dataset shapes (ADR
-/// 0005, ADR 0020 step 3). Each entry is read as JSON-LD with the served
-/// `@context` (any `@context` of its own is replaced, as the catalog
-/// serves it without one) and validated with the shapes for its
+/// 0005, ADR 0020 step 3). Each entry is read as JSON-LD with the
+/// `@context` the catalog serves, the DSP 2025-1 context alone (any
+/// `@context` of its own is replaced, as the catalog serves it without
+/// one), and validated with the shapes for its
 /// `dct:accessRights` value. Warnings pass; one violation rejects the
 /// entry with the SHACL report. A dataset that passes states the
 /// bundle's profile as `dct:conformsTo`.
@@ -439,27 +346,26 @@ fn documents_of<'a>(files: &[BundleFile<'a>]) -> Result<Vec<Document<'a>>, Rules
 pub struct ShaclDatasetCheck {
     version: String,
     profile: String,
-    /// The served `@context`, as JSON.
-    served_context: Value,
     contexts: Contexts,
     /// One set of shapes per `dct:accessRights` IRI.
     by_access_right: BTreeMap<String, Arc<Shapes>>,
 }
 
-impl ShaclDatasetCheck {
-    /// The entry with the served `@context`, ready for the JSON-LD reader.
-    fn with_served_context(&self, entry: &Value) -> Result<Value, EntryFailure> {
-        let Value::Object(fields) = entry else {
-            return Err(EntryFailure::new(
-                CheckKind::Json,
-                "the entry is not a JSON object",
-            ));
-        };
-        let mut document = fields.clone();
-        document.insert("@context".to_owned(), self.served_context.clone());
-        Ok(Value::Object(document))
-    }
+/// The entry with the `@context` the catalog serves (the DSP 2025-1
+/// context alone), ready for the JSON-LD reader.
+fn with_served_context(entry: &Value) -> Result<Value, EntryFailure> {
+    let Value::Object(fields) = entry else {
+        return Err(EntryFailure::new(
+            CheckKind::Json,
+            "the entry is not a JSON object",
+        ));
+    };
+    let mut document = fields.clone();
+    document.insert("@context".to_owned(), Value::from(vec![CONTEXT]));
+    Ok(Value::Object(document))
+}
 
+impl ShaclDatasetCheck {
     /// The bundle's access levels, for messages.
     fn known_access_rights(&self) -> String {
         let names: Vec<&str> = self.by_access_right.keys().map(String::as_str).collect();
@@ -475,7 +381,7 @@ impl DatasetCheck for ShaclDatasetCheck {
 
     fn check(&self, entry: &Value) -> Result<CheckedDataset, EntryFailure> {
         let shacl = |message: String| EntryFailure::new(CheckKind::Shacl, message);
-        let document = self.with_served_context(entry)?;
+        let document = with_served_context(entry)?;
         let dataset: Dataset = serde_json::from_value(entry.clone())
             .map_err(|e| EntryFailure::new(CheckKind::Dsp, format!("not a DSP dataset: {e}")))?;
         let id = dataset.id.clone();
