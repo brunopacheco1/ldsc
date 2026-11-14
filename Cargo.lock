@@ -859,6 +859,7 @@ dependencies = [
  "portitor-dsp",
  "portitor-issuer",
  "portitor-runtime",
+ "portitor-shacl",
  "ring",
  "rusqlite",
  "serde",

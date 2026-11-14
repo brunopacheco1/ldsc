@@ -90,7 +90,9 @@ pub struct Document<'a> {
 pub struct Shapes {
     /// The shapes; a shape's position here is its `ShapeId`.
     list: Vec<Shape>,
-    vocabulary: Graph,
+    /// Shared, so several sets of shapes can use one copy of large code
+    /// lists ([`Shapes::load_with_vocabulary`]).
+    vocabulary: std::sync::Arc<Graph>,
     warnings: Vec<String>,
 }
 
@@ -119,8 +121,23 @@ impl Shapes {
     /// [`LoadError::Unsupported`] for a SHACL term the engine does not
     /// implement, [`LoadError::Invalid`] for a malformed shape.
     pub fn load(shapes: &[Document<'_>], vocabulary: &[Document<'_>]) -> Result<Shapes, LoadError> {
+        let vocabulary = parse_vocabulary(vocabulary)?;
+        Shapes::load_with_vocabulary(shapes, std::sync::Arc::new(vocabulary))
+    }
+
+    /// Like [`Shapes::load`], with a vocabulary graph parsed once
+    /// ([`parse_vocabulary`]) and shared: a caller that loads one set of
+    /// shapes per access level keeps one copy of the code lists, not one
+    /// per set.
+    ///
+    /// # Errors
+    ///
+    /// As [`Shapes::load`], for the shapes documents.
+    pub fn load_with_vocabulary(
+        shapes: &[Document<'_>],
+        vocabulary: std::sync::Arc<Graph>,
+    ) -> Result<Shapes, LoadError> {
         let shapes_graph = parse_all(shapes)?;
-        let vocabulary = parse_all(vocabulary)?;
         let loaded = load::load_shapes(&shapes_graph)?;
         Ok(Shapes {
             list: loaded.shapes,
@@ -186,6 +203,16 @@ pub fn parse_document(document: &Document<'_>) -> Result<Graph, DataError> {
         message,
     })?;
     Ok(graph)
+}
+
+/// Parses vocabulary documents (ontologies, code lists) into one graph,
+/// for [`Shapes::load_with_vocabulary`].
+///
+/// # Errors
+///
+/// [`LoadError::Syntax`] for a document that does not parse.
+pub fn parse_vocabulary(documents: &[Document<'_>]) -> Result<Graph, LoadError> {
+    parse_all(documents)
 }
 
 /// Parses several documents into one graph.

@@ -583,3 +583,37 @@ fn shapes_are_shared_between_threads() {
         assert!(!handle.join().unwrap());
     }
 }
+
+#[test]
+fn access_levels_can_share_one_vocabulary_graph() {
+    let code_lists = read("samples/codelists-sample.nt");
+    let vocabulary = Arc::new(
+        portitor_shacl::parse_vocabulary(&[Document {
+            name: "codelists-sample.nt",
+            format: Format::NTriples,
+            text: &code_lists,
+        }])
+        .unwrap(),
+    );
+    for level in ["public", "restricted"] {
+        let texts: Vec<(String, String)> = profile(level)
+            .into_iter()
+            .map(|file| {
+                let text = read(&file);
+                (file, text)
+            })
+            .collect();
+        let documents: Vec<Document> = texts
+            .iter()
+            .map(|(name, text)| Document {
+                name,
+                format: Format::Turtle,
+                text,
+            })
+            .collect();
+        let shapes = Shapes::load_with_vocabulary(&documents, Arc::clone(&vocabulary)).unwrap();
+        assert_eq!(shapes.vocabulary_len(), 29, "{level}");
+    }
+    // one graph: the shapes held clones of the pointer, now dropped
+    assert_eq!(Arc::strong_count(&vocabulary), 1);
+}

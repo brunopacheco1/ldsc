@@ -20,6 +20,9 @@
 //! - [`harvest`]: datasets come from a source (the datasets file) into a
 //!   read copy, checked entry by entry; every run is a stored job
 //!   (ADR 0020).
+//! - [`shape_source`], [`shacl`]: the authority's signed bundle (ADR
+//!   0005) and its rules: the catalog's `@context`, the SHACL check of
+//!   each harvested dataset, and the SHACL guard on DSP messages.
 //! - [`store`]: everything kept in the `SQLite` file.
 //! - [`management`]: the management API for your own systems.
 //! - [`auth`]: who calls a DSP endpoint, and our tokens on the DSP
@@ -63,6 +66,8 @@ pub mod ports;
 // the signed schema and vocabulary bundle (ADR 0005); its settings are
 // read by `shape_source::BundleConfig`, not by `Config`
 pub mod shape_source;
+// the bundle's rules: served @context, SHACL dataset check, message guard
+pub mod shacl;
 pub mod store;
 pub mod system;
 #[cfg(feature = "tck")]
@@ -462,6 +467,7 @@ pub fn build(config: &Config, ports: Ports) -> Result<(Router, Negotiator), Star
         ports.transfers.agreements = ports::Shared(Arc::new(tck::TckAgreements(stored)));
     }
     let verifier = Arc::clone(&ports.verifier);
+    let catalog_context = ports.catalog_context.clone();
     let data_plane = start_data_plane(config, &mut ports, &datasets);
     let transfers = Arc::new(transfer::TransferProvider::new(
         &ports,
@@ -480,7 +486,8 @@ pub fn build(config: &Config, ports: Ports) -> Result<(Router, Negotiator), Star
         config.participant_id.clone(),
         service_id.clone(),
         endpoint_url,
-    );
+    )
+    .with_context(catalog_context);
     let versions = VersionResponse {
         protocol_versions: vec![ProtocolVersion {
             version: VERSION.to_owned(),
