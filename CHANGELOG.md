@@ -155,6 +155,12 @@ versions may change behaviour and configuration.
   issuer), new settings and log messages, upgrade note "From 0.6 to 0.7".
   README, ARCHITECTURE, TESTING, SECURITY-ASSURANCE, RUST-IDIOMS and the
   website updated for 0.7.
+- RUST-IDIOMS: log fields (`%`, `?`), `self: &Arc<Self>`,
+  `spawn_blocking`, an `async` block passed to `timeout`, `Box<dyn
+  Iterator>` and boxed errors, `map_or`, `entry().or_default()`, function
+  pointers, a crate's trait for a standard type, tuple-struct `.0` and
+  `*guard =`, `usize::from(bool)`, byte strings, `include_str!`, `as`
+  against `try_from`, and `const fn`.
 
 ## [0.6.0] - 2026-11-14
 
