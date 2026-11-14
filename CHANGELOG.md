@@ -131,6 +131,11 @@ versions may change behaviour and configuration.
   and code lists travel as N-Triples.
 - `portitor-shacl` refuses shapes that use a SHACL term it does not
   implement, so nothing passes silently.
+- `portitor-shacl` checks each node against a shape about once, also
+  with recursive shapes on data with loops (a layered graph that took 79 s
+  now takes milliseconds), and one validation makes at most 1,000,000
+  checks (`MAX_CHECKS`): past that, the report has a Violation
+  (`urn:portitor:shacl:WorkLimit`), never a pass.
 
 ### Documentation
 

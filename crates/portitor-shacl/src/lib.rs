@@ -58,7 +58,7 @@ pub use jsonld::{Contexts, jsonld_to_graph};
 pub use oxrdf;
 pub use oxrdf::Graph;
 pub use report::{Report, Severity, ValidationResult};
-pub use validate::NESTING_LIMIT_COMPONENT;
+pub use validate::{MAX_CHECKS, NESTING_LIMIT_COMPONENT, WORK_LIMIT_COMPONENT};
 
 use graph::DataView;
 use shape::Shape;
@@ -178,13 +178,18 @@ impl Shapes {
     /// EU ITB validator does with imported files. Class targets select
     /// only nodes typed in `data`: the vocabulary's own nodes are
     /// reference data and are not checked themselves.
+    ///
+    /// Time grows with the size of the data, also with recursive shapes
+    /// on data with loops, and one call makes at most [`MAX_CHECKS`]
+    /// checks: past that, the report has a Violation with
+    /// [`WORK_LIMIT_COMPONENT`].
     #[must_use]
     pub fn validate(&self, data: &Graph) -> Report {
         let view = DataView {
             data,
             vocabulary: &self.vocabulary,
         };
-        let results = validate::Validator::new(&self.list, view).run();
+        let results = validate::Validator::new(&self.list, view, MAX_CHECKS).run();
         Report { results }
     }
 }
