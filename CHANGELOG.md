@@ -122,6 +122,9 @@ versions may change behaviour and configuration.
   job stores at most the first 1000 entry errors (the summary says when
   more were rejected); a stored SHACL report keeps its first 50 results
   and says how many more in `resultsNotStored`.
+- The bundle cache removes the `.partial-*` and `.old-*` folders a
+  failed or stopped write left behind, and a failed swap puts the old
+  copy back.
 
 ### Security
 
