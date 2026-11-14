@@ -226,41 +226,60 @@ async fn attempt(
     scopes: &[String],
     reached: impl FnOnce(Value) -> bool,
 ) -> Outcome {
-    let pid = msg.pid;
     let failure = match send(link, msg, scopes).await {
         Ok(answer) => return Outcome::Acknowledged(answer),
         Err(failure) => failure,
     };
     // a message the rules refused was not sent now, but an earlier copy
     // (before a restart with other rules) may have arrived: ask as well
-    let (rejected, error) = match failure {
-        SendFailure::Rejected(error) => (true, error),
-        SendFailure::Failed(error) => (false, error),
-    };
-    if arrived(link, msg.status_url, msg.audience, reached).await {
-        tracing::info!(%pid, %error, "message had arrived before");
+    let outcome = if arrived(link, msg.status_url, msg.audience, reached).await {
         Outcome::ArrivedBefore
     } else if msg.first {
-        if rejected {
-            tracing::warn!(%pid, %error, "message breaks the dataspace's message rules; not sent, process not started");
-        } else {
-            tracing::warn!(%pid, %error, "counter-party not reachable; process not started");
-        }
         Outcome::NotStarted
     } else if msg.terminating {
-        if rejected {
-            tracing::warn!(%pid, %error, "termination breaks the dataspace's message rules; not sent");
-        } else {
-            tracing::warn!(%pid, %error, "termination not acknowledged");
-        }
         Outcome::TerminationUnanswered
     } else {
-        if rejected {
-            tracing::warn!(%pid, %error, "message breaks the dataspace's message rules; not sent, terminating");
-        } else {
+        Outcome::Unreachable
+    };
+    log_unanswered(msg.pid, &outcome, &failure);
+    outcome
+}
+
+/// One log line for a message that got no answer: what became of it
+/// (`outcome`), and why it got none (`failure`: refused by the
+/// dataspace's message rules, or not answered).
+fn log_unanswered(pid: &str, outcome: &Outcome, failure: &SendFailure) {
+    use SendFailure::{Failed, Rejected};
+    match (outcome, failure) {
+        (Outcome::ArrivedBefore, Rejected(error) | Failed(error)) => {
+            tracing::info!(%pid, %error, "message had arrived before");
+        }
+        (Outcome::NotStarted, Rejected(error)) => tracing::warn!(
+            %pid,
+            %error,
+            "message breaks the dataspace's message rules; not sent, process not started"
+        ),
+        (Outcome::NotStarted, Failed(error)) => {
+            tracing::warn!(%pid, %error, "counter-party not reachable; process not started");
+        }
+        (Outcome::TerminationUnanswered, Rejected(error)) => tracing::warn!(
+            %pid,
+            %error,
+            "termination breaks the dataspace's message rules; not sent"
+        ),
+        (Outcome::TerminationUnanswered, Failed(error)) => {
+            tracing::warn!(%pid, %error, "termination not acknowledged");
+        }
+        (Outcome::Unreachable, Rejected(error)) => tracing::warn!(
+            %pid,
+            %error,
+            "message breaks the dataspace's message rules; not sent, terminating"
+        ),
+        (Outcome::Unreachable, Failed(error)) => {
             tracing::warn!(%pid, %error, "counter-party not reachable; terminating");
         }
-        Outcome::Unreachable
+        // answered: nothing to say here
+        (Outcome::Acknowledged(_), _) => {}
     }
 }
 

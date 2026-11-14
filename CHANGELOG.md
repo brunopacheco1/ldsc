@@ -111,6 +111,20 @@ versions may change behaviour and configuration.
   transfers will be refused`); the 0.6 start warnings are gone.
 - ADR 0018 (issuer component, with its amendment from the 0.6 review) and
   ADR 0019 (credential constraints) accepted by the maintainer.
+- `PORTITOR_HARVEST_INTERVAL_SECONDS` and `PORTITOR_DATA_TOKEN_SECONDS`
+  above `31536000` (one year) are refused at start. Before, a huge
+  harvest interval aborted the connector right after start.
+- The harvest's rules version names the Portitor version
+  (`dsp(...; portitor <version>)`), so after an upgrade the stored
+  datasets are checked again at start (a `bundle` job), and the start run
+  checks every entry.
+- Harvest limits: a datasets file larger than 256 MiB fails the run; a
+  job stores at most the first 1000 entry errors (the summary says when
+  more were rejected); a stored SHACL report keeps its first 50 results
+  and says how many more in `resultsNotStored`.
+- The bundle cache removes the `.partial-*` and `.old-*` folders a
+  failed or stopped write left behind, and a failed swap puts the old
+  copy back.
 
 ### Security
 
@@ -157,6 +171,12 @@ versions may change behaviour and configuration.
   issuer), new settings and log messages, upgrade note "From 0.6 to 0.7".
   README, ARCHITECTURE, TESTING, SECURITY-ASSURANCE, RUST-IDIOMS and the
   website updated for 0.7.
+- RUST-IDIOMS: log fields (`%`, `?`), `self: &Arc<Self>`,
+  `spawn_blocking`, an `async` block passed to `timeout`, `Box<dyn
+  Iterator>` and boxed errors, `map_or`, `entry().or_default()`, function
+  pointers, a crate's trait for a standard type, tuple-struct `.0` and
+  `*guard =`, `usize::from(bool)`, byte strings, `include_str!`, `as`
+  against `try_from`, and `const fn`.
 
 ## [0.6.0] - 2026-11-14
 

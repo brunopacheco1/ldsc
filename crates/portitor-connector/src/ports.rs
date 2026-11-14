@@ -152,7 +152,7 @@ impl Ports {
         self.transfers.agreements = Shared(Arc::clone(store) as _);
         self.consumer_transfers.store = Shared(Arc::clone(store) as _);
         self.consumer_transfers.held = Shared(Arc::clone(store) as _);
-        self.harvest.store = Arc::clone(store) as _;
+        self.harvest.store = Shared(Arc::clone(store) as _);
         if self.flow_store.is_some() {
             self.flow_store = Some(Shared(Arc::clone(store) as _));
         }
