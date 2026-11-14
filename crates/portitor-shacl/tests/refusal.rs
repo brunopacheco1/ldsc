@@ -263,3 +263,34 @@ fn malformed_data_turtle_is_refused() {
     .unwrap_err();
     assert!(matches!(error, DataError::Syntax { document, .. } if document == "data.ttl"));
 }
+
+#[test]
+fn a_nested_context_cannot_redefine_protected_terms() {
+    // a context like the DSP one: its terms are @protected
+    let mut contexts = Contexts::new();
+    contexts.insert(
+        "https://contexts.example/protected",
+        json!({"@context": {
+            "@version": 1.1,
+            "@protected": true,
+            "ex": "https://example.org/",
+            "rule": {"@id": "ex:rule", "@type": "@id"}
+        }}),
+    );
+    let document = |inner: serde_json::Value| {
+        json!({
+            "@context": "https://contexts.example/protected",
+            "@id": "ex:a",
+            "rule": {"@context": inner, "@id": "ex:b", "rule": "ex:c"}
+        })
+    };
+    // a nested context that leaves the protected term alone reads
+    assert!(jsonld_to_graph(&document(json!({"other": "ex:other"})), &contexts).is_ok());
+    for inner in [json!({"rule": "urn:x:hidden"}), serde_json::Value::Null] {
+        let error = jsonld_to_graph(&document(inner.clone()), &contexts).unwrap_err();
+        assert!(
+            matches!(&error, DataError::Syntax { message, .. } if message.contains("protected")),
+            "{inner}: {error}"
+        );
+    }
+}

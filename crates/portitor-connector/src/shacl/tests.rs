@@ -417,3 +417,45 @@ fn the_guard_refuses_unknown_contexts_and_caps_its_reasons() {
         "and 2 more SHACL violations"
     );
 }
+
+/// A request whose offer redefines a DSP term with a nested `@context`.
+/// The DSP 2025-1 context marks its terms `@protected`, so JSON-LD
+/// refuses the document: a sender cannot make `permission` or
+/// `constraint` mean something else to the shapes than to the connector.
+fn request_with_nested_context(offer_context: &Value) -> Value {
+    let mut message = request(Some("urn:uuid:p1"));
+    message["offer"]["@context"] = offer_context.clone();
+    message
+}
+
+#[test]
+fn a_nested_context_cannot_redefine_protected_dsp_terms() {
+    let contexts = embedded_contexts().unwrap();
+    // the plain request reads
+    assert!(jsonld_to_graph(&request(Some("urn:uuid:p1")), &contexts).is_ok());
+    let rules = BundleRules::from_bundle(&bundle_of(vec![messages(MESSAGE_SHAPES)])).unwrap();
+    let guard = rules.guard().unwrap();
+    for (case, offer_context) in [
+        (
+            "redefines permission",
+            json!({"permission": "urn:x:hidden"}),
+        ),
+        (
+            "redefines constraint",
+            json!({"constraint": "urn:x:hidden"}),
+        ),
+        ("clears the context", Value::Null),
+    ] {
+        let message = request_with_nested_context(&offer_context);
+        let error = jsonld_to_graph(&message, &contexts).unwrap_err();
+        assert!(error.to_string().contains("protected"), "{case}: {error}");
+        let rejection = guard
+            .check(Direction::Inbound, "ContractRequestMessage", &message)
+            .unwrap_err();
+        assert!(
+            rejection.reasons[0].contains("cannot be read as JSON-LD"),
+            "{case}: {:?}",
+            rejection.reasons
+        );
+    }
+}

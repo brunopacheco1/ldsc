@@ -34,12 +34,6 @@ impl Contexts {
     pub fn insert(&mut self, url: &str, context: serde_json::Value) {
         self.documents.insert(url.to_owned(), context);
     }
-
-    /// Whether a document for `url` is present.
-    #[must_use]
-    pub fn contains(&self, url: &str) -> bool {
-        self.documents.contains_key(url)
-    }
 }
 
 /// Turns a JSON-LD document into an RDF graph (JSON-LD 1.1 "to RDF").
