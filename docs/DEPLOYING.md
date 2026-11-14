@@ -186,13 +186,14 @@ participant.
 - [ ] **Trusted issuers.** The DIDs whose credentials you accept
   (`PORTITOR_TRUSTED_ISSUERS`). Only these may deliver credentials
   (Storage API) or offers.
-- [ ] **Management API key.** As for the connector, if you record
-  credential requests or manage credentials.
+- [ ] **Management API key.** As for the connector, if you ask issuers
+  for credentials or manage credentials.
 - [ ] **Storage.** A persistent volume for `/data` (credentials, SQLite).
 - [ ] **Network.** Inbound from other participants, through your proxy:
   the DID document and the credential service. Inbound from your own
   connector only: the STS (`/sts/token`). Outbound: other participants'
-  DID documents (`https://`), and trusted issuers' metadata.
+  DID documents (`https://`), and trusted issuers' `IssuerService`
+  (metadata, credential requests, request status).
 
 ### Configuration
 
@@ -220,7 +221,7 @@ participant.
 | public | `POST <credential service>/presentations/query` | verifiers, with a self-issued ID token and an access token from your STS (DCP 5.4) |
 | public | `POST <credential service>/credentials`, `/offers` | trusted issuers (DCP 6.5, 6.6) |
 | public | `GET /health` | probes |
-| management | `POST /v1/credential-requests`, `GET /v1/credentials`, `DELETE /v1/credentials/{id}`, `GET /v1/offers`, `GET /v1/openapi.json` | operators ([OpenAPI](api/identity-management-openapi.json)) |
+| management | `POST`, `GET /v1/credential-requests`, `GET /v1/credential-requests/{holderPid}`, `GET /v1/credentials`, `DELETE /v1/credentials/{id}`, `GET /v1/offers`, `POST /v1/offers/request`, `GET /v1/openapi.json` | operators ([OpenAPI](api/identity-management-openapi.json)) |
 
 The public endpoints are described in
 [api/identity-openapi.json](api/identity-openapi.json).
@@ -286,8 +287,62 @@ curl -sf https://identity.example.com/.well-known/did.json
 
 ### Getting a credential
 
-Until the issuer arrives (0.6), an issuer delivers credentials for a
-request recorded through the management API:
+The participant asks its issuer (for example the dataspace authority's
+`portitor-issuer`) for credentials through the management API. The
+issuer must be in `PORTITOR_TRUSTED_ISSUERS`, or nothing is sent.
+
+1. Find the ids of the credentials you want in the issuer's metadata
+   (DCP 6.7). The issuer's DID document names its `IssuerService` base
+   URL; the metadata is at `<IssuerService>/metadata`:
+
+   ```sh
+   curl -s https://authority.example.com/issuer/metadata
+   ```
+
+2. Ask for them:
+
+   ```sh
+   curl -X POST localhost:8091/v1/credential-requests \
+     -H "Authorization: Bearer $(cat /srv/portitor/identity-management-key)" \
+     -H 'Content-Type: application/json' \
+     -d '{"issuerDid": "did:web:authority.example.com", "credentialIds": ["membership-vc11"]}'
+   ```
+
+   The component resolves the issuer's DID, checks the ids against its
+   metadata, records the request (`holderPid`) and sends a
+   `CredentialRequestMessage` to `<IssuerService>/credentials` (DCP 6.4),
+   with a self-issued ID token that carries an access token. The answer
+   (`201`) gives the `holderPid` and the `statusUrl` where the issuer
+   reports the request. If the issuer cannot be reached or refuses (`502`),
+   nothing is kept: ask again.
+
+3. Follow it: `GET /v1/credential-requests/{holderPid}` shows the local
+   state (`REQUESTED`, then `ISSUED` or `REJECTED`) and the issuer's
+   status, read from the `statusUrl` (DCP 6.8). `GET
+   /v1/credential-requests` lists all requests.
+
+The issuer then sends its `CredentialMessage` with that `holderPid` to
+`<credential service>/credentials`. The component checks the issuer's
+token, that the issuer is trusted and matches the request, that the token
+carries back the access token sent with the request (it is valid 30
+days, so a later delivery is refused and you ask again), and each
+credential's signature, dates, type and subject (your DID). The issuer's
+answer (`ISSUED` or `REJECTED`) closes the request: a second delivery for
+the same `holderPid` is refused, so a renewed credential needs a new
+request. Credentials are stored as received (JWT); `GET
+/v1/credentials` lists them and `DELETE /v1/credentials/{id}` removes one,
+after which it is no longer presented.
+
+**Offers.** An issuer may tell you that credentials are waiting (DCP
+6.6), for example before its key changes. `GET /v1/offers` lists the
+offers; nothing is asked for by itself. To ask for what an issuer
+offered: `POST /v1/offers/request` with `{"issuerDid": "..."}` (and
+`credentialIds` to ask for only some).
+
+**Issuers asked out of band.** For an issuer that is asked some other
+way (the DCP TCK, a test tool), leave `credentialIds` out: the request is
+only recorded, so the Storage API accepts that issuer's delivery for the
+`holderPid` you give, without an access token:
 
 ```sh
 curl -X POST localhost:8091/v1/credential-requests \
@@ -295,16 +350,6 @@ curl -X POST localhost:8091/v1/credential-requests \
   -H 'Content-Type: application/json' \
   -d '{"issuerDid": "did:web:issuer.example", "holderPid": "membership-2026"}'
 ```
-
-The issuer then sends its `CredentialMessage` with that `holderPid` to
-`<credential service>/credentials`. The component checks the issuer's
-token, that the issuer is trusted and matches the request, and each
-credential's signature, dates, type and subject (your DID). The issuer's
-answer (`ISSUED` or `REJECTED`) closes the request: a second delivery for
-the same `holderPid` is refused, so a renewed credential needs a new
-request. Credentials are stored as received (JWT); `GET
-/v1/credentials` lists them and `DELETE /v1/credentials/{id}` removes one,
-after which it is no longer presented.
 
 ### Logs and operation
 
@@ -316,6 +361,9 @@ after which it is no longer presented.
 | `request refused` (INFO) | A caller's token was refused; `reason` says why (expired, replayed, wrong audience, untrusted issuer, ...). The caller only gets HTTP 401 |
 | `presentation sent` (INFO) | A verifier got a presentation; `credentials` is how many it held |
 | `issuance message refused` (INFO) | A `CredentialMessage` or offer was refused (HTTP 400); `reason` says why |
+| `credential request sent` (INFO) | The issuer took a credential request (`holderPid`) |
+| `credential request not sent` (INFO) | The issuer could not be reached or refused a request; `reason` says why. Nothing was kept |
+| `the issuer gave no usable Location for the request` (WARN) | The issuer took the request but gave no status URL on its own host; the delivery is still accepted, only the issuer's status cannot be shown |
 | `identity store failed` (ERROR) | The SQLite file could not be read or written |
 
 Backup, restore, upgrade and rollback work as for the connector, with

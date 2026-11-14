@@ -11,11 +11,48 @@
   },
   "paths": {
     "/v1/credential-requests": {
+      "get": {
+        "tags": [
+          "Credentials"
+        ],
+        "summary": "List the credential requests, newest first, with their local state.",
+        "operationId": "list_requests",
+        "responses": {
+          "200": {
+            "description": "The requests",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RequestView"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong API key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      },
       "post": {
         "tags": [
           "Credentials"
         ],
-        "summary": "Record a credential request, so that the Storage API accepts the\nissuer's `CredentialMessage` for it (DCP 6.5). Asking the issuer\n(`CredentialRequestMessage`) comes in 0.6; until then the request is\nmade out of band, for example by the test credential tool.",
+        "summary": "Create a credential request. With `credentialIds`, ask the issuer for\nthose credentials (DCP 6.4): the identity component finds the issuer's\n`IssuerService` in its DID document, checks the ids against its\nmetadata, records the request and sends it, with an access token the\nissuer must send back with its delivery. Without `credentialIds`, only\nrecord the request, so that the Storage API accepts the delivery of an\nissuer asked out of band (DCP 6.5).",
         "operationId": "create_request",
         "requestBody": {
           "content": {
@@ -29,7 +66,7 @@
         },
         "responses": {
           "201": {
-            "description": "Recorded",
+            "description": "Sent to the issuer, or recorded",
             "content": {
               "application/json": {
                 "schema": {
@@ -39,7 +76,7 @@
             }
           },
           "400": {
-            "description": "Invalid body, or the issuer is not trusted",
+            "description": "Invalid body, the issuer is not trusted, or it does not offer a credential asked for",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -60,6 +97,73 @@
           },
           "409": {
             "description": "A request with this holderPid exists",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The issuer could not be reached or refused the request; nothing is kept",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/v1/credential-requests/{holderPid}": {
+      "get": {
+        "tags": [
+          "Credentials"
+        ],
+        "summary": "Read a credential request: its local state, and its status at the\nissuer (DCP 6.8), read now from the issuer's status URL. If the\nissuer cannot be read, `issuerStatusError` says why.",
+        "operationId": "get_request",
+        "parameters": [
+          {
+            "name": "holderPid",
+            "in": "path",
+            "description": "The holder's id for the request",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong API key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such request",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -203,6 +307,82 @@
           }
         ]
       }
+    },
+    "/v1/offers/request": {
+      "post": {
+        "tags": [
+          "Credentials"
+        ],
+        "summary": "Ask an issuer for credentials it offered (DCP 6.6): a credential\nrequest (as `POST /v1/credential-requests` with `credentialIds`) for\nthe offered ids. An offer is never answered by itself; the operator\ndecides here. The offer stays listed.",
+        "operationId": "request_offered",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OfferedRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Sent to the issuer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestCreated"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body, the issuer is not trusted, or it does not offer a credential asked for",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong API key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such offer from this issuer",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The issuer could not be reached or refused the request; nothing is kept",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -253,13 +433,42 @@
           }
         }
       },
+      "IssuerStatusView": {
+        "type": "object",
+        "description": "A request's status at the issuer (DCP 6.8, `CredentialStatus`).",
+        "required": [
+          "issuerPid",
+          "status"
+        ],
+        "properties": {
+          "issuerPid": {
+            "type": "string",
+            "description": "The issuer's id for the request."
+          },
+          "status": {
+            "type": "string",
+            "description": "`RECEIVED`, `ISSUED` or `REJECTED`.",
+            "example": "ISSUED"
+          }
+        }
+      },
       "NewRequest": {
         "type": "object",
-        "description": "Record a credential request.",
+        "description": "A new credential request.",
         "required": [
           "issuerDid"
         ],
         "properties": {
+          "credentialIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The ids of the credentials to ask for, from the issuer's metadata\n(`credentialsSupported`, DCP 6.7). With ids, the identity component\nsends the request to the issuer (DCP 6.4). Without, it only records\nthe request, for an issuer that is asked out of band.",
+            "example": [
+              "membership-vc11"
+            ]
+          },
           "holderPid": {
             "type": [
               "string",
@@ -322,6 +531,28 @@
           }
         }
       },
+      "OfferedRequest": {
+        "type": "object",
+        "description": "Ask an issuer for what it offered (DCP 6.6).",
+        "required": [
+          "issuerDid"
+        ],
+        "properties": {
+          "credentialIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The offered credential ids to ask for; every credential the issuer\noffered if left out."
+          },
+          "issuerDid": {
+            "type": "string",
+            "description": "The issuer that sent the offer.",
+            "example": "did:web:issuer.example"
+          }
+        },
+        "additionalProperties": false
+      },
       "Problem": {
         "type": "object",
         "description": "An error, as RFC 9457 problem details.",
@@ -357,6 +588,78 @@
           "holderPid": {
             "type": "string",
             "description": "The holder's id for the request."
+          },
+          "statusUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the issuer serves the request's status (DCP 6.8), when the\nrequest was sent and the issuer gave one."
+          }
+        }
+      },
+      "RequestView": {
+        "type": "object",
+        "description": "A credential request and where it stands.",
+        "required": [
+          "holderPid",
+          "issuerDid",
+          "status",
+          "credentialIds"
+        ],
+        "properties": {
+          "created": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the request was made (`xsd:dateTime`, UTC); absent for\nrequests recorded before 0.6."
+          },
+          "credentialIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The credential ids asked for; empty for a request only recorded."
+          },
+          "holderPid": {
+            "type": "string",
+            "description": "The holder's id for the request."
+          },
+          "issuerDid": {
+            "type": "string",
+            "description": "The issuer that may answer it.",
+            "example": "did:web:issuer.example"
+          },
+          "issuerStatus": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/IssuerStatusView",
+                "description": "The issuer's view (`CredentialStatus`, DCP 6.8). Only when one\nrequest is read and the issuer answered."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "issuerStatusError": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the issuer's view could not be read. Only when one request is\nread."
+          },
+          "status": {
+            "type": "string",
+            "description": "The local state: `REQUESTED` until the issuer delivers, then\n`ISSUED` or `REJECTED`.",
+            "example": "REQUESTED"
+          },
+          "statusUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the issuer serves the request's status (DCP 6.8), if known."
           }
         }
       }

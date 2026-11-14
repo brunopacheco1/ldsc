@@ -22,6 +22,20 @@ versions may change behaviour and configuration.
   against the official schemas.
 - `portitor-issuer`: new crate for the issuer component (work in
   progress).
+- `portitor-identity` asks issuers for credentials (holder side of DCP
+  issuance, ADR 0018): `POST /v1/credential-requests` with
+  `credentialIds` finds the issuer's `IssuerService` in its DID document,
+  checks the ids against its metadata and sends a
+  `CredentialRequestMessage` (DCP 6.4) with a self-issued ID token that
+  carries an access token; the issuer's `Location` is kept. `GET
+  /v1/credential-requests` lists requests, `GET
+  /v1/credential-requests/{holderPid}` shows one with its status at the
+  issuer (DCP 6.8), and `POST /v1/offers/request` asks for what an
+  issuer offered (DCP 6.6). Only trusted issuers are asked; offers are
+  never answered by themselves. Without `credentialIds` the request is
+  only recorded, as before.
+- `portitor-runtime`: `HttpSender::post_for_location` reads the
+  `Location` of a `201 Created`.
 
 - C4 model diagrams (system context, containers, components of both
   images, and the provider negotiation as code) in draw.io format, shown
@@ -33,6 +47,15 @@ versions may change behaviour and configuration.
   image and only files and types that exist; every OpenAPI file has the
   workspace version.
 - A documentation review step for every release (`docs/RELEASING.md`).
+
+### Changed
+
+- `portitor-identity`: a delivery (`CredentialMessage`) for a request the
+  component sent to the issuer must carry back, in the issuer's ID token,
+  the access token sent with the request (DCP 6.1); any access token
+  present is checked. Requests only recorded need none, as before. The
+  database gains columns for the request's credential ids, status URL,
+  access token id and creation time (a forward-only migration).
 
 ### Fixed
 
