@@ -1,0 +1,29 @@
+{
+  "files": [
+    {"path": "shapes/healthdcat-ap-r8/public-shapes.ttl",
+     "role": {"type": "datasets", "accessRights": ["http://publications.europa.eu/resource/authority/access-right/PUBLIC"]}},
+    {"path": "shapes/healthdcat-ap-r8/public-shapes_recommended.ttl",
+     "role": {"type": "datasets", "accessRights": ["http://publications.europa.eu/resource/authority/access-right/PUBLIC"]}},
+    {"path": "shapes/healthdcat-ap-r8/restricted-shapes.ttl",
+     "role": {"type": "datasets", "accessRights": ["http://publications.europa.eu/resource/authority/access-right/RESTRICTED"]}},
+    {"path": "shapes/healthdcat-ap-r8/restricted-shapes_recommended.ttl",
+     "role": {"type": "datasets", "accessRights": ["http://publications.europa.eu/resource/authority/access-right/RESTRICTED"]}},
+    {"path": "shapes/healthdcat-ap-r8/non-public-shapes.ttl",
+     "role": {"type": "datasets", "accessRights": ["http://publications.europa.eu/resource/authority/access-right/NON_PUBLIC"]}},
+    {"path": "shapes/healthdcat-ap-r8/non-public-shapes_recommended.ttl",
+     "role": {"type": "datasets", "accessRights": ["http://publications.europa.eu/resource/authority/access-right/NON_PUBLIC"]}},
+    {"path": "shapes/healthdcat-ap-r8/range.ttl",
+     "role": {"type": "datasets", "accessRights": ["http://publications.europa.eu/resource/authority/access-right/PUBLIC", "http://publications.europa.eu/resource/authority/access-right/RESTRICTED", "http://publications.europa.eu/resource/authority/access-right/NON_PUBLIC"]}},
+    {"path": "shapes/healthdcat-ap-r8/mdr-vocabularies.shape.ttl",
+     "role": {"type": "datasets", "accessRights": ["http://publications.europa.eu/resource/authority/access-right/PUBLIC", "http://publications.europa.eu/resource/authority/access-right/RESTRICTED", "http://publications.europa.eu/resource/authority/access-right/NON_PUBLIC"]}},
+    {"path": "shapes/dcat-ap-3.0.0/shapes.ttl",
+     "role": {"type": "datasets", "accessRights": ["http://publications.europa.eu/resource/authority/access-right/PUBLIC", "http://publications.europa.eu/resource/authority/access-right/RESTRICTED", "http://publications.europa.eu/resource/authority/access-right/NON_PUBLIC"]}},
+    {"path": "shapes/dcat-ap-3.0.0/range.ttl",
+     "role": {"type": "datasets", "accessRights": ["http://publications.europa.eu/resource/authority/access-right/PUBLIC", "http://publications.europa.eu/resource/authority/access-right/RESTRICTED", "http://publications.europa.eu/resource/authority/access-right/NON_PUBLIC"]}},
+    {"path": "shapes/dcat-ap-3.0.0/shapes_recommended.ttl",
+     "role": {"type": "datasets", "accessRights": ["http://publications.europa.eu/resource/authority/access-right/PUBLIC", "http://publications.europa.eu/resource/authority/access-right/RESTRICTED", "http://publications.europa.eu/resource/authority/access-right/NON_PUBLIC"]}},
+    {"path": "vocabulary/code-lists.nt", "role": {"type": "vocabulary"}},
+    {"path": "context/healthdcat-ap.jsonld",
+     "role": {"type": "context", "url": "http://127.0.0.1:18060/bundles/r8-demo-1/context/healthdcat-ap.jsonld"}}
+  ]
+}

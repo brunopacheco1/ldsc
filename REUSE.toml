@@ -104,3 +104,44 @@ path = "crates/portitor-shacl/tests/w3c/**"
 precedence = "override"
 SPDX-FileCopyrightText = "W3C (MIT, ERCIM, Keio, Beihang) and the RDF Data Shapes Working Group"
 SPDX-License-Identifier = "W3C-20150513"
+
+[[annotations]]
+# Demo schema and vocabulary bundle (scripts/demo-bundle.sh): the input
+# description and the JSON-LD context, written for Portitor (JSON has no comments)
+path = ["examples/bundle/*/bundle.json", "examples/bundle/*/context/*.jsonld"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "Portitor contributors"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+# Demo bundle: HealthDCAT-AP release 8 SHACL files, the same files as
+# crates/portitor-shacl/tests/data/healthdcat-ap-r8/ (copied unchanged)
+path = "examples/bundle/healthdcat-ap-r8/shapes/healthdcat-ap-r8/*.ttl"
+precedence = "override"
+SPDX-FileCopyrightText = "European Union (HealthDCAT-AP, https://data.health.europa.eu/healthdcat-ap/releases/release-8/)"
+SPDX-License-Identifier = "CC-BY-4.0"
+
+[[annotations]]
+# Demo bundle: DCAT-AP 3.0.0 SHACL files, the same files as
+# crates/portitor-shacl/tests/data/dcat-ap-3.0.0/ (copied unchanged)
+path = "examples/bundle/healthdcat-ap-r8/shapes/dcat-ap-3.0.0/*.ttl"
+precedence = "override"
+SPDX-FileCopyrightText = "SEMIC, European Commission (DCAT-AP, https://github.com/SEMICeu/DCAT-AP)"
+SPDX-License-Identifier = "CC-BY-4.0"
+
+[[annotations]]
+# Demo bundle: rdf:type, skos:inScheme and rdfs:subClassOf triples taken
+# from the EU authority tables, the HealthData@EU code lists and the
+# ontologies the HealthDCAT-AP release 8 validator imports, made by
+# scripts/reduce_code_lists.py, which lists each source and its licence
+path = "examples/bundle/healthdcat-ap-r8/vocabulary/code-lists.nt"
+precedence = "override"
+SPDX-FileCopyrightText = [
+    "European Union",
+    "W3C",
+    "Dublin Core Metadata Initiative",
+    "FOAF project (Dan Brickley, Libby Miller)",
+    "SPDX project, Linux Foundation",
+    "SEMIC, European Commission",
+]
+SPDX-License-Identifier = "CC-BY-4.0 AND W3C-20150513 AND CC-BY-1.0 AND CC-BY-3.0"
