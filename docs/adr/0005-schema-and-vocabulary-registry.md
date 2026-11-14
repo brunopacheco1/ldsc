@@ -178,6 +178,10 @@ Risks:
 - rudof can be looked at again if it makes its HTTP and CLI dependencies
   optional.
 
+Engine decided by the maintainer on 2026-11-14: **our own SHACL Core
+subset**, as recommended above. The rest of this ADR (bundle format and
+distribution) stays Proposed until 0.7.
+
 ## Consequences
 
 - Validation adds latency per message. It is acceptable for catalog
