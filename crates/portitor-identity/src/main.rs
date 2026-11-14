@@ -10,6 +10,7 @@ use std::sync::Arc;
 use portitor_dcp::SigningKey;
 use portitor_identity::config::Config;
 use portitor_identity::directory::WebDirectory;
+use portitor_identity::issuance::HttpIssuerClient;
 use portitor_identity::store::SqliteStore;
 use portitor_identity::{Identity, Ports};
 use portitor_runtime::api_key::ApiKey;
@@ -42,6 +43,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let ports = Ports {
         store: Arc::new(store),
         directory: Arc::new(WebDirectory::new(config.allow_http)?),
+        issuers: Arc::new(HttpIssuerClient::new(config.allow_http)?),
     };
     let identity = Arc::new(Identity::new(&config, key, sts_client_secret, ports)?);
     let listener = tokio::net::TcpListener::bind(&config.bind).await?;

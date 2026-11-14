@@ -12,9 +12,11 @@ use std::sync::{Arc, Mutex};
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
+use portitor_dcp::message::{CredentialRequestMessage, CredentialStatus};
 use portitor_dcp::{Claims, DidDocument, Relationship, Service, SigningKey, VerificationMethod};
 use portitor_identity::config::Config;
 use portitor_identity::directory::Directory;
+use portitor_identity::issuance::IssuerClient;
 use portitor_identity::store::SqliteStore;
 use portitor_identity::{Identity, Ports};
 use portitor_runtime::BoxFuture;
@@ -162,11 +164,78 @@ impl Directory for FakeDirectory {
     }
 }
 
+/// One credential request the fake issuer received.
+#[derive(Clone)]
+pub struct ReceivedRequest {
+    pub url: String,
+    pub message: CredentialRequestMessage,
+    pub id_token: String,
+}
+
+/// An issuer's `IssuerService` in memory: it records each credential
+/// request and answers with `location` (or fails with `refusal`), and
+/// answers status reads with `status`.
+#[derive(Default)]
+pub struct FakeIssuer {
+    pub received: Mutex<Vec<ReceivedRequest>>,
+    pub location: Mutex<Option<String>>,
+    pub refusal: Mutex<Option<String>>,
+    pub status: Mutex<Option<CredentialStatus>>,
+    /// The (URL, ID token) of each status read.
+    pub status_reads: Mutex<Vec<(String, String)>>,
+}
+
+impl FakeIssuer {
+    /// The requests received so far.
+    pub fn requests(&self) -> Vec<ReceivedRequest> {
+        self.received.lock().unwrap().clone()
+    }
+}
+
+impl IssuerClient for FakeIssuer {
+    fn request_credentials<'a>(
+        &'a self,
+        url: &'a str,
+        message: &'a CredentialRequestMessage,
+        id_token: &'a str,
+    ) -> BoxFuture<'a, Result<Option<String>, String>> {
+        self.received.lock().unwrap().push(ReceivedRequest {
+            url: url.to_owned(),
+            message: message.clone(),
+            id_token: id_token.to_owned(),
+        });
+        let answer = match self.refusal.lock().unwrap().clone() {
+            Some(reason) => Err(reason),
+            None => Ok(self.location.lock().unwrap().clone()),
+        };
+        Box::pin(async move { answer })
+    }
+
+    fn request_status<'a>(
+        &'a self,
+        url: &'a str,
+        id_token: &'a str,
+    ) -> BoxFuture<'a, Result<CredentialStatus, String>> {
+        self.status_reads
+            .lock()
+            .unwrap()
+            .push((url.to_owned(), id_token.to_owned()));
+        let answer = self
+            .status
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| "HTTP 404".to_owned());
+        Box::pin(async move { answer })
+    }
+}
+
 pub struct World {
     pub identity: Arc<Identity>,
     pub app: Router,
     pub management: Router,
     pub directory: Arc<FakeDirectory>,
+    pub issuer_service: Arc<FakeIssuer>,
     pub issuer: Party,
     pub verifier: Party,
 }
@@ -195,6 +264,7 @@ impl World {
     /// A world whose identity component has `config`.
     pub fn with(config: &Config) -> Self {
         let directory = Arc::new(FakeDirectory::default());
+        let issuer_service = Arc::new(FakeIssuer::default());
         let issuer = Party::new(ISSUER);
         let verifier = Party::new(VERIFIER);
         directory.add(&issuer);
@@ -202,6 +272,7 @@ impl World {
         let ports = Ports {
             store: Arc::new(SqliteStore::in_memory().unwrap()),
             directory: Arc::clone(&directory) as _,
+            issuers: Arc::clone(&issuer_service) as _,
         };
         let identity = Arc::new(
             Identity::new(
@@ -222,6 +293,7 @@ impl World {
             app,
             management,
             directory,
+            issuer_service,
             issuer,
             verifier,
         }

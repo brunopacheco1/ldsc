@@ -176,7 +176,9 @@ image keeps its state in its own SQLite file under `/data`.
   management API, SQLite store. Authenticates every DSP request with DCP
   and signs its own (ADR 0016).
 - `portitor-identity`: binary; the participant's DID document, STS,
-  credential service and management API (ADR 0015).
+  credential service and management API (ADR 0015); asks issuers for
+  credentials (holder side of DCP issuance, port `IssuerClient` in
+  `issuance.rs`, ADR 0018).
 - `portitor-issuer`: binary; the dataspace authority's DID document, DCP
   issuer service (metadata, credential requests and their status),
   delivery outbox, status lists and management API (ADR 0018).
