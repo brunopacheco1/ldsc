@@ -428,6 +428,50 @@ fn rules_that_change_with_an_unchanged_source_check_every_entry() {
     assert_eq!(last_job(&store).0.record.counts.added, 1);
 }
 
+/// A copy stored by another Portitor version: its checks may differ, so
+/// the stored datasets are checked again (a `bundle` job), and the start
+/// run checks every entry although the snapshot is unchanged.
+#[test]
+fn a_new_portitor_version_checks_the_stored_datasets_again() {
+    let store = memory();
+    let source = Source::with(vec![entry("a")]);
+    started(&source, &store, dsp());
+    let stored_rules = store.status().unwrap().rules_version.unwrap();
+    assert!(
+        stored_rules.contains(&format!("portitor {CHECKS_VERSION}")),
+        "{stored_rules}"
+    );
+    // as if an older version had stored the copy: same rules otherwise
+    let older = stored_rules.replace(CHECKS_VERSION, "0.0.1");
+    store
+        .commit(&Commit {
+            job: JobRecord {
+                started_at: 0,
+                finished_at: 0,
+                trigger: Trigger::Start,
+                source: "older".to_owned(),
+                snapshot_sha256: None,
+                outcome: JobOutcome::Unchanged,
+                counts: Counts::default(),
+                summary: String::new(),
+            },
+            errors: Vec::new(),
+            writes: Vec::new(),
+            status: HarvestStatus {
+                rules_version: Some(older),
+                snapshot_sha256: store.status().unwrap().snapshot_sha256,
+            },
+        })
+        .unwrap();
+    started(&source, &store, dsp());
+    let jobs = store.jobs(None, 2).unwrap();
+    assert_eq!(jobs[1].record.trigger, Trigger::Bundle);
+    assert_eq!(jobs[1].record.counts.seen, 1);
+    assert_eq!(jobs[0].record.trigger, Trigger::Start);
+    assert_eq!(jobs[0].record.outcome, JobOutcome::Succeeded);
+    assert_eq!(store.status().unwrap().rules_version, Some(stored_rules));
+}
+
 #[test]
 fn only_the_last_jobs_are_kept() {
     let store = memory();

@@ -32,7 +32,9 @@ mod memory;
 mod run;
 mod source;
 
-pub use check::{BothChecks, CheckKind, CheckedDataset, DatasetCheck, DspCheck, EntryFailure};
+pub use check::{
+    BothChecks, CHECKS_VERSION, CheckKind, CheckedDataset, DatasetCheck, DspCheck, EntryFailure,
+};
 pub use copy::ReadCopy;
 pub use memory::InMemoryHarvestStore;
 pub use run::SOURCE_KEY;

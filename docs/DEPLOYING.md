@@ -187,8 +187,9 @@ file (`PORTITOR_DATASETS_FILE`), in the same format as before.
 - A file that cannot be read, or is not a JSON array, makes the run
   `failed`: the copy stays as it was. On a first start with no copy, the
   catalog is empty and the connector still starts.
-- When the rules change (a new bundle version, another public URL or
-  another `PORTITOR_POLICY_CREDENTIALS`), the stored datasets are checked
+- When the rules change (a new bundle version, another public URL,
+  another `PORTITOR_POLICY_CREDENTIALS`, or a new Portitor version, whose
+  checks may differ), the stored datasets are checked
   again at start (trigger `bundle`). One that now fails is **hidden**:
   out of the catalog, kept for existing agreements, with the reason
   stored.

@@ -114,6 +114,10 @@ versions may change behaviour and configuration.
 - `PORTITOR_HARVEST_INTERVAL_SECONDS` and `PORTITOR_DATA_TOKEN_SECONDS`
   above `31536000` (one year) are refused at start. Before, a huge
   harvest interval aborted the connector right after start.
+- The harvest's rules version names the Portitor version
+  (`dsp(...; portitor <version>)`), so after an upgrade the stored
+  datasets are checked again at start (a `bundle` job), and the start run
+  checks every entry.
 
 ### Security
 

@@ -12,6 +12,13 @@ use portitor_dsp::Dataset;
 use portitor_dsp::catalog::{DatasetDefinitionError, prepare_dataset};
 use portitor_dsp::policy::CredentialTypes;
 
+/// The version of the code that checks entries: this crate's version.
+/// [`DspCheck::rules_version`] names it, so after an upgrade of Portitor
+/// (which may change the DSP, ODRL or SHACL checks) the stored datasets
+/// are checked again at start. It is named once, in [`DspCheck`]: the
+/// SHACL check always runs after it ([`BothChecks`] joins both versions).
+pub const CHECKS_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// Which check rejected an entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckKind {
@@ -87,7 +94,8 @@ pub struct CheckedDataset {
 
 /// Port: the check of one harvested entry.
 pub trait DatasetCheck: Send + Sync {
-    /// Names the rules in force (for example `dsp(...)` or
+    /// Names the rules in force, and the version of the code that checks
+    /// them (for example `dsp(...; portitor 0.7.0)` or
     /// `dsp(...)+bundle:<version>`). When it differs from the one stored
     /// with the copy, the stored datasets are checked again at start
     /// (trigger `bundle`).
@@ -124,14 +132,19 @@ impl DspCheck {
 }
 
 impl DatasetCheck for DspCheck {
-    /// `dsp(<service id>; <credential types>)`: both change what the check
-    /// accepts or what it writes into a dataset.
+    /// `dsp(<service id>; <credential types>; portitor <version>)`: each
+    /// changes what the check accepts or what it writes into a dataset.
+    /// The version is [`CHECKS_VERSION`].
     fn rules_version(&self) -> String {
         let mut types = Vec::new();
         for (credential_type, _scope) in self.types.iter() {
             types.push(credential_type);
         }
-        format!("dsp({}; {})", self.service_id, types.join(","))
+        format!(
+            "dsp({}; {}; portitor {CHECKS_VERSION})",
+            self.service_id,
+            types.join(",")
+        )
     }
 
     fn check(&self, entry: &serde_json::Value) -> Result<CheckedDataset, EntryFailure> {
@@ -282,7 +295,10 @@ mod tests {
         let both = BothChecks::new(Arc::new(dsp()), Arc::new(Shapes));
         assert_eq!(
             both.rules_version(),
-            "dsp(https://p.example/dsp/2025-1; MembershipCredential)+bundle:1"
+            format!(
+                "dsp(https://p.example/dsp/2025-1; MembershipCredential; portitor {})+bundle:1",
+                env!("CARGO_PKG_VERSION")
+            )
         );
         let passed = both.check(&entry()).unwrap();
         // the first check's dataset, with its access service
