@@ -45,29 +45,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     ports.use_sqlite(&store);
     let settings = AuthSettings::from_env(&config.participant_id, config.allow_http_callbacks)?;
     (ports.verifier, ports.prover) = auth_adapters(settings).await?;
-    // the authority's signed shapes bundle (ADR 0005); none configured: None,
-    // and nothing changes (no SHACL checks, no message guard)
-    let bundle_config = BundleConfig::from_env(&config.db_file, config.allow_http_callbacks)?;
-    if let Some(bundle) = load_bundle(bundle_config).await? {
-        // shapes that cannot be loaded stop the start, like a bad signature
-        let rules = BundleRules::from_bundle(&bundle)?;
-        rules.log_start();
-        ports.use_bundle_rules(&rules);
-    }
-    if let Some(file) = &config.datasets_file {
-        tracing::info!(
-            file = %file.display(),
-            interval_seconds = config.harvest_interval_seconds,
-            "harvesting datasets"
-        );
-    }
+    load_bundle_rules(&config, &mut ports).await?;
+    // `build` runs the first harvest before it returns: blocking work (a
+    // file read, SQLite, SHACL) on this async task, done once at start
+    // before anything is served, like the bundle read above
     let (app, negotiator) = portitor_connector::build(&config, ports)?;
-    let every = std::time::Duration::from_secs(config.harvest_interval_seconds);
-    if negotiator.schedule_harvest(every).is_none() {
-        tracing::info!(
-            "datasets are harvested only at start (PORTITOR_HARVEST_INTERVAL_SECONDS=0)"
-        );
-    }
+    schedule_harvest(&config, &negotiator);
     // messages saved but not acknowledged before the last stop
     match negotiator.resume() {
         Ok(0) => {}
@@ -99,6 +82,48 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let app = with_limits(app, REQUEST_TIMEOUT, MAX_CONCURRENT_REQUESTS);
     serve((listener, app), management).await?;
     Ok(())
+}
+
+/// Loads the authority's signed bundle (ADR 0005) and applies its rules
+/// to `ports`: the SHACL check of each harvested dataset and the guard on
+/// DSP messages. No bundle configured: nothing changes (no SHACL checks,
+/// no message guard).
+///
+/// # Errors
+/// A bundle is configured but cannot be loaded, or its shapes cannot be
+/// read: the start stops, as for a bad signature.
+async fn load_bundle_rules(
+    config: &portitor_connector::Config,
+    ports: &mut portitor_connector::Ports,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let bundle_config = BundleConfig::from_env(&config.db_file, config.allow_http_callbacks)?;
+    if let Some(bundle) = load_bundle(bundle_config).await? {
+        let rules = BundleRules::from_bundle(&bundle)?;
+        rules.log_start();
+        ports.use_bundle_rules(&rules);
+    }
+    Ok(())
+}
+
+/// Starts the harvest schedule (`PORTITOR_HARVEST_INTERVAL_SECONDS`) and
+/// says in the log what it is.
+fn schedule_harvest(
+    config: &portitor_connector::Config,
+    negotiator: &portitor_connector::Negotiator,
+) {
+    if let Some(file) = &config.datasets_file {
+        tracing::info!(
+            file = %file.display(),
+            interval_seconds = config.harvest_interval_seconds,
+            "harvesting datasets"
+        );
+    }
+    let every = std::time::Duration::from_secs(config.harvest_interval_seconds);
+    if negotiator.schedule_harvest(every).is_none() {
+        tracing::info!(
+            "datasets are harvested only at start (PORTITOR_HARVEST_INTERVAL_SECONDS=0)"
+        );
+    }
 }
 
 /// The DCP adapters. `PORTITOR_STS_URL` and the other DCP settings are

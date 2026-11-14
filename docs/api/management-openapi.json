@@ -84,7 +84,7 @@
         "tags": [
           "Harvest"
         ],
-        "summary": "One dataset harvest run, with the entries it rejected and why.",
+        "summary": "One dataset harvest run, with the entries it rejected and why. A job\nstores at most the first 1000 entry errors, so the answer has no pages.",
         "operationId": "one_harvest_job",
         "parameters": [
           {
@@ -729,7 +729,7 @@
               "object",
               "null"
             ],
-            "description": "The full report of the check, for example a SHACL validation report."
+            "description": "The report of the check, for example a SHACL validation report. A\nSHACL report keeps its first 50 results; `resultsNotStored` says\nhow many more there were."
           }
         }
       },
@@ -750,7 +750,7 @@
                 "items": {
                   "$ref": "#/components/schemas/HarvestErrorView"
                 },
-                "description": "The entries it rejected, in the order it found them."
+                "description": "The entries it rejected, in the order it found them: at most the\nfirst 1000 (`counts.rejected` has the total, and the summary says\nwhen some were not stored)."
               }
             }
           }

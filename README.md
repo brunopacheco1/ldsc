@@ -75,7 +75,7 @@ Configuration (environment variables):
 | `PORTITOR_PARTICIPANT_ID` | `did:web:localhost%3A8080` | Participant id (a DID) |
 | `PORTITOR_PUBLIC_URL` | `http://localhost:8080` | Public base URL; the DSP endpoint is this plus `/dsp/2025-1`, the consumer callback address this plus `/dsp/2025-1/callback` |
 | `PORTITOR_DATASETS_FILE` | none (empty catalog) | JSON file with the datasets to offer, harvested into a read copy at start and at each run ([ADR 0020](docs/adr/0020-dataset-harvest.md)) |
-| `PORTITOR_HARVEST_INTERVAL_SECONDS` | `3600` | Seconds between two harvest runs; `0` harvests only at start |
+| `PORTITOR_HARVEST_INTERVAL_SECONDS` | `3600` | Seconds between two harvest runs; `0` harvests only at start; at most `31536000` (one year) |
 | `PORTITOR_BUNDLE_URL` | none (no SHACL checks) | `https://` base URL of one version folder of the authority's signed schema and vocabulary bundle ([ADR 0005](docs/adr/0005-schema-and-vocabulary-registry.md)); `http://` only with `PORTITOR_ALLOW_HTTP_CALLBACKS` |
 | `PORTITOR_BUNDLE_DIR` | none | A local bundle version folder instead of the URL (development and tests) |
 | `PORTITOR_BUNDLE_VERSION` | none (**required** with a bundle) | The pinned bundle version |
@@ -85,7 +85,7 @@ Configuration (environment variables):
 | `PORTITOR_MANAGEMENT_API_KEY_FILE` | none (management API off) | File with the management API key (at least 32 characters, for example `openssl rand -hex 32`) |
 | `PORTITOR_MANAGEMENT_BIND` | `127.0.0.1:8081` | Address of the management API |
 | `PORTITOR_ALLOW_HTTP_CALLBACKS` | `false` | `true` allows plain `http://` for consumers' callbacks, providers, partners' `did:web` DIDs and credential services, status lists and the STS; development and tests only |
-| `PORTITOR_DATA_TOKEN_SECONDS` | `3600` | How long a data access token is valid after the transfer starts |
+| `PORTITOR_DATA_TOKEN_SECONDS` | `3600` | How long a data access token is valid after the transfer starts; `1` to `31536000` (one year) |
 | `PORTITOR_STS_URL` | none (**required**) | Token endpoint of the participant's STS (`portitor-identity`: `<base URL>/sts/token`); every DSP request is authenticated with DCP (ADR 0016) |
 | `PORTITOR_STS_ALLOW_HTTP` | unset | `true` allows a plain-HTTP `PORTITOR_STS_URL` (the STS on an internal network), and nothing else |
 | `PORTITOR_STS_CLIENT_ID` | `PORTITOR_PARTICIPANT_ID` | Client id at the STS |

@@ -12,6 +12,13 @@ use portitor_dsp::Dataset;
 use portitor_dsp::catalog::{DatasetDefinitionError, prepare_dataset};
 use portitor_dsp::policy::CredentialTypes;
 
+/// The version of the code that checks entries: this crate's version.
+/// [`DspCheck::rules_version`] names it, so after an upgrade of Portitor
+/// (which may change the DSP, ODRL or SHACL checks) the stored datasets
+/// are checked again at start. It is named once, in [`DspCheck`]: the
+/// SHACL check always runs after it ([`BothChecks`] joins both versions).
+pub const CHECKS_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// Which check rejected an entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckKind {
@@ -27,6 +34,10 @@ pub enum CheckKind {
 }
 
 impl CheckKind {
+    /// Every value, for [`CheckKind::from_name`]; the names are in
+    /// [`CheckKind::name`] only.
+    const ALL: [Self; 4] = [Self::Json, Self::Dsp, Self::Odrl, Self::Shacl];
+
     /// The name stored and shown: `json`, `dsp`, `odrl` or `shacl`.
     #[must_use]
     pub fn name(self) -> &'static str {
@@ -41,13 +52,7 @@ impl CheckKind {
     /// The kind with this name.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "json" => Some(Self::Json),
-            "dsp" => Some(Self::Dsp),
-            "odrl" => Some(Self::Odrl),
-            "shacl" => Some(Self::Shacl),
-            _ => None,
-        }
+        Self::ALL.into_iter().find(|value| value.name() == name)
     }
 }
 
@@ -87,7 +92,8 @@ pub struct CheckedDataset {
 
 /// Port: the check of one harvested entry.
 pub trait DatasetCheck: Send + Sync {
-    /// Names the rules in force (for example `dsp(...)` or
+    /// Names the rules in force, and the version of the code that checks
+    /// them (for example `dsp(...; portitor 0.7.0)` or
     /// `dsp(...)+bundle:<version>`). When it differs from the one stored
     /// with the copy, the stored datasets are checked again at start
     /// (trigger `bundle`).
@@ -124,14 +130,19 @@ impl DspCheck {
 }
 
 impl DatasetCheck for DspCheck {
-    /// `dsp(<service id>; <credential types>)`: both change what the check
-    /// accepts or what it writes into a dataset.
+    /// `dsp(<service id>; <credential types>; portitor <version>)`: each
+    /// changes what the check accepts or what it writes into a dataset.
+    /// The version is [`CHECKS_VERSION`].
     fn rules_version(&self) -> String {
         let mut types = Vec::new();
         for (credential_type, _scope) in self.types.iter() {
             types.push(credential_type);
         }
-        format!("dsp({}; {})", self.service_id, types.join(","))
+        format!(
+            "dsp({}; {}; portitor {CHECKS_VERSION})",
+            self.service_id,
+            types.join(",")
+        )
     }
 
     fn check(&self, entry: &serde_json::Value) -> Result<CheckedDataset, EntryFailure> {
@@ -169,7 +180,7 @@ fn definition_failure(error: &DatasetDefinitionError) -> EntryFailure {
 #[derive(Clone)]
 pub struct BothChecks {
     first: Arc<dyn DatasetCheck>,
-    then: Arc<dyn DatasetCheck>,
+    second: Arc<dyn DatasetCheck>,
 }
 
 impl std::fmt::Debug for BothChecks {
@@ -179,10 +190,10 @@ impl std::fmt::Debug for BothChecks {
 }
 
 impl BothChecks {
-    /// `first`, then `then` on the same entry.
+    /// `first`, then `second` on the same entry.
     #[must_use]
-    pub fn new(first: Arc<dyn DatasetCheck>, then: Arc<dyn DatasetCheck>) -> Self {
-        Self { first, then }
+    pub fn new(first: Arc<dyn DatasetCheck>, second: Arc<dyn DatasetCheck>) -> Self {
+        Self { first, second }
     }
 }
 
@@ -191,16 +202,16 @@ impl DatasetCheck for BothChecks {
         format!(
             "{}+{}",
             self.first.rules_version(),
-            self.then.rules_version()
+            self.second.rules_version()
         )
     }
 
     fn check(&self, entry: &serde_json::Value) -> Result<CheckedDataset, EntryFailure> {
         let first = self.first.check(entry)?;
-        let then = self.then.check(entry)?;
+        let second = self.second.check(entry)?;
         Ok(CheckedDataset {
             dataset: first.dataset,
-            conforms_to: then.conforms_to.or(first.conforms_to),
+            conforms_to: second.conforms_to.or(first.conforms_to),
         })
     }
 }
@@ -222,6 +233,14 @@ mod tests {
 
     fn dsp() -> DspCheck {
         DspCheck::new("https://p.example/dsp/2025-1", &CredentialTypes::default())
+    }
+
+    #[test]
+    fn every_check_name_reads_back() {
+        for kind in CheckKind::ALL {
+            assert_eq!(CheckKind::from_name(kind.name()), Some(kind));
+        }
+        assert_eq!(CheckKind::from_name("SHACL"), None);
     }
 
     #[test]
@@ -282,7 +301,10 @@ mod tests {
         let both = BothChecks::new(Arc::new(dsp()), Arc::new(Shapes));
         assert_eq!(
             both.rules_version(),
-            "dsp(https://p.example/dsp/2025-1; MembershipCredential)+bundle:1"
+            format!(
+                "dsp(https://p.example/dsp/2025-1; MembershipCredential; portitor {})+bundle:1",
+                env!("CARGO_PKG_VERSION")
+            )
         );
         let passed = both.check(&entry()).unwrap();
         // the first check's dataset, with its access service

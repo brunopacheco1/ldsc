@@ -7,9 +7,10 @@
 //! (`PORTITOR_DATASETS_FILE`); later adapters (a DCAT-AP endpoint, CKAN)
 //! give the same [`Snapshot`].
 
-use std::path::PathBuf;
+use std::io::Read as _;
+use std::path::{Path, PathBuf};
 
-use crate::system::hex;
+use portitor_dcp::bundle::sha256_hex;
 
 /// A full snapshot of the provider's datasets.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,14 +50,33 @@ pub trait HarvestSource: Send + Sync {
     fn snapshot(&self) -> Result<Snapshot, SourceError>;
 }
 
-/// SHA-256 of `bytes`, hex.
-pub(crate) fn sha256(bytes: &[u8]) -> String {
-    hex(ring::digest::digest(&ring::digest::SHA256, bytes).as_ref())
+/// The largest datasets file read: 256 MiB. A larger file makes the run
+/// fail (the copy stays as it was).
+pub const MAX_DATASETS_FILE_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Reads the file at `path`, refusing one larger than `max_bytes`. At most
+/// `max_bytes + 1` bytes are read, so a file that grows while it is read
+/// is refused too.
+fn read_at_most(path: &Path, max_bytes: u64) -> Result<Vec<u8>, SourceError> {
+    let shown = path.display();
+    let cannot_read =
+        |e: std::io::Error| SourceError(format!("cannot read datasets file {shown}: {e}"));
+    let file = std::fs::File::open(path).map_err(cannot_read)?;
+    let mut raw = Vec::new();
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut raw)
+        .map_err(cannot_read)?;
+    if u64::try_from(raw.len()).unwrap_or(u64::MAX) > max_bytes {
+        return Err(SourceError(format!(
+            "datasets file {shown} is larger than {max_bytes} bytes"
+        )));
+    }
+    Ok(raw)
 }
 
 /// Adapter: the datasets file, a JSON array of DSP 2025-1 `Dataset`
 /// objects (without `@context`), each of which may hold `portitor:source`.
-/// It is read again at each run.
+/// It is read again at each run, up to [`MAX_DATASETS_FILE_BYTES`].
 #[derive(Debug, Clone)]
 pub struct FileSource {
     path: PathBuf,
@@ -77,12 +97,11 @@ impl HarvestSource for FileSource {
 
     fn snapshot(&self) -> Result<Snapshot, SourceError> {
         let shown = self.path.display();
-        let raw = std::fs::read(&self.path)
-            .map_err(|e| SourceError(format!("cannot read datasets file {shown}: {e}")))?;
+        let raw = read_at_most(&self.path, MAX_DATASETS_FILE_BYTES)?;
         let entries: Vec<serde_json::Value> = serde_json::from_slice(&raw)
             .map_err(|e| SourceError(format!("datasets file {shown} is not a JSON array: {e}")))?;
         Ok(Snapshot {
-            sha256: sha256(&raw),
+            sha256: sha256_hex(&raw),
             entries,
         })
     }
@@ -111,7 +130,7 @@ impl HarvestSource for FixedSource {
     fn snapshot(&self) -> Result<Snapshot, SourceError> {
         let raw = serde_json::to_vec(&self.entries).map_err(|e| SourceError(e.to_string()))?;
         Ok(Snapshot {
-            sha256: sha256(&raw),
+            sha256: sha256_hex(&raw),
             entries: self.entries.clone(),
         })
     }
@@ -157,10 +176,22 @@ mod tests {
         std::fs::write(&file, r#"[{"@id": "a"}, 7]"#).unwrap();
         let first = source.snapshot().unwrap();
         assert_eq!(first.entries.len(), 2);
-        assert_eq!(first.sha256, sha256(br#"[{"@id": "a"}, 7]"#));
+        assert_eq!(first.sha256, sha256_hex(br#"[{"@id": "a"}, 7]"#));
         // the same data written differently is a different snapshot
         std::fs::write(&file, r#"[{"@id":"a"},7]"#).unwrap();
         assert_ne!(source.snapshot().unwrap().sha256, first.sha256);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_file_above_the_limit_is_refused() {
+        let dir = std::env::temp_dir().join(format!("portitor-source-max-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("datasets.json");
+        std::fs::write(&file, "[1, 2]").unwrap();
+        assert_eq!(read_at_most(&file, 6).unwrap(), b"[1, 2]");
+        let error = read_at_most(&file, 5).unwrap_err();
+        assert!(error.0.ends_with("is larger than 5 bytes"), "{error}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

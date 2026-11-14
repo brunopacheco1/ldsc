@@ -283,11 +283,52 @@ pub fn source_for(
     }
 }
 
+/// The largest `manifest.jws` read: twice [`MAX_MANIFEST_BYTES`], as the
+/// signature holds the manifest in base64url (a third longer) plus its
+/// header and signature.
+const MAX_SIGNATURE_BYTES: usize = MAX_MANIFEST_BYTES * 2;
+
 /// The signed parts of a bundle as read: `manifest.json` and
 /// `manifest.jws`.
 struct Signed {
     manifest_bytes: Vec<u8>,
     jws: String,
+}
+
+impl Signed {
+    /// The two parts from their bytes, however they were read. The
+    /// signature must be text; spaces and line ends around it are dropped.
+    fn from_parts(manifest_bytes: Vec<u8>, jws_bytes: Vec<u8>) -> Result<Self, ShapeSourceError> {
+        let jws = String::from_utf8(jws_bytes)
+            .map_err(|_| ShapeSourceError::Unavailable(format!("{SIGNATURE_FILE} is not text")))?;
+        Ok(Self {
+            manifest_bytes,
+            jws: jws.trim().to_owned(),
+        })
+    }
+}
+
+/// The listed files of a bundle as they are read, by path, with their
+/// total size kept within [`MAX_BUNDLE_BYTES`].
+#[derive(Default)]
+struct CollectedFiles {
+    files: BTreeMap<String, Vec<u8>>,
+    total: usize,
+}
+
+impl CollectedFiles {
+    /// Adds one file, refusing to go over [`MAX_BUNDLE_BYTES`] in all.
+    fn add(&mut self, path: &str, bytes: Vec<u8>) -> Result<(), ShapeSourceError> {
+        self.total = self.total.saturating_add(bytes.len());
+        if self.total > MAX_BUNDLE_BYTES {
+            return Err(ShapeSourceError::Unavailable(format!(
+                "the bundle's files are larger than {} MiB together",
+                MAX_BUNDLE_BYTES / (1024 * 1024)
+            )));
+        }
+        self.files.insert(path.to_owned(), bytes);
+        Ok(())
+    }
 }
 
 /// The key a bundle was verified with, as kept in the cache.
@@ -350,13 +391,8 @@ impl ShapeSource for FolderSource {
 /// Reads `manifest.json` and `manifest.jws` from `folder`.
 fn read_signed(folder: &Path) -> Result<Signed, ShapeSourceError> {
     let manifest_bytes = read_limited(&folder.join(MANIFEST_FILE), MAX_MANIFEST_BYTES)?;
-    let jws_bytes = read_limited(&folder.join(SIGNATURE_FILE), MAX_MANIFEST_BYTES * 2)?;
-    let jws = String::from_utf8(jws_bytes)
-        .map_err(|_| ShapeSourceError::Unavailable(format!("{SIGNATURE_FILE} is not text")))?;
-    Ok(Signed {
-        manifest_bytes,
-        jws: jws.trim().to_owned(),
-    })
+    let jws_bytes = read_limited(&folder.join(SIGNATURE_FILE), MAX_SIGNATURE_BYTES)?;
+    Signed::from_parts(manifest_bytes, jws_bytes)
 }
 
 /// Reads every file the manifest lists from `folder`.
@@ -364,27 +400,14 @@ fn read_listed_files(
     folder: &Path,
     manifest: &Manifest,
 ) -> Result<BTreeMap<String, Vec<u8>>, ShapeSourceError> {
-    let mut files = BTreeMap::new();
-    let mut total: usize = 0;
+    let mut collected = CollectedFiles::default();
     for entry in &manifest.files {
         // the path was checked when the manifest was read: relative, no
         // `..`, so it stays inside `folder`
         let bytes = read_limited(&folder.join(&entry.path), MAX_FILE_BYTES)?;
-        total = add_within_limit(total, bytes.len())?;
-        files.insert(entry.path.clone(), bytes);
+        collected.add(&entry.path, bytes)?;
     }
-    Ok(files)
-}
-
-/// Adds `size` to `total`, refusing to go over [`MAX_BUNDLE_BYTES`].
-fn add_within_limit(total: usize, size: usize) -> Result<usize, ShapeSourceError> {
-    let sum = total.saturating_add(size);
-    if sum > MAX_BUNDLE_BYTES {
-        return Err(ShapeSourceError::Unavailable(
-            "the bundle's files are larger than 256 MiB together".to_owned(),
-        ));
-    }
-    Ok(sum)
+    Ok(collected.files)
 }
 
 /// Reads a file of at most `max_bytes`.
@@ -445,23 +468,16 @@ impl UrlSource {
     /// downloaded.
     async fn download(&self) -> Result<(Signed, CachedKey, VerifiedBundle), ShapeSourceError> {
         let manifest_bytes = self.get(MANIFEST_FILE, MAX_MANIFEST_BYTES).await?;
-        let jws_bytes = self.get(SIGNATURE_FILE, MAX_MANIFEST_BYTES * 2).await?;
-        let jws = String::from_utf8(jws_bytes)
-            .map_err(|_| ShapeSourceError::Unavailable(format!("{SIGNATURE_FILE} is not text")))?;
-        let signed = Signed {
-            manifest_bytes,
-            jws: jws.trim().to_owned(),
-        };
+        let jws_bytes = self.get(SIGNATURE_FILE, MAX_SIGNATURE_BYTES).await?;
+        let signed = Signed::from_parts(manifest_bytes, jws_bytes)?;
         let (manifest, key) =
             verify_with_authority(&signed, &self.config, self.directory.as_ref()).await?;
-        let mut files = BTreeMap::new();
-        let mut total: usize = 0;
+        let mut collected = CollectedFiles::default();
         for entry in &manifest.files {
             let bytes = self.get(&entry.path, MAX_FILE_BYTES).await?;
-            total = add_within_limit(total, bytes.len())?;
-            files.insert(entry.path.clone(), bytes);
+            collected.add(&entry.path, bytes)?;
         }
-        let verified = bundle::check_files(manifest, files)?;
+        let verified = bundle::check_files(manifest, collected.files)?;
         Ok((signed, key, verified))
     }
 
@@ -478,6 +494,9 @@ impl UrlSource {
         let request = hyper::Request::get(&url)
             .body(Full::new(Bytes::new()))
             .map_err(|e| unavailable(e.to_string()))?;
+        // an `async` block is a piece of work not started yet: it runs
+        // only when awaited, here inside `timeout`, which stops it when
+        // the time is up
         let exchange = async {
             let response = self
                 .client
@@ -534,89 +553,166 @@ impl UrlSource {
     }
 }
 
+impl UrlSource {
+    /// Keeps a bundle just downloaded in the cache. A failure is only
+    /// logged: the bundle was verified and is used.
+    fn keep_in_cache(&self, signed: &Signed, key: &CachedKey, verified: &VerifiedBundle) {
+        if let Err(error) = write_cache(&self.cache_folder(), signed, key, verified) {
+            tracing::warn!(%error, "bundle verified, but not written to the cache");
+        }
+        tracing::info!(
+            version = %verified.version(),
+            url = %self.base_url,
+            "bundle downloaded and verified"
+        );
+    }
+
+    /// After a download that failed with `download` (something could not
+    /// be reached): the cached copy, checked again, with a warning.
+    ///
+    /// # Errors
+    /// [`ShapeSourceError::NoUsableCopy`]: the cached copy cannot be used
+    /// either.
+    fn use_cache_after(&self, download: String) -> Result<VerifiedBundle, ShapeSourceError> {
+        match self.load_cached() {
+            Ok(verified) => {
+                tracing::warn!(
+                    error = %download,
+                    version = %verified.version(),
+                    cache = %self.cache_folder().display(),
+                    "bundle download failed; using the cached copy, checked again"
+                );
+                Ok(verified)
+            }
+            Err(cache) => Err(ShapeSourceError::NoUsableCopy {
+                download,
+                cache: cache.to_string(),
+            }),
+        }
+    }
+}
+
 impl ShapeSource for UrlSource {
     /// Downloads and checks the bundle, and keeps it in the cache. If
     /// the download fails because something cannot be reached (the host,
-    /// the authority's DID document), the cached copy is used. A bundle
-    /// that was downloaded but fails a check is never replaced by the
-    /// cache: that is an error.
+    /// the authority's DID document, a missing or too large file), the
+    /// cached copy is used. A bundle that was downloaded but fails a
+    /// check is never replaced by the cache: that is an error.
     fn load(&self) -> BoxFuture<'_, Result<VerifiedBundle, ShapeSourceError>> {
         Box::pin(async move {
             match self.download().await {
                 Ok((signed, key, verified)) => {
-                    if let Err(error) = write_cache(&self.cache_folder(), &signed, &key, &verified)
-                    {
-                        tracing::warn!(%error, "bundle verified, but not written to the cache");
-                    }
-                    tracing::info!(
-                        version = %verified.version(),
-                        url = %self.base_url,
-                        "bundle downloaded and verified"
-                    );
+                    self.keep_in_cache(&signed, &key, &verified);
                     Ok(verified)
                 }
-                Err(ShapeSourceError::Unavailable(download)) => match self.load_cached() {
-                    Ok(verified) => {
-                        tracing::warn!(
-                            error = %download,
-                            version = %verified.version(),
-                            cache = %self.cache_folder().display(),
-                            "bundle download failed; using the cached copy, checked again"
-                        );
-                        Ok(verified)
-                    }
-                    Err(cache) => Err(ShapeSourceError::NoUsableCopy {
-                        download,
-                        cache: cache.to_string(),
-                    }),
-                },
+                Err(ShapeSourceError::Unavailable(download)) => self.use_cache_after(download),
                 Err(other) => Err(other),
             }
         })
     }
 }
 
+/// A function that turns an I/O error on `path` into a message naming
+/// the path, for `map_err`.
+fn io_error(path: &Path) -> impl Fn(std::io::Error) -> String + '_ {
+    move |error| format!("{}: {error}", path.display())
+}
+
 /// Writes a verified bundle to `folder`: the files, `manifest.json`,
-/// `manifest.jws` and the key used ([`CACHED_KEY_FILE`]). Written next to
-/// it first and then renamed, so a crash never leaves a half-written
-/// copy in place.
+/// `manifest.jws` and the key used ([`CACHED_KEY_FILE`]), with
+/// [`replace_folder`].
 fn write_cache(
     folder: &Path,
     signed: &Signed,
     key: &CachedKey,
     verified: &VerifiedBundle,
 ) -> Result<(), String> {
-    let parent = folder.parent().ok_or("the cache folder has no parent")?;
-    let name = folder
-        .file_name()
-        .ok_or("the cache folder has no name")?
-        .to_string_lossy();
+    let key_json = serde_json::to_vec_pretty(key).map_err(|e| e.to_string())?;
+    let mut files: Vec<(&str, &[u8])> = Vec::new();
+    for file in verified.files() {
+        files.push((file.entry.path.as_str(), file.bytes));
+    }
+    files.push((MANIFEST_FILE, &signed.manifest_bytes));
+    files.push((SIGNATURE_FILE, signed.jws.as_bytes()));
+    files.push((CACHED_KEY_FILE, &key_json));
+    replace_folder(folder, &files)
+}
+
+/// Replaces `folder` with a folder that holds `files` (relative path,
+/// bytes). The files are written into a `.partial-*` folder next to it
+/// first, and then swapped in by renaming, so a crash never leaves a
+/// half-written copy in place. (The issuer's `bundle build` writes its
+/// output the same way, without the swap.)
+///
+/// Nothing is left behind: a failed write removes its `.partial-*`
+/// folder, a failed swap puts the old copy back, and the `.partial-*` and
+/// `.old-*` folders that a crash left are removed first.
+fn replace_folder(folder: &Path, files: &[(&str, &[u8])]) -> Result<(), String> {
+    let Some(parent) = folder.parent() else {
+        return Err("the cache folder has no parent".to_owned());
+    };
+    let Some(name) = folder.file_name() else {
+        return Err("the cache folder has no name".to_owned());
+    };
+    let name = name.to_string_lossy();
+    remove_leftovers(parent, &name);
     let suffix = portitor_runtime::system::new_uuid();
     let partial = parent.join(format!(".{name}.partial-{suffix}"));
     let old = parent.join(format!(".{name}.old-{suffix}"));
-    let write = |path: &Path, bytes: &[u8]| -> Result<(), String> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
-        }
-        std::fs::write(path, bytes).map_err(|e| format!("{}: {e}", path.display()))
-    };
-    for file in verified.files() {
-        write(&partial.join(&file.entry.path), file.bytes)?;
+    if let Err(error) = write_files(&partial, files) {
+        // best effort: what is left is removed at the next write
+        let _ = std::fs::remove_dir_all(&partial);
+        return Err(error);
     }
-    write(&partial.join(MANIFEST_FILE), &signed.manifest_bytes)?;
-    write(&partial.join(SIGNATURE_FILE), signed.jws.as_bytes())?;
-    let key_json = serde_json::to_vec_pretty(key).map_err(|e| e.to_string())?;
-    write(&partial.join(CACHED_KEY_FILE), &key_json)?;
     // swap: the old copy aside, the new one in, the old one removed
     let had_old = folder.exists();
-    if had_old {
-        std::fs::rename(folder, &old).map_err(|e| format!("{}: {e}", folder.display()))?;
+    if had_old && let Err(error) = std::fs::rename(folder, &old) {
+        let _ = std::fs::remove_dir_all(&partial);
+        return Err(io_error(folder)(error));
     }
-    std::fs::rename(&partial, folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    if let Err(error) = std::fs::rename(&partial, folder) {
+        let _ = std::fs::remove_dir_all(&partial);
+        if had_old {
+            let _ = std::fs::rename(&old, folder);
+        }
+        return Err(io_error(folder)(error));
+    }
     if had_old {
-        std::fs::remove_dir_all(&old).map_err(|e| format!("{}: {e}", old.display()))?;
+        std::fs::remove_dir_all(&old).map_err(io_error(&old))?;
     }
     Ok(())
+}
+
+/// Writes `files` (relative path, bytes) under `folder`, creating the
+/// folders they need.
+fn write_files(folder: &Path, files: &[(&str, &[u8])]) -> Result<(), String> {
+    for (relative, bytes) in files {
+        let path = folder.join(relative);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(io_error(parent))?;
+        }
+        std::fs::write(&path, bytes).map_err(io_error(&path))?;
+    }
+    Ok(())
+}
+
+/// Removes the `.<name>.partial-*` and `.<name>.old-*` folders in
+/// `parent` that an earlier write left when it was stopped (a crash, a
+/// full disk). Best effort: a folder that cannot be removed is left.
+fn remove_leftovers(parent: &Path, name: &str) {
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        // no cache folder yet: nothing to remove
+        return;
+    };
+    let partial = format!(".{name}.partial-");
+    let old = format!(".{name}.old-");
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+        if file_name.starts_with(&partial) || file_name.starts_with(&old) {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -635,6 +731,57 @@ mod tests {
             Path::new("/data/portitor.db"),
             false,
         )
+    }
+
+    /// A new empty folder under the system's temporary folder.
+    fn scratch() -> PathBuf {
+        let folder = std::env::temp_dir().join(format!(
+            "portitor-cache-{}",
+            portitor_runtime::system::new_uuid()
+        ));
+        std::fs::create_dir_all(&folder).unwrap();
+        folder
+    }
+
+    /// The names in `folder`, sorted.
+    fn names(folder: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(folder)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_cache_write_replaces_the_copy_and_leaves_nothing_behind() {
+        let cache = scratch();
+        let folder = cache.join("1");
+        replace_folder(&folder, &[("a.ttl", b"one"), ("sub/b.ttl", b"two")]).unwrap();
+        assert_eq!(std::fs::read(folder.join("sub/b.ttl")).unwrap(), b"two");
+        // what a stopped write left, of this version and of another one
+        for leftover in [".1.partial-x", ".1.old-y", ".2.partial-z"] {
+            std::fs::create_dir_all(cache.join(leftover).join("f")).unwrap();
+        }
+        replace_folder(&folder, &[("a.ttl", b"new")]).unwrap();
+        assert_eq!(std::fs::read(folder.join("a.ttl")).unwrap(), b"new");
+        assert!(!folder.join("sub").exists(), "the old copy is gone");
+        // only this version's leftovers are removed
+        assert_eq!(names(&cache), [".2.partial-z", "1"]);
+        std::fs::remove_dir_all(&cache).unwrap();
+    }
+
+    #[test]
+    fn a_failed_cache_write_keeps_the_old_copy_and_removes_its_partial_folder() {
+        let cache = scratch();
+        let folder = cache.join("1");
+        replace_folder(&folder, &[("a.ttl", b"one")]).unwrap();
+        // `a` is a file, so `a/b` cannot be written
+        let error = replace_folder(&folder, &[("a", b"x"), ("a/b", b"y")]).unwrap_err();
+        assert!(error.contains("/a"), "{error}");
+        assert_eq!(names(&cache), ["1"]);
+        assert_eq!(std::fs::read(folder.join("a.ttl")).unwrap(), b"one");
+        std::fs::remove_dir_all(&cache).unwrap();
     }
 
     #[test]

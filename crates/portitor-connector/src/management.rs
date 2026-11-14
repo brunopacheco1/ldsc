@@ -598,7 +598,9 @@ pub struct HarvestErrorView {
     check: String,
     /// What is wrong.
     message: String,
-    /// The full report of the check, for example a SHACL validation report.
+    /// The report of the check, for example a SHACL validation report. A
+    /// SHACL report keeps its first 50 results; `resultsNotStored` says
+    /// how many more there were.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<Object>)]
     report: Option<Value>,
@@ -623,7 +625,9 @@ pub struct HarvestJobDetail {
     /// The job.
     #[serde(flatten)]
     job: HarvestJobView,
-    /// The entries it rejected, in the order it found them.
+    /// The entries it rejected, in the order it found them: at most the
+    /// first 1000 (`counts.rejected` has the total, and the summary says
+    /// when some were not stored).
     errors: Vec<HarvestErrorView>,
 }
 
@@ -688,7 +692,8 @@ async fn list_harvest_jobs(
     }
 }
 
-/// One dataset harvest run, with the entries it rejected and why.
+/// One dataset harvest run, with the entries it rejected and why. A job
+/// stores at most the first 1000 entry errors, so the answer has no pages.
 #[utoipa::path(
     get,
     path = "/v1/harvest-jobs/{id}",

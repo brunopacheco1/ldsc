@@ -11,8 +11,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use portitor_dsp::Dataset;
 
 use super::check::{CheckKind, CheckedDataset, DatasetCheck, EntryFailure};
-use super::source::sha256;
 use super::{Counts, DatasetState, EntryError, JobOutcome, StoredDataset};
+use portitor_dcp::bundle::sha256_hex;
 
 /// The key, in an entry, that names the upstream URL of the dataset's
 /// data. Taken out before the entry is checked, so it never reaches the
@@ -30,17 +30,58 @@ pub struct Plan {
     pub counts: Counts,
 }
 
+/// How many entry errors one job stores: the first ones found. The
+/// others are counted (`rejected`) and logged, and the job's summary says
+/// that some were not stored.
+pub const MAX_STORED_ERRORS: usize = 1_000;
+
+/// How many results of a check's report (a SHACL validation report) are
+/// stored with an entry error: the first ones. The report then says how
+/// many were left out, in `resultsNotStored`.
+pub const MAX_REPORT_RESULTS: usize = 50;
+
 impl Plan {
+    /// Counts a rejected entry, and stores its error while fewer than
+    /// [`MAX_STORED_ERRORS`] are stored.
     fn reject(&mut self, position: Option<u64>, dataset_id: Option<String>, failure: EntryFailure) {
         self.counts.rejected += 1;
+        if self.errors.len() >= MAX_STORED_ERRORS {
+            tracing::warn!(
+                position,
+                dataset = dataset_id.as_deref().unwrap_or(""),
+                check = failure.kind.name(),
+                error = %failure.message,
+                "harvest: dataset rejected; error not stored (too many in this run)"
+            );
+            return;
+        }
         self.errors.push(EntryError {
             position,
             dataset_id,
             kind: failure.kind,
             message: failure.message,
-            report: failure.report,
+            report: failure.report.map(trimmed_report),
         });
     }
+}
+
+/// The report with at most [`MAX_REPORT_RESULTS`] of its `results`, and
+/// `resultsNotStored` saying how many were left out. A report without a
+/// `results` list is kept as it is.
+fn trimmed_report(mut report: serde_json::Value) -> serde_json::Value {
+    let Some(results) = report
+        .get_mut("results")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return report;
+    };
+    if results.len() <= MAX_REPORT_RESULTS {
+        return report;
+    }
+    let left_out = results.len() - MAX_REPORT_RESULTS;
+    results.truncate(MAX_REPORT_RESULTS);
+    report["resultsNotStored"] = serde_json::Value::from(left_out);
+    report
 }
 
 /// `succeeded` when nothing was rejected, else `partial`.
@@ -53,10 +94,11 @@ pub fn outcome_of(counts: &Counts) -> JobOutcome {
     }
 }
 
-/// The counts in one line, for the job's summary.
+/// The counts in one line, for the job's summary. Says so when not every
+/// error was stored ([`MAX_STORED_ERRORS`]).
 #[must_use]
 pub fn summary(counts: &Counts) -> String {
-    format!(
+    let line = format!(
         "{} seen, {} added, {} updated, {} unchanged, {} withdrawn, {} rejected",
         counts.seen,
         counts.added,
@@ -64,7 +106,13 @@ pub fn summary(counts: &Counts) -> String {
         counts.unchanged,
         counts.withdrawn,
         counts.rejected
-    )
+    );
+    if counts.rejected > count(MAX_STORED_ERRORS) {
+        return format!(
+            "{line}; only the first {MAX_STORED_ERRORS} errors are stored, the others are in the log"
+        );
+    }
+    line
 }
 
 /// A full run over a snapshot's `entries`, against the `stored` copy
@@ -92,38 +140,74 @@ pub fn plan_harvest(
     };
     // every id in the snapshot, passing or not: those are not withdrawn
     let mut present = BTreeSet::new();
-    for (index, mut entry) in entries.into_iter().enumerate() {
-        let position = Some(count(index));
-        let id = entry
-            .get("@id")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned);
-        if let Some(id) = &id
-            && !present.insert(id.clone())
-        {
-            let failure = EntryFailure::new(
-                CheckKind::Dsp,
-                format!("dataset {id:?} is defined twice; the first one is used"),
-            );
-            plan.reject(position, Some(id.clone()), failure);
-            continue;
-        }
-        let upstream = match take_upstream(&mut entry, id.as_deref()) {
-            Ok(upstream) => upstream,
-            Err(failure) => {
-                plan.reject(position, id, failure);
-                continue;
-            }
-        };
-        match accept(&entry, check) {
-            Ok(checked) => {
-                let previous = stored.get(&checked.dataset.id);
-                let fresh = stored_dataset(entry, checked, upstream, previous, now);
-                record(&mut plan, previous, fresh, now);
-            }
-            Err(failure) => plan.reject(position, id, failure),
-        }
+    for (index, entry) in entries.into_iter().enumerate() {
+        plan_entry(
+            &mut plan,
+            stored,
+            &mut present,
+            count(index),
+            entry,
+            check,
+            now,
+        );
     }
+    withdraw_missing(&mut plan, stored, &present, now);
+    plan
+}
+
+/// One entry of the snapshot, at `position`: rejected (an `@id` already
+/// in `present`, a bad `portitor:source`, or a failed check), or recorded
+/// as added, updated or unchanged. Its `@id` goes into `present`.
+fn plan_entry(
+    plan: &mut Plan,
+    stored: &BTreeMap<String, StoredDataset>,
+    present: &mut BTreeSet<String>,
+    position: u64,
+    mut entry: serde_json::Value,
+    check: &dyn DatasetCheck,
+    now: u64,
+) {
+    let position = Some(position);
+    let id = entry
+        .get("@id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    if let Some(id) = &id
+        && !present.insert(id.clone())
+    {
+        let failure = EntryFailure::new(
+            CheckKind::Dsp,
+            format!("dataset {id:?} is defined twice; the first one is used"),
+        );
+        plan.reject(position, Some(id.clone()), failure);
+        return;
+    }
+    let upstream = match take_upstream(&mut entry, id.as_deref()) {
+        Ok(upstream) => upstream,
+        Err(failure) => {
+            plan.reject(position, id, failure);
+            return;
+        }
+    };
+    match accept(&entry, check) {
+        Ok(checked) => {
+            let previous = stored.get(&checked.dataset.id);
+            let fresh = stored_dataset(entry, checked, upstream, previous, now);
+            record(plan, previous, fresh, now);
+        }
+        Err(failure) => plan.reject(position, id, failure),
+    }
+}
+
+/// Withdraws each stored active or hidden dataset whose id is not in
+/// `present` (the snapshot's ids). It is kept, for transfers under
+/// agreements already made.
+fn withdraw_missing(
+    plan: &mut Plan,
+    stored: &BTreeMap<String, StoredDataset>,
+    present: &BTreeSet<String>,
+    now: u64,
+) {
     for dataset in stored.values() {
         let listed = matches!(dataset.state, DatasetState::Active | DatasetState::Hidden);
         if listed && !present.contains(&dataset.id) {
@@ -135,7 +219,6 @@ pub fn plan_harvest(
             });
         }
     }
-    plan
 }
 
 /// A check of the stored active and hidden datasets with new rules: one
@@ -179,23 +262,42 @@ pub fn plan_recheck(
     plan
 }
 
+/// What a dataset that passed is, compared with the stored one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Change {
+    /// The same content, entry and state: nothing to write.
+    Unchanged,
+    /// New, or back in the source after a withdrawal: it enters the
+    /// catalog (again).
+    Added,
+    /// Its content, entry or state changed.
+    Updated,
+}
+
+/// How `fresh` differs from the stored dataset `previous`, if any.
+fn change_of(previous: Option<&StoredDataset>, fresh: &StoredDataset) -> Change {
+    match previous {
+        None => Change::Added,
+        Some(old) if old.state == DatasetState::Withdrawn => Change::Added,
+        Some(old) if is_same(old, fresh) => Change::Unchanged,
+        Some(_) => Change::Updated,
+    }
+}
+
 /// Counts and, if it changed, writes a dataset that passed.
 fn record(plan: &mut Plan, previous: Option<&StoredDataset>, fresh: StoredDataset, now: u64) {
-    match previous {
-        Some(old) if old.state != DatasetState::Withdrawn && is_same(old, &fresh) => {
-            plan.counts.unchanged += 1;
-            return;
-        }
-        // new, or back in the source after a withdrawal: it enters the
-        // catalog (again)
-        None => plan.counts.added += 1,
-        Some(old) if old.state == DatasetState::Withdrawn => plan.counts.added += 1,
-        Some(_) => plan.counts.updated += 1,
+    let change = change_of(previous, &fresh);
+    match change {
+        Change::Unchanged => plan.counts.unchanged += 1,
+        Change::Added => plan.counts.added += 1,
+        Change::Updated => plan.counts.updated += 1,
     }
-    plan.writes.push(StoredDataset {
-        last_changed: now,
-        ..fresh
-    });
+    if change != Change::Unchanged {
+        plan.writes.push(StoredDataset {
+            last_changed: now,
+            ..fresh
+        });
+    }
 }
 
 /// The same content, entry and state: nothing to write.
@@ -249,11 +351,18 @@ fn accept(
 /// context defines the `dct` prefix).
 const CONFORMS_TO: &str = "dct:conformsTo";
 
+/// The class of a `dct:conformsTo` value in DCAT-AP.
+const STANDARD: &str = "dct:Standard";
+
 /// `dataset` with `{"@id": iri, "@type": "dct:Standard"}` among its
 /// `dct:conformsTo` values. DCAT-AP 3.0.0 requires every `dct:conformsTo`
 /// value to be a `dct:Standard`, so the type travels with the reference.
 /// A value with the same `@id` that the dataset already has is kept as it
 /// is.
+///
+/// It goes through JSON and back because `Dataset` keeps every property
+/// that DSP does not name (such as `dct:conformsTo`) in one flattened map
+/// of JSON values; editing the JSON is the plain way to add one.
 fn with_conforms_to(dataset: &Dataset, iri: &str) -> Result<Dataset, EntryFailure> {
     let as_json = |e: serde_json::Error| EntryFailure::new(CheckKind::Json, e.to_string());
     let mut value = serde_json::to_value(dataset).map_err(as_json)?;
@@ -262,12 +371,12 @@ fn with_conforms_to(dataset: &Dataset, iri: &str) -> Result<Dataset, EntryFailur
         let merged = match fields.remove(CONFORMS_TO) {
             None => reference,
             Some(serde_json::Value::Array(mut list)) => {
-                if !list.iter().any(|v| names(v, iri)) {
+                if !list.iter().any(|v| refers_to(v, iri)) {
                     list.push(reference);
                 }
                 serde_json::Value::Array(list)
             }
-            Some(one) if names(&one, iri) => one,
+            Some(one) if refers_to(&one, iri) => one,
             Some(other) => serde_json::Value::Array(vec![other, reference]),
         };
         fields.insert(CONFORMS_TO.to_owned(), merged);
@@ -275,12 +384,9 @@ fn with_conforms_to(dataset: &Dataset, iri: &str) -> Result<Dataset, EntryFailur
     serde_json::from_value(value).map_err(as_json)
 }
 
-/// The class of a `dct:conformsTo` value in DCAT-AP.
-const STANDARD: &str = "dct:Standard";
-
 /// Whether a `dct:conformsTo` value refers to `iri` (`{"@id": iri, ...}`
 /// or the plain IRI text).
-fn names(value: &serde_json::Value, iri: &str) -> bool {
+fn refers_to(value: &serde_json::Value, iri: &str) -> bool {
     match value {
         serde_json::Value::String(text) => text == iri,
         serde_json::Value::Object(fields) => {
@@ -320,9 +426,11 @@ fn content_hash(dataset: &Dataset, upstream: Option<&str>) -> String {
     let mut bytes = serde_json::to_vec(dataset).unwrap_or_default();
     bytes.push(b'\n');
     bytes.extend_from_slice(upstream.unwrap_or_default().as_bytes());
-    sha256(&bytes)
+    sha256_hex(&bytes)
 }
 
-fn count(n: usize) -> u64 {
+/// A length or position as a count. A `usize` always fits in a `u64` on
+/// the platforms Rust supports; `u64::MAX` is only a fallback.
+pub(crate) fn count(n: usize) -> u64 {
     u64::try_from(n).unwrap_or(u64::MAX)
 }

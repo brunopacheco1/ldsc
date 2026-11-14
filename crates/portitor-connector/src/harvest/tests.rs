@@ -428,6 +428,129 @@ fn rules_that_change_with_an_unchanged_source_check_every_entry() {
     assert_eq!(last_job(&store).0.record.counts.added, 1);
 }
 
+/// A copy stored by another Portitor version: its checks may differ, so
+/// the stored datasets are checked again (a `bundle` job), and the start
+/// run checks every entry although the snapshot is unchanged.
+#[test]
+fn a_new_portitor_version_checks_the_stored_datasets_again() {
+    let store = memory();
+    let source = Source::with(vec![entry("a")]);
+    started(&source, &store, dsp());
+    let stored_rules = store.status().unwrap().rules_version.unwrap();
+    assert!(
+        stored_rules.contains(&format!("portitor {CHECKS_VERSION}")),
+        "{stored_rules}"
+    );
+    // as if an older version had stored the copy: same rules otherwise
+    let older = stored_rules.replace(CHECKS_VERSION, "0.0.1");
+    store
+        .commit(&Commit {
+            job: JobRecord {
+                started_at: 0,
+                finished_at: 0,
+                trigger: Trigger::Start,
+                source: "older".to_owned(),
+                snapshot_sha256: None,
+                outcome: JobOutcome::Unchanged,
+                counts: Counts::default(),
+                summary: String::new(),
+            },
+            errors: Vec::new(),
+            writes: Vec::new(),
+            status: HarvestStatus {
+                rules_version: Some(older),
+                snapshot_sha256: store.status().unwrap().snapshot_sha256,
+            },
+        })
+        .unwrap();
+    started(&source, &store, dsp());
+    let jobs = store.jobs(None, 2).unwrap();
+    assert_eq!(jobs[1].record.trigger, Trigger::Bundle);
+    assert_eq!(jobs[1].record.counts.seen, 1);
+    assert_eq!(jobs[0].record.trigger, Trigger::Start);
+    assert_eq!(jobs[0].record.outcome, JobOutcome::Succeeded);
+    assert_eq!(store.status().unwrap().rules_version, Some(stored_rules));
+}
+
+#[test]
+fn a_job_stores_at_most_the_first_errors() {
+    let store = memory();
+    let too_many = run::MAX_STORED_ERRORS + 5;
+    let entries = (0..too_many).map(|n| broken(&format!("d{n}"))).collect();
+    let source = Source::with(entries);
+    started(&source, &store, dsp());
+    let (job, errors) = last_job(&store);
+    assert_eq!(job.record.counts.rejected, u64::try_from(too_many).unwrap());
+    assert_eq!(errors.len(), run::MAX_STORED_ERRORS);
+    assert_eq!(errors[0].dataset_id.as_deref(), Some("d0"));
+    assert!(
+        job.record
+            .summary
+            .ends_with("; only the first 1000 errors are stored, the others are in the log"),
+        "{}",
+        job.record.summary
+    );
+}
+
+/// Refuses every entry with a report of `results` results.
+struct LongReport {
+    results: usize,
+}
+
+impl DatasetCheck for LongReport {
+    fn rules_version(&self) -> String {
+        "long".to_owned()
+    }
+    fn check(&self, _entry: &Value) -> Result<CheckedDataset, EntryFailure> {
+        let results: Vec<Value> = (0..self.results).map(|n| json!({"n": n})).collect();
+        Err(EntryFailure {
+            kind: CheckKind::Shacl,
+            message: "violations".to_owned(),
+            report: Some(json!({"conforms": false, "results": results})),
+        })
+    }
+}
+
+#[test]
+fn a_stored_report_keeps_only_the_first_results() {
+    let store = memory();
+    let source = Source::with(vec![entry("a")]);
+    let results = run::MAX_REPORT_RESULTS + 7;
+    started(&source, &store, Arc::new(LongReport { results }));
+    let (_, errors) = last_job(&store);
+    let report = errors[0].report.as_ref().unwrap();
+    assert_eq!(
+        report["results"].as_array().unwrap().len(),
+        run::MAX_REPORT_RESULTS
+    );
+    assert_eq!(report["results"][0], json!({"n": 0}));
+    assert_eq!(report["resultsNotStored"], json!(7));
+    assert_eq!(report["conforms"], json!(false));
+
+    // a short report is kept as it is
+    let store = memory();
+    started(&source, &store, Arc::new(LongReport { results: 2 }));
+    let (_, errors) = last_job(&store);
+    let report = errors[0].report.as_ref().unwrap();
+    assert_eq!(report["results"].as_array().unwrap().len(), 2);
+    assert!(report.get("resultsNotStored").is_none());
+}
+
+#[test]
+fn every_stored_name_reads_back() {
+    for state in DatasetState::ALL {
+        assert_eq!(DatasetState::from_name(state.name()), Some(state));
+    }
+    for trigger in Trigger::ALL {
+        assert_eq!(Trigger::from_name(trigger.name()), Some(trigger));
+    }
+    for outcome in JobOutcome::ALL {
+        assert_eq!(JobOutcome::from_name(outcome.name()), Some(outcome));
+    }
+    assert_eq!(DatasetState::from_name("Active"), None);
+    assert_eq!(JobOutcome::from_name(""), None);
+}
+
 #[test]
 fn only_the_last_jobs_are_kept() {
     let store = memory();
@@ -466,22 +589,28 @@ fn one_run_at_a_time() {
     ));
 }
 
-#[tokio::test]
+/// On a paused clock (`start_paused`): time moves only when every task
+/// waits, and not while a `spawn_blocking` run is going on, so each
+/// `sleep` below lets exactly the runs that fall due in it happen.
+#[tokio::test(start_paused = true)]
 async fn the_schedule_runs_again_and_zero_means_only_at_start() {
     let store = memory();
     let source = Source::with(vec![entry("a")]);
     let harvester = Arc::new(started(&source, &store, dsp()));
     assert!(harvester.schedule(Duration::ZERO).is_none());
-    let schedule = harvester.schedule(Duration::from_millis(10)).unwrap();
-    for _ in 0..200 {
-        if store.jobs(None, 10).unwrap().len() >= 3 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    let job_count = || store.jobs(None, 10).unwrap().len();
+    assert_eq!(job_count(), 1, "the start run");
+
+    let schedule = harvester.schedule(Duration::from_secs(60)).unwrap();
+    tokio::time::sleep(Duration::from_secs(59)).await;
+    assert_eq!(job_count(), 1, "nothing before the first interval");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(job_count(), 2, "one run at 60 s");
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    assert_eq!(job_count(), 3, "one more at 120 s");
     schedule.abort();
+
     let jobs = store.jobs(None, 10).unwrap();
-    assert!(jobs.len() >= 3, "{jobs:?}");
     assert_eq!(jobs[0].record.trigger, Trigger::Interval);
     assert_eq!(jobs[0].record.outcome, JobOutcome::Unchanged);
 }
