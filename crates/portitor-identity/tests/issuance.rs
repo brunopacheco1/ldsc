@@ -517,3 +517,231 @@ async fn the_http_adapter_talks_to_an_issuer_service() {
             .contains("404")
     );
 }
+
+/// A delivery of one membership credential for `holder_pid`.
+fn membership_delivery(world: &World, holder_pid: &str) -> Value {
+    let jwt = world.issuer.vc11("MembershipCredential", HOLDER);
+    credential_message(
+        Some(holder_pid),
+        "ISSUED",
+        &[("vc11-sl2021/jwt", "MembershipCredential", &jwt)],
+    )
+}
+
+/// The request `holder_pid` as the management API shows it.
+async fn request_view(world: &World, holder_pid: &str) -> Value {
+    let (status, view) = call(
+        &world.management,
+        get(&format!(
+            "/v1/credential-requests/{}",
+            urlencode(holder_pid)
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{view}");
+    view
+}
+
+#[tokio::test]
+async fn a_request_whose_answer_is_unknown_stays_open() {
+    // no answer in time, a server error, or "try later": the issuer may
+    // have taken the request, so its delivery must still be accepted
+    for failure in [
+        "no answer within 10s",
+        "HTTP 503 Service Unavailable",
+        "HTTP 429 Too Many Requests",
+    ] {
+        let world = world();
+        *world.issuer_service.refusal.lock().unwrap() = Some(failure.to_owned());
+        let (status, body) = ask(&world, &[MEMBERSHIP]).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{failure}: {body}");
+        assert_eq!(body["sendError"], failure);
+        let holder_pid = body["holderPid"].as_str().unwrap().to_owned();
+        let view = request_view(&world, &holder_pid).await;
+        assert_eq!(view["status"], "REQUESTED");
+        assert_eq!(view["sendError"], failure);
+
+        // the late delivery, with the access token sent, is taken
+        let access_token = access_token_sent(&world);
+        let token = world.issuer.id_token(HOLDER, Some(&access_token));
+        let message = membership_delivery(&world, &holder_pid);
+        let (status, body) = world.send_delivery(&token, &message).await;
+        assert_eq!(status, StatusCode::OK, "{failure}: {body}");
+        let view = request_view(&world, &holder_pid).await;
+        assert_eq!(view["status"], "ISSUED");
+        assert_eq!(view["issuerPid"], message["issuerPid"]);
+        assert!(view.get("sendError").is_none(), "{view}");
+    }
+}
+
+#[tokio::test]
+async fn a_repeated_delivery_is_acknowledged_once() {
+    let world = world();
+    let (_, created) = ask(&world, &[MEMBERSHIP]).await;
+    let holder_pid = created["holderPid"].as_str().unwrap().to_owned();
+    let access_token = access_token_sent(&world);
+    let message = membership_delivery(&world, &holder_pid);
+    let send = |message: Value| {
+        let token = world.issuer.id_token(HOLDER, Some(&access_token));
+        let world = &world;
+        async move { world.send_delivery(&token, &message).await }
+    };
+    let (status, body) = send(message.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // our reply was lost; the issuer sends the same message again
+    let (status, body) = send(message.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, credentials) = call(&world.management, get("/v1/credentials")).await;
+    assert_eq!(credentials.as_array().unwrap().len(), 1, "stored once");
+
+    // another answer for the closed request is refused: another issuerPid,
+    // or the same one with another status
+    let mut other_pid = membership_delivery(&world, &holder_pid);
+    other_pid["issuerPid"] = Value::from("another");
+    let mut other_status = message.clone();
+    other_status["status"] = Value::from("REJECTED");
+    other_status["credentials"] = json!([]);
+    for other in [other_pid, other_status] {
+        let (status, body) = send(other).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    }
+    let (_, credentials) = call(&world.management, get("/v1/credentials")).await;
+    assert_eq!(credentials.as_array().unwrap().len(), 1);
+    assert_eq!(request_view(&world, &holder_pid).await["status"], "ISSUED");
+}
+
+#[tokio::test]
+async fn an_expired_access_token_is_refused() {
+    use portitor_dcp::holder::{AccessToken, Signer, TokenFrame};
+    let world = world();
+    let (_, created) = ask(&world, &[MEMBERSHIP]).await;
+    let holder_pid = created["holderPid"].as_str().unwrap().to_owned();
+    // the very token sent (same jti), but expired an hour ago
+    let sent = AccessToken::verify(
+        &access_token_sent(&world),
+        &world.holder_key.public_jwk(),
+        HOLDER,
+        ISSUER,
+        now_secs(),
+        60,
+    )
+    .unwrap();
+    let now = now_secs();
+    let kid = world.holder_kid();
+    let signer = Signer {
+        key: &world.holder_key,
+        kid: &kid,
+        did: HOLDER,
+    };
+    let frame = TokenFrame {
+        audience: ISSUER,
+        jti: &sent.jti,
+        issued_at: now - 7_200,
+        expires_at: now - 3_600,
+    };
+    let expired = AccessToken::new(HOLDER, frame, &[]).sign(signer).unwrap();
+    let token = world.issuer.id_token(HOLDER, Some(&expired));
+    let message = membership_delivery(&world, &holder_pid);
+    let (status, _) = world.send_delivery(&token, &message).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        request_view(&world, &holder_pid).await["status"],
+        "REQUESTED"
+    );
+    let (_, credentials) = call(&world.management, get("/v1/credentials")).await;
+    assert_eq!(credentials, json!([]));
+}
+
+#[tokio::test]
+async fn a_rejection_of_a_request_that_was_sent_closes_it() {
+    let world = world();
+    let (_, created) = ask(&world, &[MEMBERSHIP]).await;
+    let holder_pid = created["holderPid"].as_str().unwrap().to_owned();
+    let access_token = access_token_sent(&world);
+    let mut rejection = credential_message(Some(&holder_pid), "REJECTED", &[]);
+    rejection["rejectionReason"] = Value::from("not a member");
+
+    // a rejection too must carry back our access token
+    let (status, _) = world
+        .send_delivery(&world.issuer.id_token(HOLDER, None), &rejection)
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        request_view(&world, &holder_pid).await["status"],
+        "REQUESTED"
+    );
+
+    let token = world.issuer.id_token(HOLDER, Some(&access_token));
+    let (status, body) = world.send_delivery(&token, &rejection).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        request_view(&world, &holder_pid).await["status"],
+        "REJECTED"
+    );
+    // nothing is stored, and a later delivery for it is refused
+    let message = membership_delivery(&world, &holder_pid);
+    let token = world.issuer.id_token(HOLDER, Some(&access_token));
+    let (status, _) = world.send_delivery(&token, &message).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (_, credentials) = call(&world.management, get("/v1/credentials")).await;
+    assert_eq!(credentials, json!([]));
+}
+
+#[tokio::test]
+async fn a_request_recorded_by_0_5_still_takes_its_delivery() {
+    use portitor_identity::store::SqliteStore;
+    let dir = std::env::temp_dir().join(format!(
+        "portitor-identity-0-5-{}",
+        portitor_runtime::system::new_uuid().trim_start_matches("urn:uuid:")
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("identity.db");
+    {
+        // the schema of 0.5, as it shipped, with one open request
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE credential_request (
+                holder_pid TEXT PRIMARY KEY,
+                issuer_did TEXT NOT NULL,
+                status     TEXT NOT NULL
+            );
+            CREATE TABLE credential (
+                id         TEXT PRIMARY KEY,
+                issuer     TEXT NOT NULL,
+                types      TEXT NOT NULL,
+                profile    TEXT NOT NULL,
+                expires_at INTEGER,
+                holder_pid TEXT NOT NULL,
+                jwt        TEXT NOT NULL
+            );
+            CREATE TABLE credential_offer (
+                issuer        TEXT NOT NULL,
+                credential_id TEXT NOT NULL,
+                credential    TEXT NOT NULL,
+                received_at   INTEGER NOT NULL,
+                PRIMARY KEY (issuer, credential_id)
+            );
+            INSERT INTO credential_request VALUES ('h-0.5', 'did:web:issuer.example', 'REQUESTED');
+            PRAGMA user_version = 1;",
+        )
+        .unwrap();
+    }
+    let store = SqliteStore::open(&path).unwrap();
+    let world = World::with_store(&common::config(), std::sync::Arc::new(store));
+    let view = request_view(&world, "h-0.5").await;
+    assert_eq!(view["status"], "REQUESTED");
+    assert_eq!(view["credentialIds"], json!([]));
+    assert!(view.get("created").is_none(), "{view}");
+    // recorded before access tokens: the delivery needs none
+    let jwt = world.issuer.vc11("MembershipCredential", HOLDER);
+    let (status, body) = world
+        .deliver(
+            "h-0.5",
+            &[("vc11-sl2021/jwt", "MembershipCredential", &jwt)],
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(request_view(&world, "h-0.5").await["status"], "ISSUED");
+    std::fs::remove_dir_all(&dir).unwrap();
+}

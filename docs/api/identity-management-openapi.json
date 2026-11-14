@@ -75,6 +75,16 @@
               }
             }
           },
+          "202": {
+            "description": "Sent, but the issuer's answer is unknown (no answer in time, or a server error): the request stays open, so its delivery is accepted; `sendError` says why",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestCreated"
+                }
+              }
+            }
+          },
           "400": {
             "description": "Invalid body, the issuer is not trusted, or it does not offer a credential asked for",
             "content": {
@@ -106,7 +116,7 @@
             }
           },
           "502": {
-            "description": "The issuer could not be reached or refused the request; nothing is kept",
+            "description": "The issuer refused the request (HTTP 4xx); nothing is kept",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -336,6 +346,16 @@
               }
             }
           },
+          "202": {
+            "description": "Sent, but the issuer's answer is unknown: the request stays open; `sendError` says why",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestCreated"
+                }
+              }
+            }
+          },
           "400": {
             "description": "Invalid body, the issuer is not trusted, or it does not offer a credential asked for",
             "content": {
@@ -367,7 +387,7 @@
             }
           },
           "502": {
-            "description": "The issuer could not be reached or refused the request; nothing is kept",
+            "description": "The issuer refused the request (HTTP 4xx); nothing is kept",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -589,6 +609,14 @@
             "type": "string",
             "description": "The holder's id for the request."
           },
+          "sendError": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the issuer's answer is not known (`202 Accepted` only): the\nissuer may have taken the request, so it stays open and its\ndelivery is accepted.",
+            "example": "no answer within 10s"
+          },
           "statusUrl": {
             "type": [
               "string",
@@ -631,6 +659,13 @@
             "description": "The issuer that may answer it.",
             "example": "did:web:issuer.example"
           },
+          "issuerPid": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The issuer's id of the request, from its delivery."
+          },
           "issuerStatus": {
             "oneOf": [
               {
@@ -648,6 +683,13 @@
               "null"
             ],
             "description": "Why the issuer's view could not be read. Only when one request is\nread."
+          },
+          "sendError": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the issuer's answer to the request is not known (no answer in\ntime, or a server error). The request stays `REQUESTED`, so a\nlate delivery is accepted."
           },
           "status": {
             "type": "string",

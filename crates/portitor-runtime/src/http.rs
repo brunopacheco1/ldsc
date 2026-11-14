@@ -397,6 +397,18 @@ pub fn bearer_token_in(headers: &hyper::HeaderMap) -> Option<&str> {
     bearer_token(text)
 }
 
+/// The HTTP status code of an error from [`HttpSender`] when the other
+/// party answered, but not with a 2xx status (the error text is `HTTP
+/// <status>`, written in `exchange`). `None` when there was no answer:
+/// a refused URL, a network error or a timeout. Callers use it to tell a
+/// definite refusal from an unknown outcome.
+#[must_use]
+pub fn answered_status(error: &str) -> Option<u16> {
+    let rest = error.strip_prefix("HTTP ")?;
+    let code = rest.get(..3)?;
+    code.parse().ok()
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -564,6 +576,47 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(plain, None);
+    }
+
+    #[tokio::test]
+    async fn the_status_of_a_refusal_can_be_read_from_the_error() {
+        use axum::http::StatusCode;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = axum::Router::new()
+            .route(
+                "/bad",
+                axum::routing::post(|| async { StatusCode::BAD_REQUEST }),
+            )
+            .route(
+                "/down",
+                axum::routing::post(|| async { StatusCode::SERVICE_UNAVAILABLE }),
+            );
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        let sender = HttpSender::new(true).unwrap();
+        let body = serde_json::json!({});
+        let status_of = |path: &'static str| {
+            let sender = &sender;
+            let body = &body;
+            async move {
+                let url = format!("http://{addr}{path}");
+                let error = sender.post_for_location(&url, body, "t").await.unwrap_err();
+                answered_status(&error)
+            }
+        };
+        assert_eq!(status_of("/bad").await, Some(400));
+        assert_eq!(status_of("/down").await, Some(503));
+        // no answer at all: a refused URL, or nobody listening
+        let refused = sender
+            .post_for_location("ftp://example.com/x", &body, "t")
+            .await
+            .unwrap_err();
+        assert_eq!(answered_status(&refused), None);
+        let unreachable = sender
+            .post_for_location("http://127.0.0.1:9/x", &body, "t")
+            .await
+            .unwrap_err();
+        assert_eq!(answered_status(&unreachable), None);
     }
 
     /// A sender with only the required methods: the authorized variants

@@ -124,6 +124,16 @@ versions may change behaviour and configuration.
 - As consumer, the connector does not accept a provider's offer (DSP
   `OFFERED`) that has credential constraints: it cannot check its own
   credentials as the provider will.
+- `portitor-identity`: a repeated delivery (the same `issuerPid` and
+  status for a request it closed, for example after a lost reply) is
+  answered `200` and stores nothing, instead of `400`. A credential
+  request is withdrawn only when the issuer refuses it with an HTTP 4xx
+  (not 408 or 429); after a timeout, a network error, 408, 429 or 5xx it
+  stays open for a late delivery, the management API answers `202` with
+  a `sendError`, and the request shows `sendError` (and `issuerPid` once
+  delivered). The 0.6 migration adds both columns. DEPLOYING says to
+  delete a revoked credential once its reissued one arrives (the
+  component does not read status lists).
 - Connector, DCP verifier: a credential that fails its checks (revoked,
   suspended, expired, bad signature, status list not readable) is left
   out and logged (`credential left out`) instead of refusing the caller,

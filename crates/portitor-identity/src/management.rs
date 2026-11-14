@@ -64,6 +64,12 @@ pub struct RequestCreated {
     /// request was sent and the issuer gave one.
     #[serde(skip_serializing_if = "Option::is_none")]
     status_url: Option<String>,
+    /// Why the issuer's answer is not known (`202 Accepted` only): the
+    /// issuer may have taken the request, so it stays open and its
+    /// delivery is accepted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "no answer within 10s")]
+    send_error: Option<String>,
 }
 
 /// Ask an issuer for what it offered (DCP 6.6).
@@ -101,6 +107,14 @@ pub struct RequestView {
     /// requests recorded before 0.6.
     #[serde(skip_serializing_if = "Option::is_none")]
     created: Option<String>,
+    /// The issuer's id of the request, from its delivery.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    issuer_pid: Option<String>,
+    /// Why the issuer's answer to the request is not known (no answer in
+    /// time, or a server error). The request stays `REQUESTED`, so a
+    /// late delivery is accepted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    send_error: Option<String>,
     /// The issuer's view (`CredentialStatus`, DCP 6.8). Only when one
     /// request is read and the issuer answered.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -125,6 +139,8 @@ impl From<CredentialRequest> for RequestView {
             credential_ids: request.credential_ids,
             status_url: request.status_url,
             created,
+            issuer_pid: request.issuer_pid,
+            send_error: request.send_error,
             issuer_status: None,
             issuer_status_error: None,
         }
@@ -223,10 +239,11 @@ impl From<StoredOffer> for OfferView {
     request_body = NewRequest,
     responses(
         (status = 201, description = "Sent to the issuer, or recorded", body = RequestCreated),
+        (status = 202, description = "Sent, but the issuer's answer is unknown (no answer in time, or a server error): the request stays open, so its delivery is accepted; `sendError` says why", body = RequestCreated),
         (status = 400, description = "Invalid body, the issuer is not trusted, or it does not offer a credential asked for", body = Problem, content_type = "application/problem+json"),
         (status = 401, description = "Missing or wrong API key", body = Problem, content_type = "application/problem+json"),
         (status = 409, description = "A request with this holderPid exists", body = Problem, content_type = "application/problem+json"),
-        (status = 502, description = "The issuer could not be reached or refused the request; nothing is kept", body = Problem, content_type = "application/problem+json"),
+        (status = 502, description = "The issuer refused the request (HTTP 4xx); nothing is kept", body = Problem, content_type = "application/problem+json"),
     ),
     security(("api_key" = [])),
     tag = "Credentials"
@@ -275,11 +292,24 @@ fn created(request: CredentialRequest) -> Response {
     let body = RequestCreated {
         holder_pid: request.holder_pid,
         status_url: request.status_url,
+        send_error: None,
     };
     (StatusCode::CREATED, Json(body)).into_response()
 }
 
-/// The answer for a request that was not made.
+/// `202 Accepted` for a request sent whose answer is unknown: its
+/// `holderPid` and why.
+fn kept_open(request: &CredentialRequest) -> Response {
+    let body = RequestCreated {
+        holder_pid: request.holder_pid.clone(),
+        status_url: request.status_url.clone(),
+        send_error: request.send_error.clone(),
+    };
+    (StatusCode::ACCEPTED, Json(body)).into_response()
+}
+
+/// The answer for a request that was not made, or whose answer from the
+/// issuer is unknown.
 fn ask_error(e: &AskError) -> Response {
     match e {
         AskError::Refused(reason) => problem(StatusCode::BAD_REQUEST, reason),
@@ -288,6 +318,7 @@ fn ask_error(e: &AskError) -> Response {
             StatusCode::BAD_GATEWAY,
             &format!("the issuer did not take the request: {reason}"),
         ),
+        AskError::Unknown(request) => kept_open(request),
         AskError::Store(e) => internal_error("identity store", e),
     }
 }
@@ -438,10 +469,11 @@ async fn list_offers(State(identity): State<Arc<Identity>>) -> Response {
     request_body = OfferedRequest,
     responses(
         (status = 201, description = "Sent to the issuer", body = RequestCreated),
+        (status = 202, description = "Sent, but the issuer's answer is unknown: the request stays open; `sendError` says why", body = RequestCreated),
         (status = 400, description = "Invalid body, the issuer is not trusted, or it does not offer a credential asked for", body = Problem, content_type = "application/problem+json"),
         (status = 401, description = "Missing or wrong API key", body = Problem, content_type = "application/problem+json"),
         (status = 404, description = "No such offer from this issuer", body = Problem, content_type = "application/problem+json"),
-        (status = 502, description = "The issuer could not be reached or refused the request; nothing is kept", body = Problem, content_type = "application/problem+json"),
+        (status = 502, description = "The issuer refused the request (HTTP 4xx); nothing is kept", body = Problem, content_type = "application/problem+json"),
     ),
     security(("api_key" = [])),
     tag = "Credentials"

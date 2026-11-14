@@ -21,6 +21,12 @@
 //! (ADR 0015). A renewed credential needs a new request. For a request
 //! this component sent to the issuer, the issuer's ID token must carry
 //! back the access token sent with it (DCP 6.1, steps 7 and 8).
+//!
+//! The same answer again (same `issuerPid` and status, for a request it
+//! closed) gets `200 OK` and stores nothing: an issuer whose first
+//! delivery reached us but whose reply was lost sends it again, and must
+//! not count it as failed. Any other delivery for a closed request is
+//! refused (`400`).
 
 use std::sync::Arc;
 
@@ -40,7 +46,7 @@ use portitor_runtime::system::{new_uuid, now_secs};
 
 use crate::caller::{Callers, authenticate, refused};
 use crate::issuance::issuer_metadata;
-use crate::store::{CredentialRequest, RequestStatus, StoredCredential};
+use crate::store::{Answer, CredentialRequest, Delivered, RequestStatus, StoredCredential};
 use crate::{Identity, LEEWAY};
 
 /// `POST /credentials`: the Storage API.
@@ -64,8 +70,12 @@ pub(crate) async fn credentials(
         message: &message,
     };
     match store_delivery(&identity, delivery).await {
-        Ok(count) => {
+        Ok(Stored::New(count)) => {
             tracing::info!(%issuer, issuer_pid = %message.issuer_pid, count, "credentials stored");
+            StatusCode::OK.into_response()
+        }
+        Ok(Stored::Repeated) => {
+            tracing::info!(%issuer, issuer_pid = %message.issuer_pid, "repeated delivery acknowledged");
             StatusCode::OK.into_response()
         }
         Err(response) => response,
@@ -81,9 +91,17 @@ struct Delivery<'a> {
     message: &'a CredentialMessage,
 }
 
-/// Checks a delivery and stores it; returns how many credentials it
-/// held.
-async fn store_delivery(identity: &Identity, delivery: Delivery<'_>) -> Result<usize, Response> {
+/// What a delivery that was accepted did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stored {
+    /// It closed its request; this many credentials are stored.
+    New(usize),
+    /// It repeated the answer that closed its request; nothing changed.
+    Repeated,
+}
+
+/// Checks a delivery and stores it.
+async fn store_delivery(identity: &Identity, delivery: Delivery<'_>) -> Result<Stored, Response> {
     let Delivery {
         issuer, message, ..
     } = delivery;
@@ -98,16 +116,25 @@ async fn store_delivery(identity: &Identity, delivery: Delivery<'_>) -> Result<u
         Ok(_) => return Err(bad_request("no credential request with this holderPid")),
         Err(e) => return Err(internal_error("identity store", &e)),
     };
-    // checked again when the answer is stored, in case two deliveries race
-    if request.status != RequestStatus::Requested {
-        return Err(bad_request("the credential request is answered already"));
-    }
     check_access_token(identity, &request, issuer, delivery.access_token)
         .map_err(|reason| refused(&reason))?;
     let status = match message.status {
         IssuanceStatus::Issued => RequestStatus::Issued,
         IssuanceStatus::Rejected => RequestStatus::Rejected,
     };
+    let answer = Answer {
+        issuer_pid: &message.issuer_pid,
+        status,
+    };
+    // checked again when the answer is stored, in case two deliveries race
+    if request.status != RequestStatus::Requested {
+        let same_answer = request.status == status
+            && request.issuer_pid.as_deref() == Some(message.issuer_pid.as_str());
+        if same_answer {
+            return Ok(Stored::Repeated);
+        }
+        return Err(bad_request("the credential request is answered already"));
+    }
     let mut accepted = Vec::new();
     if status == RequestStatus::Issued {
         let document = identity
@@ -129,11 +156,14 @@ async fn store_delivery(identity: &Identity, delivery: Delivery<'_>) -> Result<u
             });
         }
     }
-    identity
+    let delivered = identity
         .store
-        .deliver(&request.holder_pid, status, &accepted)
+        .deliver(&request.holder_pid, answer, &accepted)
         .map_err(|e| bad_request(&e.0))?;
-    Ok(accepted.len())
+    match delivered {
+        Delivered::Stored => Ok(Stored::New(accepted.len())),
+        Delivered::Repeated => Ok(Stored::Repeated),
+    }
 }
 
 /// DCP 6.1, step 8: "The Credential Service validates the Self-Issued ID

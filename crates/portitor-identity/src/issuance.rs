@@ -20,6 +20,13 @@
 //! 5. The issuer answers `201 Created` with a `Location`: where it serves
 //!    the request's status (section 6.8). It is kept with the request.
 //!
+//! If the issuer refuses the request with a definite `4xx` (not `408` or
+//! `429`), or is never asked, the request is withdrawn: a late delivery
+//! for it is refused. If the outcome is unknown (no answer in time, a
+//! network error, `408`, `429` or `5xx`), the issuer may have taken it:
+//! the request stays open, with the reason ([`CredentialRequest::send_error`],
+//! shown by the management API), so its delivery is still accepted.
+//!
 //! [`IssuerClient`] is the port for the two calls to the issuer;
 //! [`HttpIssuerClient`] the adapter. The issuer's DID document and
 //! metadata are read through [`crate::directory::Directory`].
@@ -28,7 +35,7 @@ use portitor_dcp::Claims;
 use portitor_dcp::holder::{AccessToken, TokenFrame};
 use portitor_dcp::message::{CredentialRequestMessage, CredentialStatus, IssuerMetadata};
 use portitor_runtime::BoxFuture;
-use portitor_runtime::http::{HttpSender, Sender as _};
+use portitor_runtime::http::{HttpSender, Sender as _, answered_status};
 use portitor_runtime::system::{new_uuid, now_secs};
 
 use crate::store::{CredentialRequest, StoreError};
@@ -41,6 +48,36 @@ use crate::{Identity, TOKEN_SECONDS};
 /// presentation (it has no scope), so a long life gives nothing away.
 pub const ISSUANCE_TOKEN_SECONDS: u64 = 30 * 24 * 60 * 60;
 
+/// Why a credential request did not get a `2xx` answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SendError {
+    /// The issuer refused it for good (a `4xx` other than `408` and
+    /// `429`): it keeps nothing of it.
+    Refused(String),
+    /// The outcome is unknown (no answer in time, a network error, `408`,
+    /// `429` or `5xx`): the issuer may have taken it.
+    Unknown(String),
+}
+
+impl SendError {
+    /// The error of the shared HTTP client, sorted by the status the
+    /// issuer answered with, if any.
+    #[must_use]
+    pub fn from_http(error: String) -> Self {
+        match answered_status(&error) {
+            Some(status) if is_definite_refusal(status) => Self::Refused(error),
+            _ => Self::Unknown(error),
+        }
+    }
+}
+
+/// Whether an answer with HTTP `status` says for sure that the request
+/// was not taken: a client error, except `408 Request Timeout` and `429
+/// Too Many Requests`, which ask to try again later.
+fn is_definite_refusal(status: u16) -> bool {
+    (400..500).contains(&status) && status != 408 && status != 429
+}
+
 /// Port: the calls the holder makes to an issuer's `IssuerService`.
 pub trait IssuerClient: Send + Sync {
     /// Sends `message` to `url` (`{IssuerService}/credentials`) with
@@ -51,7 +88,7 @@ pub trait IssuerClient: Send + Sync {
         url: &'a str,
         message: &'a CredentialRequestMessage,
         id_token: &'a str,
-    ) -> BoxFuture<'a, Result<Option<String>, String>>;
+    ) -> BoxFuture<'a, Result<Option<String>, SendError>>;
 
     /// Reads the status of a request at `url` (the `Location`), with
     /// `Authorization: Bearer <id_token>` (DCP 6.8).
@@ -86,13 +123,16 @@ impl IssuerClient for HttpIssuerClient {
         url: &'a str,
         message: &'a CredentialRequestMessage,
         id_token: &'a str,
-    ) -> BoxFuture<'a, Result<Option<String>, String>> {
+    ) -> BoxFuture<'a, Result<Option<String>, SendError>> {
         Box::pin(async move {
-            let body = serde_json::to_value(message).map_err(|e| e.to_string())?;
+            // not sent: nothing can have reached the issuer
+            let body =
+                serde_json::to_value(message).map_err(|e| SendError::Refused(e.to_string()))?;
             let authorization = format!("Bearer {id_token}");
             self.http
                 .post_for_location(url, &body, &authorization)
                 .await
+                .map_err(SendError::from_http)
         })
     }
 
@@ -117,8 +157,10 @@ pub(crate) enum AskError {
     Refused(String),
     /// A request with this `holderPid` exists.
     Conflict,
-    /// The issuer could not be reached, or refused the request.
+    /// The issuer refused the request, or was not asked; nothing is kept.
     Issuer(String),
+    /// The issuer's answer is unknown; the request is kept open.
+    Unknown(CredentialRequest),
     /// The store failed.
     Store(StoreError),
 }
@@ -201,16 +243,26 @@ pub(crate) async fn ask_issuer(
                 .request_credentials(&url, &message, &token)
                 .await
         }
-        Err(e) => Err(format!("cannot sign: {e}")),
+        Err(e) => Err(SendError::Refused(format!("cannot sign: {e}"))),
     };
     let location = match sent {
         Ok(location) => location,
-        Err(reason) => {
+        Err(SendError::Refused(reason)) => {
             // nothing reached the issuer, or it refused: a later delivery
             // for this holderPid is not wanted
             identity.store.withdraw_request(&holder_pid)?;
             tracing::info!(%issuer, %reason, "credential request not sent");
             return Err(AskError::Issuer(reason));
+        }
+        Err(SendError::Unknown(reason)) => {
+            // the issuer may have taken it: keep the request open, so its
+            // delivery is accepted, and say why its answer is unknown
+            identity.store.set_send_error(&holder_pid, &reason)?;
+            tracing::warn!(%issuer, %holder_pid, %reason, "credential request outcome unknown; kept open");
+            return Err(AskError::Unknown(CredentialRequest {
+                send_error: Some(reason),
+                ..request
+            }));
         }
     };
     let status_url = location.and_then(|location| status_url(&url, &location, &service));
@@ -363,6 +415,28 @@ mod tests {
         assert_eq!(resolved("https://other.example/requests/r-1"), None);
         assert_eq!(resolved("https://issuer.example:8443/requests/r-1"), None);
         assert_eq!(resolved("//other.example/requests/r-1"), None);
+    }
+
+    #[test]
+    fn only_a_definite_client_error_is_a_refusal() {
+        let sorted = |error: &str| SendError::from_http(error.to_owned());
+        for refused in [
+            "HTTP 400 Bad Request",
+            "HTTP 401 Unauthorized",
+            "HTTP 409 Conflict",
+        ] {
+            assert_eq!(sorted(refused), SendError::Refused(refused.to_owned()));
+        }
+        for unknown in [
+            "HTTP 408 Request Timeout",
+            "HTTP 429 Too Many Requests",
+            "HTTP 500 Internal Server Error",
+            "HTTP 503 Service Unavailable",
+            "no answer within 10s",
+            "client error (Connect)",
+        ] {
+            assert_eq!(sorted(unknown), SendError::Unknown(unknown.to_owned()));
+        }
     }
 
     #[test]

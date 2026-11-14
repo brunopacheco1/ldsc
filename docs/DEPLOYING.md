@@ -361,13 +361,19 @@ issuer must be in `PORTITOR_TRUSTED_ISSUERS`, or nothing is sent.
    `CredentialRequestMessage` to `<IssuerService>/credentials` (DCP 6.4),
    with a self-issued ID token that carries an access token. The answer
    (`201`) gives the `holderPid` and the `statusUrl` where the issuer
-   reports the request. If the issuer cannot be reached or refuses (`502`),
-   nothing is kept: ask again.
+   reports the request. If the issuer refuses it (an HTTP 4xx, answered
+   `502`), nothing is kept: fix the cause and ask again. If its answer is
+   unknown (no answer in time, a network error, HTTP 408, 429 or 5xx),
+   the issuer may have taken the request: the answer is `202` with the
+   `holderPid` and a `sendError`, and the request stays `REQUESTED` so the
+   issuer's delivery is still accepted. If no delivery comes, ask again
+   with a new `holderPid`.
 
 3. Follow it: `GET /v1/credential-requests/{holderPid}` shows the local
    state (`REQUESTED`, then `ISSUED` or `REJECTED`) and the issuer's
-   status, read from the `statusUrl` (DCP 6.8). `GET
-   /v1/credential-requests` lists all requests.
+   status, read from the `statusUrl` (DCP 6.8), plus `sendError` while
+   the issuer's answer to the request is unknown and `issuerPid` once it
+   delivered. `GET /v1/credential-requests` lists all requests.
 
 The issuer then sends its `CredentialMessage` with that `holderPid` to
 `<credential service>/credentials`. The component checks the issuer's
@@ -375,11 +381,22 @@ token, that the issuer is trusted and matches the request, that the token
 carries back the access token sent with the request (it is valid 30
 days, so a later delivery is refused and you ask again), and each
 credential's signature, dates, type and subject (your DID). The issuer's
-answer (`ISSUED` or `REJECTED`) closes the request: a second delivery for
-the same `holderPid` is refused, so a renewed credential needs a new
+answer (`ISSUED` or `REJECTED`) closes the request. The same message
+again (same `issuerPid` and status, for example when the issuer did not
+get our reply) is answered `200` and stores nothing; any other delivery
+for the same `holderPid` is refused, so a renewed credential needs a new
 request. Credentials are stored as received (JWT); `GET
 /v1/credentials` lists them and `DELETE /v1/credentials/{id}` removes one,
 after which it is no longer presented.
+
+**Revoked credentials.** The component does not read status lists, so it
+keeps presenting a credential its issuer revoked (DCP v1.0.1, 5.4.2: a
+presentation "SHOULD only include valid" credentials). When the issuer
+revokes a credential and issues a new one, delete the revoked one with
+`DELETE /v1/credentials/{id}` once the new one is listed. Portitor
+verifiers leave a revoked credential out and admit you on the new one;
+other verifiers (EDC) may refuse every presentation that holds a revoked
+credential.
 
 **Offers.** An issuer may tell you that credentials are waiting (DCP
 6.6), for example before its key changes. `GET /v1/offers` lists the
@@ -410,7 +427,9 @@ curl -X POST localhost:8091/v1/credential-requests \
 | `presentation sent` (INFO) | A verifier got a presentation; `credentials` is how many it held |
 | `issuance message refused` (INFO) | A `CredentialMessage` or offer was refused (HTTP 400); `reason` says why |
 | `credential request sent` (INFO) | The issuer took a credential request (`holderPid`) |
-| `credential request not sent` (INFO) | The issuer could not be reached or refused a request; `reason` says why. Nothing was kept |
+| `credential request not sent` (INFO) | The issuer refused a request (HTTP 4xx), or it could not be signed; `reason` says why. Nothing was kept |
+| `credential request outcome unknown; kept open` (WARN) | No answer in time, a network error, or HTTP 408, 429 or 5xx from the issuer; the request stays open for a late delivery |
+| `repeated delivery acknowledged` (INFO) | The issuer sent an answer again that closed a request before; nothing was stored twice |
 | `the issuer gave no usable Location for the request` (WARN) | The issuer took the request but gave no status URL on its own host; the delivery is still accepted, only the issuer's status cannot be shown |
 | `identity store failed` (ERROR) | The SQLite file could not be read or written |
 
