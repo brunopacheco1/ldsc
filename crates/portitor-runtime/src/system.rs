@@ -54,32 +54,11 @@ pub fn new_uuid() -> String {
 }
 
 /// Seconds since 1970 as XSD dateTime in UTC, for example
-/// `2026-11-12T12:00:00Z`.
-///
-/// The date uses Howard Hinnant's `civil_from_days` algorithm
-/// (<https://howardhinnant.github.io/date_algorithms.html#civil_from_days>),
-/// with his variable names: it counts in 400-year "eras" (146 097 days
-/// each) of years that start on 1 March, so the leap day is the last day
-/// of a year.
+/// `2026-11-12T12:00:00Z` (the pure function lives in `portitor-time`, so
+/// the domain crates can use it too).
 #[must_use]
 pub fn xsd_date_time(secs: u64) -> String {
-    let days = i64::try_from(secs / 86_400).unwrap_or(i64::MAX / 2);
-    let seconds_today = secs % 86_400;
-    let z = days + 719_468; // days since 0000-03-01
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097); // day of era, 0..=146096
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365; // year of era
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // day of year, from 1 March
-    let mp = (5 * doy + 2) / 153; // month, 0 = March
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
-        seconds_today / 3_600,
-        seconds_today % 3_600 / 60,
-        seconds_today % 60
-    )
+    portitor_time::xsd_date_time(secs)
 }
 
 #[cfg(test)]

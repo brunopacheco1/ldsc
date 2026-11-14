@@ -552,16 +552,49 @@ DID.
 
 ### Configuration
 
-<!-- Completed with the issuer's code (release 0.6): every variable, its
-default and its production value, as for the identity. -->
+| Variable | Default | Production value |
+|---|---|---|
+| `PORTITOR_PARTICIPANT_ID` | required | the issuer's `did:web` DID; its document is served at the path the DID gives |
+| `PORTITOR_ISSUER_SERVICE_URL` | required | public base URL of the issuer service, for example `https://issuer.example.com/issuer`; written into the DID document (`IssuerService`). The status lists are served under it (`/status-lists/vc11`, `/status-lists/vc20`) and every credential points there, so **never change it** once credentials are issued |
+| `PORTITOR_ISSUER_KEY_FILE` | required | path of the mounted PEM key |
+| `PORTITOR_ISSUER_CREDENTIALS_FILE` | required | path of the mounted credential definitions file |
+| `PORTITOR_BIND` | `0.0.0.0:8070` | keep |
+| `PORTITOR_DB_FILE` | `/data/portitor-issuer.db` | keep the image default |
+| `PORTITOR_MANAGEMENT_API_KEY_FILE` | unset (management API off) | path of the mounted key file |
+| `PORTITOR_MANAGEMENT_BIND` | `127.0.0.1:8071` | `0.0.0.0:8071` in a container, published only on an internal interface |
+| `PORTITOR_ALLOW_HTTP_CALLBACKS` | `false` | `false`; `true` only for local tests with plain-HTTP DIDs |
+| `RUST_LOG` | `info` | `info` |
 
-| Variable | Production value |
+The credential definitions file (ADR 0018):
+
+```json
+[
+  {"id": "membership-vc20", "credentialType": "MembershipCredential",
+   "profile": "vc20-bssl/jwt", "validityDays": 365, "claims": ["role"]}
+]
+```
+
+`id` is what holders ask for (it appears in the issuer metadata), and must
+stay the same across restarts. `profile` is `vc11-sl2021/jwt` or
+`vc20-bssl/jwt`. `claims` names the participant claims copied into
+`credentialSubject`; a claim the participant lacks is left out.
+
+Management API (`Authorization: Bearer <key>`; described in
+[api/issuer-management-openapi.json](api/issuer-management-openapi.json)):
+
+| Call | Does |
 |---|---|
-| `PORTITOR_ISSUER_KEY_FILE` | **required**: path of the mounted PEM key |
-| `PORTITOR_ISSUER_CREDENTIALS_FILE` | **required**: path of the mounted credential definitions file |
-| `PORTITOR_DB_FILE` | leave the image default, `/data/portitor-issuer.db` |
-| `PORTITOR_MANAGEMENT_API_KEY_FILE` | path of the mounted key file |
-| `PORTITOR_MANAGEMENT_BIND` | `0.0.0.0:8071` in a container, published only on an internal interface |
+| `POST /v1/participants` `{"did": ..., "claims": {...}}` | registers a participant (409 if registered) |
+| `GET /v1/participants` | lists them |
+| `DELETE /v1/participants/{did}` | removes a registration (the DID percent-encoded as a whole, for example `jq -rR @uri`); issued credentials stay valid until revoked |
+| `POST /v1/offers` `{"participantDid": ..., "credentialIds": [...]}` | sends a `CredentialOfferMessage` to the participant's credential service |
+| `GET /v1/credentials?holder={did}` | lists issued credentials, with their delivery state (`PENDING`, `DELIVERED`, `FAILED`) |
+| `POST /v1/credentials/{id}/revoke` | revokes one: its bit is set and the status list signed again |
+
+A request from an unregistered DID, or for an id not in the metadata,
+ends `REJECTED`; nothing is sent to the holder, which reads the status.
+A delivery that fails is retried, waiting 1, 2, 4 ... seconds up to an
+hour, for about 8 hours; then it is `FAILED` in the list and logged.
 
 ### Ports
 
