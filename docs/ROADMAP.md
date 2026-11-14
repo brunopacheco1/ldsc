@@ -296,6 +296,24 @@ Plan approved by the maintainer on 2026-11-14.
   refused; the engine agrees with the EU ITB validator on our release 8
   samples; the DSP TCK, the DCP TCK and the EDC interop test stay green.
 
+- Result (2026-11-14): met, run locally. A HealthDCAT-AP release 8 bundle
+  (with the DCAT-AP 3.0.0 shapes and reduced code lists) is built and
+  signed with the issuer's bundle key and pinned by the provider; in the
+  demo two valid datasets are served with `dct:conformsTo` and one is
+  rejected with its 7 SHACL violations in `GET /v1/harvest-jobs`, while
+  the connector keeps running. A dataset removed from the source stops new
+  negotiations while a transfer under an existing agreement still works
+  (tests). A DSP message that breaks the shapes is refused (400 inbound,
+  not sent outbound). A changed or wrongly signed bundle, or one signed
+  with any key other than the bundle key, is refused. The engine gives
+  the same 7 results as the EU ITB validator on the spike samples and
+  passes the vendored W3C SHACL tests for its components. The DSP TCK
+  passes its 65 required tests, the DCP TCK 41 issuer (also with a bundle
+  key), 54 credential service and 22 verifier tests, and the EDC interop
+  test (EDC v1.0.0-RC7) passes with the bundle on. The catalog `@context`
+  stays the DSP context alone; datasets use full IRIs (maintainer,
+  2026-11-14).
+
 ## 0.8 Gaia-X Trust Framework (Danube)
 
 - The identity component obtains and stores the participant's Gaia-X
