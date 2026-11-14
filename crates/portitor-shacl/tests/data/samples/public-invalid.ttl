@@ -1,0 +1,62 @@
+# SPDX-FileCopyrightText: Portitor contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# A made-up HealthDCAT-AP release 8 dataset with known faults, checked against
+# the public profile with the code-list sample. Expected violations:
+#  F1  dct:accessRights is RESTRICTED, not PUBLIC                 -> sh:hasValue
+#  F2  no dcatap:applicableLegislation                            -> sh:minCount
+#  F3  no healthdcatap:hdab                                       -> sh:minCount
+#  F4  hasStructuredData true without hasVariables                -> sh:or (sh:property without sh:path)
+#  F5  minTypicalAge "eighteen"^^xsd:nonNegativeInteger (ill-formed) -> sh:datatype
+#  F6  maxTypicalAge is a plain string                            -> sh:datatype
+#  F7  publisher has two cv:contactPoint                          -> sh:node
+#  F8  contact point c2 has neither cv:email nor cv:contactPage   -> sh:minCount on sh:alternativePath
+#  F9  health category not in the EU code list                    -> sh:node (vocabulary shapes)
+#  F10 a language not in the EU code list                         -> sh:node (vocabulary shapes)
+# and one warning: a media type that is not an IANA IRI           -> sh:node / sh:pattern
+@prefix dcat: <http://www.w3.org/ns/dcat#> .
+@prefix dct: <http://purl.org/dc/terms/> .
+@prefix dcatap: <http://data.europa.eu/r5r/> .
+@prefix healthdcatap: <http://healthdataportal.eu/ns/health#> .
+@prefix cv: <http://data.europa.eu/m8g/> .
+@prefix foaf: <http://xmlns.com/foaf/0.1/> .
+@prefix eli: <http://data.europa.eu/eli/ontology#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix ex: <https://example.org/> .
+
+ex:dataset-2 a dcat:Dataset ;
+    dct:identifier "dataset-2" ;
+    dct:title "Example registry extract"@en ;
+    dct:description "Synthetic example."@en ;
+    dct:accessRights <http://publications.europa.eu/resource/authority/access-right/RESTRICTED> ;
+    dcat:theme <http://publications.europa.eu/resource/authority/data-theme/HEAL> ;
+    healthdcatap:healthCategory <https://hdeu-dcat.data.health.europa.eu/resource/authority/healthcategories/NOT-A-CATEGORY> ;
+    healthdcatap:hasStructuredData true ;
+    healthdcatap:minTypicalAge "eighteen"^^xsd:nonNegativeInteger ;
+    healthdcatap:maxTypicalAge "99" ;
+    dct:language <http://publications.europa.eu/resource/authority/language/ENG> , <https://example.org/klingon> ;
+    dct:publisher ex:publisher ;
+    dcat:distribution ex:dist-2 .
+
+<https://hdeu-dcat.data.health.europa.eu/resource/authority/healthcategories/NOT-A-CATEGORY> a <http://www.w3.org/2004/02/skos/core#Concept> ;
+    <http://www.w3.org/2004/02/skos/core#prefLabel> "Not a category"@en .
+
+ex:dist-2 a dcat:Distribution ;
+    dcatap:applicableLegislation <http://data.europa.eu/eli/reg/2025/327/oj> ;
+    dcat:mediaType <https://example.org/not-iana/text-csv> ;
+    dcat:accessURL <https://example.org/download> .
+
+ex:publisher a foaf:Agent ;
+    foaf:name "Example Hospital" ;
+    dct:type <https://hdeu-dcat.data.health.europa.eu/resource/authority/publisher-type/healthcare-providers> ;
+    cv:contactPoint ex:c1, ex:c2 .
+
+ex:c1 a cv:ContactPoint ; cv:email "a@example.org" .
+ex:c2 a cv:ContactPoint ; cv:telephone "+32 0000" .
+
+<http://publications.europa.eu/resource/authority/access-right/RESTRICTED> a dct:RightsStatement .
+<http://data.europa.eu/eli/reg/2025/327/oj> a eli:LegalResource .
+<http://publications.europa.eu/resource/authority/language/ENG> a dct:LinguisticSystem .
+<https://example.org/klingon> a dct:LinguisticSystem .
+<https://example.org/not-iana/text-csv> a dct:MediaType .

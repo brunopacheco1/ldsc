@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: Portitor contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Written for the Portitor 0.6 SHACL spike: one dataset with seven known faults.
+# Expected violations (Dataset_Shape unless noted):
+#  F1 dct:accessRights is not access-right/PUBLIC                -> sh:hasValue
+#  F2 no dcatap:applicableLegislation                           -> sh:minCount
+#  F3 no healthdcatap:hdab                                      -> sh:minCount
+#  F4 hasStructuredData true without hasVariables               -> sh:or (property with no sh:path)
+#  F5 minTypicalAge is xsd:string                               -> sh:datatype
+#  F6 publisher has two cv:contactPoint                         -> sh:node (HealthPublisherAgent_Shape, sh:maxCount)
+#  F7 contact point with neither cv:email nor cv:contactPage    -> ContactPoint_Shape alternativePath sh:minCount
+@prefix dcat: <http://www.w3.org/ns/dcat#> .
+@prefix dct: <http://purl.org/dc/terms/> .
+@prefix dcatap: <http://data.europa.eu/r5r/> .
+@prefix healthdcatap: <http://healthdataportal.eu/ns/health#> .
+@prefix cv: <http://data.europa.eu/m8g/> .
+@prefix foaf: <http://xmlns.com/foaf/0.1/> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix ex: <https://example.org/> .
+
+ex:dataset-2 a dcat:Dataset ;
+    dct:identifier "dataset-2" ;
+    dct:accessRights <http://publications.europa.eu/resource/authority/access-right/RESTRICTED> ;
+    dcat:theme <http://publications.europa.eu/resource/authority/data-theme/HEAL> ;
+    healthdcatap:healthCategory <https://healthdata.example/category/EHR> ;
+    healthdcatap:hasStructuredData true ;
+    healthdcatap:minTypicalAge "eighteen" ;
+    dct:publisher ex:publisher ;
+    dcat:distribution ex:dist-2 .
+
+<https://healthdata.example/category/EHR> a skos:Concept .
+
+ex:dist-2 a dcat:Distribution ;
+    dcatap:applicableLegislation <http://data.europa.eu/eli/reg/2025/327/oj> .
+
+ex:publisher a foaf:Agent ;
+    cv:contactPoint ex:c1, ex:c2 .
+
+ex:c1 a cv:ContactPoint ; cv:email "a@example.org" .
+ex:c2 a cv:ContactPoint ; cv:telephone "+32 0000" .
