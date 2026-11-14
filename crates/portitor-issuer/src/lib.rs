@@ -151,8 +151,8 @@ impl Issuer {
     }
 
     /// Who signs: the issuer, with its key.
-    fn signer(&self) -> portitor_dcp::holder::Signer<'_> {
-        portitor_dcp::holder::Signer {
+    fn signer(&self) -> portitor_dcp::Signer<'_> {
+        portitor_dcp::Signer {
             key: &self.key,
             kid: &self.kid,
             did: &self.did,

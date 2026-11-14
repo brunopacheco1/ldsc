@@ -9,6 +9,8 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+pub use portitor_runtime::settings::base_path;
+
 /// Where the public server listens unless `PORTITOR_BIND` says otherwise.
 pub const DEFAULT_BIND: &str = "0.0.0.0:8070";
 
@@ -143,8 +145,6 @@ fn invalid(name: &'static str, problem: &str) -> ConfigError {
         problem: problem.to_owned(),
     }
 }
-
-pub use portitor_runtime::settings::base_path;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]

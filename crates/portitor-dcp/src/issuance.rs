@@ -17,8 +17,8 @@
 use serde::Serialize;
 use serde_json::{Map, Value};
 
+use crate::Signer;
 use crate::credential::{Profile, VC1_CONTEXT, VC2_CONTEXT};
-use crate::holder::Signer;
 use crate::message::{
     Context, CredentialContainer, CredentialMessage, CredentialMessageType, IssuanceStatus,
 };
@@ -257,7 +257,7 @@ pub fn delivery_token(
 
 /// One signed credential, ready for a [`CredentialMessage`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Issued {
+pub struct SignedCredential {
     /// The credential type, for example `MembershipCredential`.
     pub credential_type: String,
     /// The profile it was signed in.
@@ -275,7 +275,7 @@ pub struct Issued {
 pub fn credential_message(
     issuer_pid: &str,
     holder_pid: &str,
-    credentials: Vec<Issued>,
+    credentials: Vec<SignedCredential>,
 ) -> CredentialMessage {
     let mut containers = Vec::new();
     for credential in credentials {
@@ -580,12 +580,12 @@ mod tests {
             "i-1",
             "h-1",
             vec![
-                Issued {
+                SignedCredential {
                     credential_type: "MembershipCredential".to_owned(),
                     profile: Profile::Vc11,
                     jwt: "a.b.c".to_owned(),
                 },
-                Issued {
+                SignedCredential {
                     credential_type: "MembershipCredential".to_owned(),
                     profile: Profile::Vc20,
                     jwt: "d.e.f".to_owned(),

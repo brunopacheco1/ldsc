@@ -26,22 +26,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::credential::{Profile, VC_JWT_DATA, VC1_CONTEXT, VC2_CONTEXT};
-use crate::{Error, Jwk, Jws, SigningKey};
+use crate::{Error, Jwk, Jws, Signer};
 
 /// The JWS `typ` of Portitor's access tokens (RFC 9068).
 pub const ACCESS_TOKEN_TYPE: &str = "at+jwt";
-
-/// Who signs a presentation or token, for whom, and when.
-#[derive(Debug, Clone, Copy)]
-pub struct Signer<'a> {
-    /// The holder's key.
-    pub key: &'a SigningKey,
-    /// The full id of the key in the holder's DID document, for example
-    /// `did:web:holder.example#key-1`.
-    pub kid: &'a str,
-    /// The holder's DID.
-    pub did: &'a str,
-}
 
 /// The JWT claims every presentation and token here carries: for whom,
 /// its id, and when. (Not to be confused with
@@ -199,7 +187,7 @@ impl AccessToken {
 mod tests {
     use super::*;
     use crate::credential::Presentation;
-    use crate::{DidDocument, Relationship, VerificationMethod};
+    use crate::{DidDocument, Relationship, SigningKey, VerificationMethod};
 
     const HOLDER: &str = "did:web:holder.example";
     const VERIFIER: &str = "did:web:verifier.example";

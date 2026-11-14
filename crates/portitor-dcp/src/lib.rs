@@ -34,7 +34,7 @@ pub use id_token::{
     validate_self_issued,
 };
 pub use jws::{Alg, Jws};
-pub use keys::{Jwk, SigningKey};
+pub use keys::{Jwk, Signer, SigningKey};
 
 /// Errors from token creation or validation.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

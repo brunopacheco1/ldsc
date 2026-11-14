@@ -17,6 +17,19 @@ use crate::Error;
 use crate::id_token::Claims;
 use crate::jws::Header;
 
+/// Who signs a token, presentation or credential: the key, its id and
+/// the DID it belongs to. Holders and the issuer both use it.
+#[derive(Debug, Clone, Copy)]
+pub struct Signer<'a> {
+    /// The signing key.
+    pub key: &'a SigningKey,
+    /// The full id of the key in the signer's DID document, for example
+    /// `did:web:holder.example#key-1`.
+    pub kid: &'a str,
+    /// The signer's DID.
+    pub did: &'a str,
+}
+
 /// A public JSON Web Key (EC P-256 or RSA).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kty")]

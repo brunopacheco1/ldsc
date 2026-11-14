@@ -613,7 +613,8 @@ async fn a_repeated_delivery_is_acknowledged_once() {
 
 #[tokio::test]
 async fn an_expired_access_token_is_refused() {
-    use portitor_dcp::holder::{AccessToken, Signer, TokenFrame};
+    use portitor_dcp::Signer;
+    use portitor_dcp::holder::{AccessToken, TokenFrame};
     let world = world();
     let (_, created) = ask(&world, &[MEMBERSHIP]).await;
     let holder_pid = created["holderPid"].as_str().unwrap().to_owned();

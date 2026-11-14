@@ -57,13 +57,25 @@ impl StatusLists {
     }
 }
 
-/// The last part of a list's URL.
+/// Every profile; each has its own status list.
+const PROFILES: [Profile; 2] = [Profile::Vc11, Profile::Vc20];
+
+/// The last part of a list's URL. The one place that maps a profile to
+/// its list name; [`from_name`] maps back through it.
 #[must_use]
 pub fn name(profile: Profile) -> &'static str {
     match profile {
         Profile::Vc11 => "vc11",
         Profile::Vc20 => "vc20",
     }
+}
+
+/// The profile whose list has this name, if any.
+#[must_use]
+pub fn from_name(list_name: &str) -> Option<Profile> {
+    PROFILES
+        .into_iter()
+        .find(|profile| name(*profile) == list_name)
 }
 
 /// The public URL of the status list of `profile`: the credentials of
@@ -78,7 +90,7 @@ pub fn url(issuer: &Issuer, profile: Profile) -> String {
 /// # Errors
 /// The store or signing fails.
 pub(crate) fn sign_all(issuer: &Issuer) -> Result<(), String> {
-    for profile in [Profile::Vc11, Profile::Vc20] {
+    for profile in PROFILES {
         refresh(issuer, profile)?;
     }
     Ok(())
@@ -111,10 +123,8 @@ pub(crate) fn refresh(issuer: &Issuer, profile: Profile) -> Result<(), String> {
 /// `GET <issuer service>/status-lists/{name}`: the signed list, as
 /// `application/vc+jwt`.
 pub(crate) async fn serve(State(issuer): State<Arc<Issuer>>, Path(list): Path<String>) -> Response {
-    let profile = match list.as_str() {
-        "vc11" => Profile::Vc11,
-        "vc20" => Profile::Vc20,
-        _ => return problem(StatusCode::NOT_FOUND, "no such status list"),
+    let Some(profile) = from_name(&list) else {
+        return problem(StatusCode::NOT_FOUND, "no such status list");
     };
     (
         [(header::CONTENT_TYPE, MEDIA_TYPE)],

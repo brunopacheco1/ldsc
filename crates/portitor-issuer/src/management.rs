@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use utoipa::{IntoParams, OpenApi, ToSchema};
 
-use crate::store::{IssuedRecord, Participant, Revocation};
+use crate::store::{IssuedWithDelivery, Participant, Revocation};
 use crate::{Issuer, delivery, status_lists};
 
 /// Register a participant.
@@ -131,7 +131,7 @@ pub struct CredentialView {
 }
 
 impl CredentialView {
-    fn new(issuer: &Issuer, record: IssuedRecord) -> Self {
+    fn new(issuer: &Issuer, record: IssuedWithDelivery) -> Self {
         let credential = record.credential;
         Self {
             status_list_credential: status_lists::url(issuer, credential.profile),
@@ -428,6 +428,9 @@ pub struct ManagementApi;
 #[must_use]
 pub fn openapi_json() -> String {
     let mut doc = ManagementApi::openapi();
+    // `env!` reads the version from Cargo.toml at compile time.
+    // `clone_into` is `doc.info.version = ....to_owned()`, reusing the
+    // field's memory; clippy (`assigning_clones`) asks for this form.
     env!("CARGO_PKG_VERSION").clone_into(&mut doc.info.version);
     doc.to_pretty_json().unwrap_or_default()
 }

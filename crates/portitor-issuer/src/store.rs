@@ -132,7 +132,7 @@ pub struct IssuedCredential {
 /// An issued credential with the state of its request's delivery, as the
 /// management API lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IssuedRecord {
+pub struct IssuedWithDelivery {
     /// The credential.
     pub credential: IssuedCredential,
     /// What became of its delivery.
@@ -205,12 +205,20 @@ pub enum IssueOutcome {
     ListFull(Profile),
 }
 
+/// What [`SignCredentials`] returns: the signed credentials of one
+/// request, ready to write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedRequest {
+    /// The credentials to record, one per [`Planned`] credential.
+    pub records: Vec<IssuedCredential>,
+    /// The `CredentialMessage` that carries them, as JSON, for the outbox.
+    pub message_json: String,
+}
+
 /// Signs a request's credentials once their status list positions are
 /// chosen: gets one position per [`Planned`] credential, in the same
-/// order, and returns the credentials to record and the
-/// `CredentialMessage` (JSON) for the outbox.
-pub type SignCredentials<'a> =
-    dyn FnMut(&[u64]) -> Result<(Vec<IssuedCredential>, String), String> + 'a;
+/// order. [`IssuerStore::issue`] calls it inside its transaction.
+pub type SignCredentials<'a> = dyn FnMut(&[u64]) -> Result<SignedRequest, String> + 'a;
 
 /// Port: the issuer's storage.
 pub trait IssuerStore: Send + Sync {
@@ -321,7 +329,7 @@ pub trait IssuerStore: Send + Sync {
     ///
     /// # Errors
     /// The store fails.
-    fn issued(&self, holder: Option<&str>) -> Result<Vec<IssuedRecord>, StoreError>;
+    fn issued(&self, holder: Option<&str>) -> Result<Vec<IssuedWithDelivery>, StoreError>;
 
     /// Revokes a credential at `now`. Revocation cannot be undone.
     ///
@@ -377,11 +385,6 @@ const MIGRATIONS: &[&str] = &[
     )",
 ];
 
-/// The columns of an issued credential, in the order of
-/// [`issued_from`]'s reads and of the `INSERT` in [`SqliteStore::issue`].
-const ISSUED_COLUMNS: &str = "id, issuer_pid, holder_did, definition_id, credential_type, \
-     profile, status_index, issued_at, expires_at, revoked_at";
-
 /// Adapter: the store in a `SQLite` file.
 #[derive(Debug)]
 pub struct SqliteStore(Mutex<Connection>);
@@ -418,7 +421,11 @@ impl IssuerStore for SqliteStore {
         let added = self.conn().execute(
             "INSERT INTO participant (did, claims, registered_at) VALUES (?1, ?2, ?3)
                  ON CONFLICT (did) DO NOTHING",
-            params![participant.did, claims, seconds(participant.registered_at)],
+            params![
+                participant.did,
+                claims,
+                to_sql_int(participant.registered_at)
+            ],
         )?;
         Ok(added == 1)
     }
@@ -467,7 +474,7 @@ impl IssuerStore for SqliteStore {
                 ids,
                 request.access_token,
                 request.status.as_str(),
-                seconds(request.received_at)
+                to_sql_int(request.received_at)
             ],
         )?;
         Ok(added == 1)
@@ -493,7 +500,7 @@ impl IssuerStore for SqliteStore {
             credential_ids: from_json(&ids)?,
             access_token: row.get("access_token")?,
             status: status_from_text(&status)?,
-            received_at: unsigned(received_at),
+            received_at: from_sql_int(received_at),
         }))
     }
 
@@ -532,36 +539,27 @@ impl IssuerStore for SqliteStore {
         sign: &mut SignCredentials<'_>,
     ) -> Result<IssueOutcome, StoreError> {
         let mut conn = self.conn();
-        // dropping the transaction without `commit` writes nothing
+        // Everything happens in one transaction. Dropping it without
+        // `commit` (an early `return` or a `?`) writes nothing.
         let tx = conn.transaction()?;
-        let request: Option<(String, String)> = tx
-            .query_row(
-                "SELECT holder_did, status FROM credential_request WHERE issuer_pid = ?1",
-                [issuer_pid],
-                |row| Ok((row.get("holder_did")?, row.get("status")?)),
-            )
-            .optional()?;
-        let holder_did = match request {
-            Some((holder_did, status)) if status == RequestStatus::Received.as_str() => holder_did,
-            _ => return Ok(IssueOutcome::NotReceived),
+        // 1. The request must still be RECEIVED.
+        let Some(holder_did) = holder_if_received(&tx, issuer_pid)? else {
+            return Ok(IssueOutcome::NotReceived);
         };
-        for credential in planned {
-            let active =
-                active_credentials(&tx, &holder_did, &credential.definition_id, rules.now)?;
-            if active >= rules.max_active_per_holder {
-                return Ok(IssueOutcome::LimitReached(credential.definition_id.clone()));
-            }
+        // 2. The holder must stay within its limit for each definition.
+        if let Some(definition_id) = first_limit_reached(&tx, &holder_did, planned, rules)? {
+            return Ok(IssueOutcome::LimitReached(definition_id));
         }
-        let mut positions: Vec<u64> = Vec::new();
-        for credential in planned {
-            let taken_here: Vec<u64> = positions_in(planned, &positions, credential.profile);
-            match free_position(&tx, credential.profile, &taken_here, STATUS_LIST_ENTRIES)? {
-                Some(position) => positions.push(position),
-                None => return Ok(IssueOutcome::ListFull(credential.profile)),
-            }
-        }
-        let (credentials, message) =
-            sign(&positions).map_err(|e| StoreError(format!("signing: {e}")))?;
+        // 3. One free status list position per credential.
+        let positions = match choose_positions(&tx, planned)? {
+            Positions::Chosen(positions) => positions,
+            Positions::ListFull(profile) => return Ok(IssueOutcome::ListFull(profile)),
+        };
+        // 4. Sign, still inside the transaction, so a position is used
+        // only if the credentials are written.
+        let signed = sign(&positions).map_err(|e| StoreError(format!("signing: {e}")))?;
+        // 5. Write: the request is ISSUED, the credentials recorded, the
+        // message in the outbox.
         tx.execute(
             "UPDATE credential_request SET status = ?2, delivery = ?3 WHERE issuer_pid = ?1",
             params![
@@ -570,13 +568,13 @@ impl IssuerStore for SqliteStore {
                 DeliveryState::Pending.text()
             ],
         )?;
-        for credential in &credentials {
+        for credential in &signed.records {
             insert_issued(&tx, credential)?;
         }
         tx.execute(
             "INSERT INTO outbox (issuer_pid, message, attempts, next_attempt_at)
                  VALUES (?1, ?2, 0, ?3)",
-            params![issuer_pid, message, seconds(rules.now)],
+            params![issuer_pid, signed.message_json, to_sql_int(rules.now)],
         )?;
         tx.commit()?;
         Ok(IssueOutcome::Issued)
@@ -590,7 +588,7 @@ impl IssuerStore for SqliteStore {
                  FROM outbox o JOIN credential_request r ON r.issuer_pid = o.issuer_pid
                  WHERE o.next_attempt_at <= ?1 ORDER BY o.next_attempt_at, o.issuer_pid",
         )?;
-        let mut rows = stmt.query([seconds(now)])?;
+        let mut rows = stmt.query([to_sql_int(now)])?;
         let mut found = Vec::new();
         while let Some(row) = rows.next()? {
             let attempts: i64 = row.get("attempts")?;
@@ -601,7 +599,7 @@ impl IssuerStore for SqliteStore {
                 access_token: row.get("access_token")?,
                 message: row.get("message")?,
                 attempts: u32::try_from(attempts).unwrap_or(u32::MAX),
-                next_attempt_at: unsigned(next),
+                next_attempt_at: from_sql_int(next),
             });
         }
         Ok(found)
@@ -613,7 +611,7 @@ impl IssuerStore for SqliteStore {
                 .query_row("SELECT MIN(next_attempt_at) FROM outbox", [], |row| {
                     row.get(0)
                 })?;
-        Ok(next.map(unsigned))
+        Ok(next.map(from_sql_int))
     }
 
     fn retry_later(
@@ -624,7 +622,7 @@ impl IssuerStore for SqliteStore {
     ) -> Result<(), StoreError> {
         self.conn().execute(
             "UPDATE outbox SET attempts = ?2, next_attempt_at = ?3 WHERE issuer_pid = ?1",
-            params![issuer_pid, attempts, seconds(next_attempt_at)],
+            params![issuer_pid, attempts, to_sql_int(next_attempt_at)],
         )?;
         Ok(())
     }
@@ -642,24 +640,25 @@ impl IssuerStore for SqliteStore {
         Ok(())
     }
 
-    fn issued(&self, holder: Option<&str>) -> Result<Vec<IssuedRecord>, StoreError> {
+    fn issued(&self, holder: Option<&str>) -> Result<Vec<IssuedWithDelivery>, StoreError> {
         let conn = self.conn();
-        let columns: Vec<String> = ISSUED_COLUMNS
-            .split(", ")
-            .map(|column| format!("c.{column}"))
-            .collect();
-        let mut stmt = conn.prepare(&format!(
-            "SELECT {}, r.delivery FROM issued_credential c
+        let mut stmt = conn.prepare(
+            "SELECT c.id, c.issuer_pid, c.holder_did, c.definition_id, c.credential_type,
+                 c.profile, c.status_index, c.issued_at, c.expires_at, c.revoked_at,
+                 r.delivery
+                 FROM issued_credential c
                  JOIN credential_request r ON r.issuer_pid = c.issuer_pid
                  WHERE ?1 IS NULL OR c.holder_did = ?1
                  ORDER BY c.issued_at DESC, c.id",
-            columns.join(", ")
-        ))?;
+        )?;
         let mut rows = stmt.query([holder])?;
         let mut found = Vec::new();
         while let Some(row) = rows.next()? {
+            // `issue` sets `delivery` together with the credentials, so it
+            // is never NULL here; should it be, the delivery has not
+            // ended, which is what PENDING means
             let delivery: Option<String> = row.get("delivery")?;
-            found.push(IssuedRecord {
+            found.push(IssuedWithDelivery {
                 credential: issued_from(row)?,
                 delivery: DeliveryState::from_text(delivery.as_deref().unwrap_or("PENDING"))?,
             });
@@ -683,7 +682,7 @@ impl IssuerStore for SqliteStore {
             Some((profile, None)) => {
                 tx.execute(
                     "UPDATE issued_credential SET revoked_at = ?2 WHERE id = ?1",
-                    params![id, seconds(now)],
+                    params![id, to_sql_int(now)],
                 )?;
                 Revocation::Revoked(profile_from_text(&profile)?)
             }
@@ -702,19 +701,18 @@ impl IssuerStore for SqliteStore {
         let mut found = Vec::new();
         while let Some(row) = rows.next()? {
             let index: i64 = row.get(0)?;
-            found.push(unsigned(index));
+            found.push(from_sql_int(index));
         }
         Ok(found)
     }
 }
 
-/// Writes one issued credential (the columns of [`ISSUED_COLUMNS`]).
+/// Writes one issued credential.
 fn insert_issued(tx: &Transaction<'_>, credential: &IssuedCredential) -> Result<(), StoreError> {
     tx.execute(
-        &format!(
-            "INSERT INTO issued_credential ({ISSUED_COLUMNS})
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"
-        ),
+        "INSERT INTO issued_credential (id, issuer_pid, holder_did, definition_id,
+             credential_type, profile, status_index, issued_at, expires_at, revoked_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             credential.id,
             credential.issuer_pid,
@@ -722,13 +720,72 @@ fn insert_issued(tx: &Transaction<'_>, credential: &IssuedCredential) -> Result<
             credential.definition_id,
             credential.credential_type,
             credential.profile.alias(),
-            seconds(credential.status_index),
-            seconds(credential.issued_at),
-            seconds(credential.expires_at),
-            credential.revoked_at.map(seconds)
+            to_sql_int(credential.status_index),
+            to_sql_int(credential.issued_at),
+            to_sql_int(credential.expires_at),
+            credential.revoked_at.map(to_sql_int)
         ],
     )?;
     Ok(())
+}
+
+/// The holder of request `issuer_pid` if the request is still `RECEIVED`;
+/// `None` if it is unknown or decided already.
+fn holder_if_received(
+    tx: &Transaction<'_>,
+    issuer_pid: &str,
+) -> Result<Option<String>, StoreError> {
+    let request: Option<(String, String)> = tx
+        .query_row(
+            "SELECT holder_did, status FROM credential_request WHERE issuer_pid = ?1",
+            [issuer_pid],
+            |row| Ok((row.get("holder_did")?, row.get("status")?)),
+        )
+        .optional()?;
+    match request {
+        Some((holder_did, status)) if status == RequestStatus::Received.as_str() => {
+            Ok(Some(holder_did))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// The first planned definition of which the holder already has
+/// [`IssueRules::max_active_per_holder`] active credentials, if any.
+fn first_limit_reached(
+    tx: &Transaction<'_>,
+    holder_did: &str,
+    planned: &[Planned],
+    rules: IssueRules,
+) -> Result<Option<String>, StoreError> {
+    for credential in planned {
+        let active = active_credentials(tx, holder_did, &credential.definition_id, rules.now)?;
+        if active >= rules.max_active_per_holder {
+            return Ok(Some(credential.definition_id.clone()));
+        }
+    }
+    Ok(None)
+}
+
+/// What [`choose_positions`] found.
+enum Positions {
+    /// One free position per planned credential, in the same order.
+    Chosen(Vec<u64>),
+    /// The status list of this profile has no free position.
+    ListFull(Profile),
+}
+
+/// One free status list position per planned credential.
+fn choose_positions(tx: &Transaction<'_>, planned: &[Planned]) -> Result<Positions, StoreError> {
+    let mut positions: Vec<u64> = Vec::new();
+    for credential in planned {
+        let taken_here: Vec<u64> = positions_in(planned, &positions, credential.profile);
+        match free_position(tx, credential.profile, &taken_here, STATUS_LIST_ENTRIES)? {
+            Some(position) => positions.push(position),
+            None => return Ok(Positions::ListFull(credential.profile)),
+        }
+    }
+    Ok(Positions::Chosen(positions))
 }
 
 /// How many credentials of `definition_id` the holder has that are
@@ -743,10 +800,10 @@ fn active_credentials(
         "SELECT COUNT(*) FROM issued_credential
              WHERE holder_did = ?1 AND definition_id = ?2
              AND revoked_at IS NULL AND expires_at > ?3",
-        params![holder_did, definition_id, seconds(now)],
+        params![holder_did, definition_id, to_sql_int(now)],
         |row| row.get(0),
     )?;
-    Ok(unsigned(count))
+    Ok(from_sql_int(count))
 }
 
 /// The positions already chosen in this request for credentials of
@@ -773,19 +830,9 @@ fn free_position(
     taken_here: &[u64],
     entries: u64,
 ) -> Result<Option<u64>, StoreError> {
-    let is_recorded = |position: u64| -> Result<bool, StoreError> {
-        let found = tx
-            .query_row(
-                "SELECT 1 FROM issued_credential WHERE profile = ?1 AND status_index = ?2",
-                params![profile.alias(), seconds(position)],
-                |_row| Ok(()),
-            )
-            .optional()?;
-        Ok(found.is_some())
-    };
     for _ in 0..RANDOM_TRIES {
         let candidate = random_below(entries);
-        if !taken_here.contains(&candidate) && !is_recorded(candidate)? {
+        if !taken_here.contains(&candidate) && !is_recorded(tx, profile, candidate)? {
             return Ok(Some(candidate));
         }
     }
@@ -796,13 +843,25 @@ fn free_position(
     let mut rows = stmt.query([profile.alias()])?;
     while let Some(row) = rows.next()? {
         let index: i64 = row.get(0)?;
-        taken.insert(unsigned(index));
+        taken.insert(from_sql_int(index));
     }
     let free = entries.saturating_sub(u64::try_from(taken.len()).unwrap_or(u64::MAX));
     if free == 0 {
         return Ok(None);
     }
     Ok(nth_free(&taken, entries, random_below(free)))
+}
+
+/// Whether a credential of `profile` has `position` in its status list.
+fn is_recorded(tx: &Transaction<'_>, profile: Profile, position: u64) -> Result<bool, StoreError> {
+    let found = tx
+        .query_row(
+            "SELECT 1 FROM issued_credential WHERE profile = ?1 AND status_index = ?2",
+            params![profile.alias(), to_sql_int(position)],
+            |_row| Ok(()),
+        )
+        .optional()?;
+    Ok(found.is_some())
 }
 
 /// The `n`th position (from 0) below `entries` that is not in `taken`.
@@ -820,8 +879,8 @@ fn nth_free(taken: &BTreeSet<u64>, entries: u64, n: u64) -> Option<u64> {
     None
 }
 
-/// An issued credential from a row with the [`ISSUED_COLUMNS`], read by
-/// column name.
+/// An issued credential from a row of `issued_credential`, read by column
+/// name.
 fn issued_from(row: &Row<'_>) -> Result<IssuedCredential, StoreError> {
     let profile: String = row.get("profile")?;
     let status_index: i64 = row.get("status_index")?;
@@ -835,10 +894,10 @@ fn issued_from(row: &Row<'_>) -> Result<IssuedCredential, StoreError> {
         definition_id: row.get("definition_id")?,
         credential_type: row.get("credential_type")?,
         profile: profile_from_text(&profile)?,
-        status_index: unsigned(status_index),
-        issued_at: unsigned(issued_at),
-        expires_at: unsigned(expires_at),
-        revoked_at: revoked_at.map(unsigned),
+        status_index: from_sql_int(status_index),
+        issued_at: from_sql_int(issued_at),
+        expires_at: from_sql_int(expires_at),
+        revoked_at: revoked_at.map(from_sql_int),
     })
 }
 
@@ -848,7 +907,7 @@ fn participant_from(row: &Row<'_>) -> Result<Participant, StoreError> {
     Ok(Participant {
         did: row.get("did")?,
         claims: from_json(&claims)?,
-        registered_at: unsigned(registered_at),
+        registered_at: from_sql_int(registered_at),
     })
 }
 
@@ -869,13 +928,14 @@ fn from_json<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, StoreError
     serde_json::from_str(text).map_err(|e| StoreError(e.to_string()))
 }
 
-/// Seconds (or a position) as `SQLite` keeps integers.
-fn seconds(value: u64) -> i64 {
+/// A number (seconds or a status list position) as `SQLite` keeps
+/// integers: signed, 64 bits.
+fn to_sql_int(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 
 /// An integer read back from `SQLite`; a negative one (never written) is 0.
-fn unsigned(value: i64) -> u64 {
+fn from_sql_int(value: i64) -> u64 {
     u64::try_from(value).unwrap_or_default()
 }
 
@@ -944,7 +1004,10 @@ mod tests {
                     record.profile = one.profile;
                     credentials.push(record);
                 }
-                Ok((credentials, "{}".to_owned()))
+                Ok(SignedRequest {
+                    records: credentials,
+                    message_json: "{}".to_owned(),
+                })
             })
             .unwrap();
         (outcome, given)

@@ -25,7 +25,7 @@
 //! calls a DID the authority did not register.
 
 use portitor_dcp::issuance::{
-    Issued, NewCredential, StatusSlot, credential_message, sign_credential,
+    NewCredential, SignedCredential, StatusSlot, credential_message, sign_credential,
 };
 use portitor_dcp::message::RequestStatus;
 use portitor_runtime::system::{new_uuid, now_secs};
@@ -36,6 +36,7 @@ use crate::definitions::Definition;
 use crate::status_lists;
 use crate::store::{
     CredentialRequest, IssueOutcome, IssueRules, IssuedCredential, Participant, Planned,
+    SignedRequest,
 };
 
 /// Seconds in a day.
@@ -46,14 +47,14 @@ const DAY: u64 = 86_400;
 /// the outbox decides it again on its next round ([`decide_waiting`]).
 pub fn decide(issuer: &Issuer, issuer_pid: &str) {
     match try_decide(issuer, issuer_pid) {
-        Ok(Outcome::Issued(count)) => {
+        Ok(Decision::Issued(count)) => {
             tracing::info!(issuer_pid, count, "credentials issued");
             issuer.outbox.notify_one();
         }
-        Ok(Outcome::Rejected(reason)) => {
+        Ok(Decision::Rejected(reason)) => {
             tracing::info!(issuer_pid, reason, "credential request rejected");
         }
-        Ok(Outcome::Unchanged) => {}
+        Ok(Decision::Unchanged) => {}
         Err(error) => tracing::error!(issuer_pid, %error, "credential request not decided"),
     }
 }
@@ -71,19 +72,25 @@ pub fn decide_waiting(issuer: &Issuer) {
     }
 }
 
-enum Outcome {
+/// What [`try_decide`] did with a request, for the log. (The store's
+/// [`IssueOutcome`] is what its `issue` step did; a rejection can also
+/// come before that step.)
+enum Decision {
+    /// Issued this many credentials.
     Issued(usize),
+    /// Rejected, for this reason.
     Rejected(String),
+    /// Nothing: the request is unknown or was decided already.
     Unchanged,
 }
 
-fn try_decide(issuer: &Issuer, issuer_pid: &str) -> Result<Outcome, String> {
+fn try_decide(issuer: &Issuer, issuer_pid: &str) -> Result<Decision, String> {
     let store = &issuer.store;
     let Some(request) = store.request(issuer_pid).map_err(|e| e.to_string())? else {
-        return Ok(Outcome::Unchanged);
+        return Ok(Decision::Unchanged);
     };
     if request.status != RequestStatus::Received {
-        return Ok(Outcome::Unchanged);
+        return Ok(Decision::Unchanged);
     }
     let Some(participant) = store
         .participant(&request.holder_did)
@@ -108,14 +115,22 @@ fn try_decide(issuer: &Issuer, issuer_pid: &str) -> Result<Outcome, String> {
     };
     // called by the store once the positions are chosen, inside its
     // transaction
-    let mut sign =
-        |positions: &[u64]| sign_all(issuer, &request, &participant, &definitions, positions);
+    let mut sign = |positions: &[u64]| {
+        sign_all(
+            issuer,
+            &request,
+            &participant,
+            &definitions,
+            positions,
+            rules.now,
+        )
+    };
     let outcome = store
         .issue(issuer_pid, &planned, rules, &mut sign)
         .map_err(|e| e.to_string())?;
     match outcome {
-        IssueOutcome::Issued => Ok(Outcome::Issued(planned.len())),
-        IssueOutcome::NotReceived => Ok(Outcome::Unchanged),
+        IssueOutcome::Issued => Ok(Decision::Issued(planned.len())),
+        IssueOutcome::NotReceived => Ok(Decision::Unchanged),
         IssueOutcome::LimitReached(definition_id) => reject(
             issuer,
             issuer_pid,
@@ -137,24 +152,28 @@ fn sign_all(
     participant: &Participant,
     definitions: &[&Definition],
     positions: &[u64],
-) -> Result<(Vec<IssuedCredential>, String), String> {
+    now: u64,
+) -> Result<SignedRequest, String> {
     let mut signed = Vec::new();
     let mut records = Vec::new();
     for (definition, position) in definitions.iter().zip(positions) {
-        let (credential, record) = sign_one(issuer, request, participant, definition, *position)?;
-        signed.push(credential);
-        records.push(record);
+        let one = sign_one(issuer, request, participant, definition, *position, now)?;
+        signed.push(one.credential);
+        records.push(one.record);
     }
     let message = credential_message(&request.issuer_pid, &request.holder_pid, signed);
-    let json = serde_json::to_string(&message).map_err(|e| e.to_string())?;
-    Ok((records, json))
+    let message_json = serde_json::to_string(&message).map_err(|e| e.to_string())?;
+    Ok(SignedRequest {
+        records,
+        message_json,
+    })
 }
 
-fn reject(issuer: &Issuer, issuer_pid: &str, reason: &str) -> Result<Outcome, String> {
+fn reject(issuer: &Issuer, issuer_pid: &str, reason: &str) -> Result<Decision, String> {
     if issuer.store.reject(issuer_pid).map_err(|e| e.to_string())? {
-        Ok(Outcome::Rejected(reason.to_owned()))
+        Ok(Decision::Rejected(reason.to_owned()))
     } else {
-        Ok(Outcome::Unchanged)
+        Ok(Decision::Unchanged)
     }
 }
 
@@ -191,21 +210,29 @@ pub fn subject_claims(participant: &Participant, definition: &Definition) -> Map
     claims
 }
 
+/// One credential [`sign_one`] signed.
+struct SignedOne {
+    /// The signed credential, for the `CredentialMessage`.
+    credential: SignedCredential,
+    /// What the store records of it.
+    record: IssuedCredential,
+}
+
 /// Signs one credential of `definition` for the request, at position
-/// `index` of its profile's status list.
+/// `index` of its profile's status list, valid from `now`.
 fn sign_one(
     issuer: &Issuer,
     request: &CredentialRequest,
     participant: &Participant,
     definition: &Definition,
     index: u64,
-) -> Result<(Issued, IssuedCredential), String> {
+    now: u64,
+) -> Result<SignedOne, String> {
     let id = new_uuid();
-    let now = now_secs();
     let until = now + definition.validity_days * DAY;
     let list_url = status_lists::url(issuer, definition.profile);
     let claims = subject_claims(participant, definition);
-    let credential = NewCredential {
+    let to_sign = NewCredential {
         id: &id,
         credential_type: &definition.credential_type,
         profile: definition.profile,
@@ -218,7 +245,7 @@ fn sign_one(
         valid_from: now,
         valid_until: until,
     };
-    let jwt = sign_credential(issuer.signer(), &credential).map_err(|e| e.to_string())?;
+    let jwt = sign_credential(issuer.signer(), &to_sign).map_err(|e| e.to_string())?;
     let record = IssuedCredential {
         id,
         issuer_pid: request.issuer_pid.clone(),
@@ -231,12 +258,12 @@ fn sign_one(
         expires_at: until,
         revoked_at: None,
     };
-    let delivered = Issued {
+    let credential = SignedCredential {
         credential_type: definition.credential_type.clone(),
         profile: definition.profile,
         jwt,
     };
-    Ok((delivered, record))
+    Ok(SignedOne { credential, record })
 }
 
 #[cfg(test)]
