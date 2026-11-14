@@ -434,8 +434,13 @@ DID, so usually not).
   credential service for its presentations, and accepts the caller only
   with a valid `MembershipCredential` from a DID in
   `PORTITOR_TRUSTED_ISSUERS` whose subject is the caller, not revoked or
-  suspended (the status list must be signed by the same issuer; when it
-  cannot be fetched or checked the caller is refused). Otherwise it
+  suspended (the status list must be signed by the same issuer). A
+  credential that fails its checks (revoked, expired, bad signature,
+  status list not readable) is left out and logged (`credential left
+  out`, INFO), so a participant that still holds a revoked credential
+  next to its reissued one is admitted; a presentation that fails its
+  own checks, or holds a credential about someone else, refuses the
+  caller. Without a valid membership credential it
   answers HTTP 401 with a DSP error that says only "unauthorized"; the
   reason is in the log. Each negotiation and transfer is bound to the DID
   that started it: another caller is told it does not exist. As

@@ -21,6 +21,17 @@
 //!    `assertionMethod` key, valid now, not revoked or suspended).
 //! 5. Require one `MembershipCredential` from a trusted issuer.
 //!
+//! A presentation that fails its checks, or holds a credential about
+//! someone else (DCP 5.4.3, holder binding), refuses the caller. A
+//! credential that fails its own checks (signature, validity, status) is
+//! only left out, and logged: a holder may still hold a revoked
+//! credential next to the one that replaced it, and must not be locked
+//! out for that. The caller is refused when no valid `MembershipCredential`
+//! remains, and the refusal names the credentials left out. DCP v1.0.1
+//! section 5.4.3, step 8, calls a presentation with a failing credential
+//! invalid; Portitor follows it for the presentation's own checks and
+//! counts no failing credential, but keeps the valid ones next to it.
+//!
 //! The verified credentials go with the caller to the handler. When an
 //! offer or agreement has credential constraints (ADR 0019), the handler
 //! asks for more scopes with [`CallerVerifier::credentials`]: steps 3 and 4
@@ -112,6 +123,15 @@ impl std::fmt::Debug for DcpVerifier {
             .field("scopes", &self.scopes)
             .finish_non_exhaustive()
     }
+}
+
+/// What step 4 found in the caller's presentations.
+#[derive(Debug, Default)]
+struct CheckedCredentials {
+    /// The credentials from trusted issuers that passed every check.
+    verified: Vec<HeldCredential>,
+    /// Why each other credential from a trusted issuer was left out.
+    left_out: Vec<String>,
 }
 
 /// The caller's token, checked.
@@ -219,18 +239,19 @@ impl DcpVerifier {
         let checked = self.check_token(token).await?;
         let caller = checked.doc.id.clone();
         let presentations = self.query(&checked, &self.scopes).await?;
-        let credentials = self
+        let checked_credentials = self
             .check_presentations(&caller, &checked.doc, &presentations)
             .await?;
-        if !credentials
+        let is_member = checked_credentials
+            .verified
             .iter()
-            .any(|credential| credential.types.iter().any(|t| t == MEMBERSHIP))
-        {
-            return Err(format!("no {MEMBERSHIP} from a trusted issuer"));
+            .any(|credential| credential.types.iter().any(|t| t == MEMBERSHIP));
+        if !is_member {
+            return Err(no_membership(&checked_credentials.left_out));
         }
         Ok(Caller {
             id: caller,
-            credentials,
+            credentials: checked_credentials.verified,
             access_token: Some(checked.access_token),
         })
     }
@@ -255,8 +276,10 @@ impl DcpVerifier {
             }
         }
         let presentations = self.query(&checked, &scopes).await?;
-        self.check_presentations(&caller.id, &checked.doc, &presentations)
-            .await
+        let checked_credentials = self
+            .check_presentations(&caller.id, &checked.doc, &presentations)
+            .await?;
+        Ok(checked_credentials.verified)
     }
 
     /// Step 2: the caller's self-issued ID token.
@@ -320,16 +343,18 @@ impl DcpVerifier {
         presentation_jwts(answer)
     }
 
-    /// Step 4. Only credentials from trusted issuers are checked (and
-    /// returned); the others are skipped.
+    /// Step 4. Only credentials from trusted issuers are checked; the
+    /// others are skipped. A presentation that fails its checks refuses
+    /// the caller; a credential that fails its own is left out (module
+    /// doc).
     async fn check_presentations(
         &self,
         caller: &str,
         holder: &DidDocument,
         jwts: &[String],
-    ) -> Result<Vec<HeldCredential>, String> {
+    ) -> Result<CheckedCredentials, String> {
         let now = now_secs();
-        let mut verified = Vec::new();
+        let mut checked = CheckedCredentials::default();
         for jwt in jwts {
             let presentation =
                 Presentation::parse(jwt).map_err(|e| format!("presentation: {e}"))?;
@@ -351,32 +376,43 @@ impl DcpVerifier {
                     tracing::debug!(issuer = %credential.issuer, "credential from an untrusted issuer skipped");
                     continue;
                 }
-                self.check_credential(credential, caller, now).await?;
-                verified.push(HeldCredential {
-                    types: credential.types.clone(),
-                    subjects: credential.subjects.clone(),
-                });
+                // holder binding (DCP 5.4.3) and the fetch limit: the
+                // whole answer is refused, not only this credential
+                if !credential.is_only_about(caller) {
+                    return Err(
+                        "a credential is not about the caller (credentialSubject.id)".to_owned(),
+                    );
+                }
+                if credential.status.len() > MAX_STATUS_ENTRIES {
+                    return Err(format!(
+                        "a credential has more than {MAX_STATUS_ENTRIES} status entries"
+                    ));
+                }
+                match self.check_credential(credential, now).await {
+                    Ok(()) => checked.verified.push(HeldCredential {
+                        types: credential.types.clone(),
+                        subjects: credential.subjects.clone(),
+                    }),
+                    Err(reason) => {
+                        tracing::info!(
+                            %caller,
+                            issuer = %credential.issuer,
+                            types = ?credential.types,
+                            %reason,
+                            "credential left out"
+                        );
+                        checked.left_out.push(reason);
+                    }
+                }
             }
         }
-        Ok(verified)
+        Ok(checked)
     }
 
-    /// One credential: about the caller, signed by its issuer, valid now,
-    /// not revoked or suspended.
-    async fn check_credential(
-        &self,
-        credential: &Credential,
-        caller: &str,
-        now: u64,
-    ) -> Result<(), String> {
-        if !credential.is_only_about(caller) {
-            return Err("a credential is not about the caller (credentialSubject.id)".to_owned());
-        }
-        if credential.status.len() > MAX_STATUS_ENTRIES {
-            return Err(format!(
-                "a credential has more than {MAX_STATUS_ENTRIES} status entries"
-            ));
-        }
+    /// One credential about the caller (checked before): signed by its
+    /// issuer, valid now, not revoked or suspended. The error says why
+    /// not.
+    async fn check_credential(&self, credential: &Credential, now: u64) -> Result<(), String> {
         let issuer = self.resolver.resolve(&credential.issuer).await?;
         credential
             .verify(&issuer, now, LEEWAY)
@@ -447,6 +483,19 @@ impl CallerVerifier for DcpVerifier {
             )
             .await
         })
+    }
+}
+
+/// The refusal when no valid membership credential remains, naming why
+/// the credentials from trusted issuers were left out, if any were.
+fn no_membership(left_out: &[String]) -> String {
+    if left_out.is_empty() {
+        format!("no {MEMBERSHIP} from a trusted issuer")
+    } else {
+        format!(
+            "no {MEMBERSHIP} from a trusted issuer; left out: {}",
+            left_out.join("; ")
+        )
     }
 }
 

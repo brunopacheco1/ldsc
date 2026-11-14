@@ -727,6 +727,57 @@ async fn revoked_credentials_and_bad_status_lists_are_refused() {
 }
 
 #[tokio::test]
+async fn a_revoked_credential_next_to_a_valid_one_is_left_out() {
+    // the authority revoked the first membership credential (bit 5) and
+    // issued a new one (bit 6); the holder still presents both
+    let ds = dataspace().await;
+    let holder = ds.holder.did.as_str();
+    let member_at = |index: &str| {
+        Dataspace::credential(&ds.issuer, MEMBERSHIP, holder, &ds.status_entry(index))
+    };
+    let revoked_sensitive = Dataspace::credential(
+        &ds.issuer,
+        "SensitiveDataCredential",
+        holder,
+        &ds.status_entry("7"),
+    );
+    ds.publish_status_list(&ds.issuer, &[5, 7]);
+    ds.answer(&[ds.presentation(
+        &ds.holder,
+        &[member_at("5"), member_at("6"), revoked_sensitive],
+    )]);
+    let caller = ds.verify(&ds.header()).await.unwrap();
+    // only the valid membership credential is kept
+    assert_eq!(caller.credentials.len(), 1);
+    assert!(caller.credentials[0].types.iter().any(|t| t == MEMBERSHIP));
+
+    // with only revoked membership credentials, the caller is refused,
+    // and told why
+    ds.answer(&[ds.presentation(&ds.holder, &[member_at("5")])]);
+    let err = ds.refusal().await;
+    assert!(
+        err.contains("no MembershipCredential from a trusted issuer")
+            && err.contains("revoked or suspended (revocation)"),
+        "{err}"
+    );
+
+    // a bad presentation still refuses the caller, valid credentials or
+    // not: signed by someone else, or holding a credential about another
+    // participant
+    let forged_holder = Party {
+        did: ds.holder.did.clone(),
+        key: SigningKey::generate().unwrap(),
+    };
+    ds.answer(&[ds.presentation(&forged_holder, &[member_at("6")])]);
+    let err = ds.refusal().await;
+    assert!(err.contains("presentation:"), "{err}");
+    let about_third = Dataspace::credential(&ds.issuer, MEMBERSHIP, &ds.third.did, &json!({}));
+    ds.answer(&[ds.presentation(&ds.holder, &[member_at("6"), about_third])]);
+    let err = ds.refusal().await;
+    assert!(err.contains("not about the caller"), "{err}");
+}
+
+#[tokio::test]
 async fn revocation_and_suspension_lists_are_both_checked() {
     let ds = dataspace().await;
     let entries = json!({"credentialStatus": [
@@ -1009,7 +1060,8 @@ async fn more_credentials_are_asked_for_with_the_callers_access_token() {
     let claims = unverified_claims(query.strip_prefix("Bearer ").unwrap()).unwrap();
     assert_eq!(claims.token.as_deref(), Some("access-1"));
 
-    // a revoked credential in the second answer: nothing is returned
+    // a revoked credential in the second answer is left out; the valid
+    // ones are returned
     ds.publish_status_list(&ds.issuer, &[3]);
     let revoked = Dataspace::credential(
         &ds.issuer,
@@ -1018,8 +1070,9 @@ async fn more_credentials_are_asked_for_with_the_callers_access_token() {
         &ds.status_entry("3"),
     );
     ds.answer(&[ds.presentation(&ds.holder, &[member, revoked])]);
-    let err = ds.verifier.credentials(&caller, &extra).await.unwrap_err();
-    assert!(err.contains("revoked"), "{err}");
+    let left = ds.verifier.credentials(&caller, &extra).await.unwrap();
+    assert_eq!(left.len(), 1);
+    assert!(left[0].types.iter().any(|t| t == MEMBERSHIP));
 
     // a caller without an access token cannot be asked again
     let anonymous = Caller::new(holder);

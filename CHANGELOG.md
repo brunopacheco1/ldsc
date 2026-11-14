@@ -124,6 +124,14 @@ versions may change behaviour and configuration.
 - As consumer, the connector does not accept a provider's offer (DSP
   `OFFERED`) that has credential constraints: it cannot check its own
   credentials as the provider will.
+- Connector, DCP verifier: a credential that fails its checks (revoked,
+  suspended, expired, bad signature, status list not readable) is left
+  out and logged (`credential left out`) instead of refusing the caller,
+  so a participant holding a revoked credential next to its reissued one
+  is still admitted. A presentation that fails its own checks, or holds a
+  credential about someone else, still refuses the caller, and so does
+  the lack of a valid `MembershipCredential` (the refusal names the
+  credentials left out).
 
 ### Fixed
 
