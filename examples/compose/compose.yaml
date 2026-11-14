@@ -33,17 +33,17 @@ name: portitor-demo
 
 # shared by both participants
 x-identity: &identity
-  image: ${PORTITOR_IDENTITY_IMAGE:-ghcr.io/brunopacheco1/portitor-identity:0.6.0}
+  image: ${PORTITOR_IDENTITY_IMAGE:-ghcr.io/brunopacheco1/portitor-identity:0.7.0}
   depends_on: [issuer]
 x-connector: &connector
-  image: ${PORTITOR_IMAGE:-ghcr.io/brunopacheco1/portitor-connector:0.6.0}
+  image: ${PORTITOR_IMAGE:-ghcr.io/brunopacheco1/portitor-connector:0.7.0}
 
 services:
   # The data space's authority: did:web:issuer%3A8070, its issuer service
   # (credential requests, status lists) and its management API, where
   # scripts/demo-compose.sh registers the participants.
   issuer:
-    image: ${PORTITOR_ISSUER_IMAGE:-ghcr.io/brunopacheco1/portitor-issuer:0.6.0}
+    image: ${PORTITOR_ISSUER_IMAGE:-ghcr.io/brunopacheco1/portitor-issuer:0.7.0}
     environment:
       PORTITOR_PARTICIPANT_ID: did:web:issuer%3A8070
       PORTITOR_ISSUER_SERVICE_URL: http://issuer:8070/issuer

@@ -42,6 +42,7 @@ use std::time::Duration;
 use http_body_util::{BodyExt as _, Full};
 use hyper::body::Bytes;
 use portitor_dcp::Jwk;
+use portitor_dcp::bundle::MAX_SIGNATURE_BYTES;
 use portitor_dcp::bundle::{
     self, BundleError, Expected, MANIFEST_FILE, MAX_BUNDLE_BYTES, MAX_FILE_BYTES,
     MAX_MANIFEST_BYTES, Manifest, SIGNATURE_FILE, VerifiedBundle,
@@ -282,11 +283,6 @@ pub fn source_for(
         }
     }
 }
-
-/// The largest `manifest.jws` read: twice [`MAX_MANIFEST_BYTES`], as the
-/// signature holds the manifest in base64url (a third longer) plus its
-/// header and signature.
-const MAX_SIGNATURE_BYTES: usize = MAX_MANIFEST_BYTES * 2;
 
 /// The signed parts of a bundle as read: `manifest.json` and
 /// `manifest.jws`.

@@ -12,6 +12,8 @@ versions may change behaviour and configuration.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-14
+
 ### Added
 
 - Dataset harvest into a read copy (ADR 0020). The connector reads its
