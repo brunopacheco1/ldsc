@@ -140,6 +140,10 @@ versions may change behaviour and configuration.
   differently from `XPath`: a `[` inside a character class (`XPath` class
   subtraction such as `[a-z-[aeiou]]`), and with the `x` flag a `#` or
   white space inside a class.
+- The issuer's public bundle route sends a file in 64 KiB pieces as it
+  reads it, with its `Content-Length`, instead of reading the whole file
+  into memory for each request, and keeps each version's parsed manifest
+  (read again only when the file changes).
 
 ### Documentation
 

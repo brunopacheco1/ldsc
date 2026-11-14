@@ -84,6 +84,8 @@ pub struct Issuer {
     /// The folder of built bundles served at `/bundles/...`
     /// (`PORTITOR_ISSUER_BUNDLE_DIR`), if any.
     bundle_dir: Option<PathBuf>,
+    /// The parsed manifests of the served bundle versions.
+    bundle_manifests: bundles::ManifestCache,
 }
 
 impl std::fmt::Debug for Issuer {
@@ -142,6 +144,7 @@ impl Issuer {
             status_lists: StatusLists::default(),
             outbox: tokio::sync::Notify::new(),
             bundle_dir: config.bundle_dir.clone(),
+            bundle_manifests: bundles::ManifestCache::default(),
         };
         status_lists::sign_all(&issuer)?;
         Ok(issuer)
