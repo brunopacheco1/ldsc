@@ -10,7 +10,7 @@
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
-use crate::system::hex;
+use portitor_dcp::bundle::sha256_hex;
 
 /// A full snapshot of the provider's datasets.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,11 +48,6 @@ pub trait HarvestSource: Send + Sync {
     ///
     /// The source cannot be read, or what it gave is not a list of entries.
     fn snapshot(&self) -> Result<Snapshot, SourceError>;
-}
-
-/// SHA-256 of `bytes`, hex.
-pub(crate) fn sha256(bytes: &[u8]) -> String {
-    hex(ring::digest::digest(&ring::digest::SHA256, bytes).as_ref())
 }
 
 /// The largest datasets file read: 256 MiB. A larger file makes the run
@@ -106,7 +101,7 @@ impl HarvestSource for FileSource {
         let entries: Vec<serde_json::Value> = serde_json::from_slice(&raw)
             .map_err(|e| SourceError(format!("datasets file {shown} is not a JSON array: {e}")))?;
         Ok(Snapshot {
-            sha256: sha256(&raw),
+            sha256: sha256_hex(&raw),
             entries,
         })
     }
@@ -135,7 +130,7 @@ impl HarvestSource for FixedSource {
     fn snapshot(&self) -> Result<Snapshot, SourceError> {
         let raw = serde_json::to_vec(&self.entries).map_err(|e| SourceError(e.to_string()))?;
         Ok(Snapshot {
-            sha256: sha256(&raw),
+            sha256: sha256_hex(&raw),
             entries: self.entries.clone(),
         })
     }
@@ -181,7 +176,7 @@ mod tests {
         std::fs::write(&file, r#"[{"@id": "a"}, 7]"#).unwrap();
         let first = source.snapshot().unwrap();
         assert_eq!(first.entries.len(), 2);
-        assert_eq!(first.sha256, sha256(br#"[{"@id": "a"}, 7]"#));
+        assert_eq!(first.sha256, sha256_hex(br#"[{"@id": "a"}, 7]"#));
         // the same data written differently is a different snapshot
         std::fs::write(&file, r#"[{"@id":"a"},7]"#).unwrap();
         assert_ne!(source.snapshot().unwrap().sha256, first.sha256);

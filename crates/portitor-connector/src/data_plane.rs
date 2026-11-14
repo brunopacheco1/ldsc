@@ -32,6 +32,7 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use http_body_util::Full;
 use hyper::body::Bytes;
+use portitor_dcp::bundle::sha256_hex;
 use portitor_dps::message::{
     DataFlowPrepareMessage, DataFlowResumeMessage, DataFlowStartMessage,
     DataFlowStartedNotificationMessage, DataFlowStatusMessage, DataFlowStatusResponseMessage,
@@ -43,7 +44,7 @@ use portitor_dsp::transfer::{DataAddress, DataAddressType, EndpointProperty};
 
 use crate::http_client::{HttpsClient, bearer_token_in, https_client};
 use crate::ports::AnyFlowStore;
-use crate::system::{hex, new_uuid, now_secs};
+use crate::system::{new_uuid, now_secs};
 
 /// The `endpointType` of the data address sent over DSP. It is the value
 /// of the DSP 2025-1 examples, the DSP TCK and EDC's DSP tests (ADR 0013);
@@ -62,7 +63,9 @@ pub trait UpstreamSources: Send + Sync {
     fn upstream_of(&self, dataset_id: &str) -> Option<String>;
 }
 
-/// A fixed map of dataset id to upstream URL (tests).
+/// A fixed map of dataset id to upstream URL (unit tests only, so not
+/// in the binary).
+#[cfg(test)]
 impl UpstreamSources for BTreeMap<String, String> {
     fn upstream_of(&self, dataset_id: &str) -> Option<String> {
         self.get(dataset_id).cloned()
@@ -196,8 +199,7 @@ impl FlowStore for InMemoryFlows {
 /// what a timing difference could reveal is a prefix of the hash, and no
 /// one can work back from a hash prefix to a token.
 fn hash(token: &str) -> String {
-    let digest = ring::digest::digest(&ring::digest::SHA256, token.as_bytes());
-    hex(digest.as_ref())
+    sha256_hex(token.as_bytes())
 }
 
 /// A new random access token: 32 bytes from the OS generator, base64url.
