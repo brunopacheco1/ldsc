@@ -142,6 +142,9 @@ const MIGRATIONS: &[&str] = &[
         snapshot_sha256 TEXT
     );
     INSERT INTO harvest_state (id, rules_version, snapshot_sha256) VALUES (1, NULL, NULL)",
+    // 0.7: the job log also holds the bundle harvester's runs (ADR 0005);
+    // every earlier job harvested datasets
+    "ALTER TABLE harvest_job ADD COLUMN kind TEXT NOT NULL DEFAULT 'datasets';",
 ];
 
 /// Adapter: negotiations in a `SQLite` file.
@@ -778,5 +781,24 @@ mod tests {
         let n = NegotiationStore::get(&store, "p").unwrap().unwrap();
         assert_eq!((n.pending, n.version), (None, 0));
         ConsumerStore::insert(&store, &consumer_sample(NegotiationState::Requested)).unwrap();
+    }
+
+    /// Runs logged before the bundle harvester (migration 8) were all
+    /// dataset runs.
+    #[test]
+    fn harvest_jobs_from_before_the_kind_are_dataset_runs() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        portitor_runtime::sqlite::migrate(&mut conn, &MIGRATIONS[..7]).unwrap();
+        conn.execute(
+            "INSERT INTO harvest_job (started_at, finished_at, run_trigger, source, \
+             snapshot_sha256, outcome, seen, added, updated, unchanged, withdrawn, rejected, \
+             summary) VALUES (1, 2, 'start', 'file', NULL, 'succeeded', 0, 0, 0, 0, 0, 0, '')",
+            [],
+        )
+        .unwrap();
+        let store = setup(conn).unwrap();
+        let jobs = crate::harvest::DatasetStore::jobs(&store, None, 10).unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].record.kind, crate::harvest::JobKind::Datasets);
     }
 }

@@ -162,12 +162,17 @@ jq -e --arg id "$BED_OCCUPANCY" '[.dataset[] | select(.["@id"] == $id)] == []' \
   <<<"$CATALOG" >/dev/null || fail "$BED_OCCUPANCY is in the catalog"
 echo "both valid datasets conform to $PROFILE; $BED_OCCUPANCY is not offered"
 
-step "The provider's harvest job: bed-occupancy rejected by the SHACL check, with its report"
+step "The provider's harvest jobs: the bundle taken at start, and bed-occupancy rejected by the SHACL check, with its report"
 provider_api() { # path: the provider's management API
   local path=$1
   curl -sf "$PROVIDER_MANAGEMENT$path" -H "authorization: Bearer $(cat "$PROVIDER_KEY_FILE")"
 }
-JOB=$(provider_api "/v1/harvest-jobs?limit=1" | jq -r '.jobs[0].id') || fail "list the harvest jobs"
+JOBS=$(provider_api "/v1/harvest-jobs?limit=10") || fail "list the harvest jobs"
+# the bundle check at start is in the same job log (kind bundle)
+BUNDLE_JOB=$(jq -c '[.jobs[] | select(.kind == "bundle")][0]' <<<"$JOBS")
+[[ $(jq -r '.outcome' <<<"$BUNDLE_JOB") == succeeded ]] || fail "no bundle run that succeeded: $JOBS"
+jq -r '.summary' <<<"$BUNDLE_JOB"
+JOB=$(jq -r '[.jobs[] | select(.kind == "datasets")][0].id' <<<"$JOBS")
 JOB=$(provider_api "/v1/harvest-jobs/$JOB") || fail "read harvest job $JOB"
 jq '{id, trigger, outcome, summary}' <<<"$JOB"
 REJECTED=$(jq -c --arg id "$BED_OCCUPANCY" '.errors[] | select(.datasetId == $id)' <<<"$JOB")

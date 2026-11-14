@@ -402,6 +402,85 @@ fn new_rules_check_the_stored_datasets_again_at_start() {
     assert_eq!(jobs[0].record.outcome, JobOutcome::Succeeded);
 }
 
+/// Rules the test swaps while the harvester runs, as the bundle copy is
+/// swapped when a new bundle version is taken.
+struct Swappable(Mutex<Arc<dyn DatasetCheck>>);
+
+impl DatasetCheck for Swappable {
+    fn rules_version(&self) -> String {
+        self.0.lock().unwrap().rules_version()
+    }
+    fn check(&self, entry: &Value) -> Result<CheckedDataset, EntryFailure> {
+        let rules = Arc::clone(&self.0.lock().unwrap());
+        rules.check(entry)
+    }
+}
+
+/// A run of the bundle harvester, as it reaches the dataset harvester.
+fn bundle_run(summary: &str) -> JobRecord {
+    JobRecord {
+        kind: JobKind::Bundle,
+        started_at: 1,
+        finished_at: 2,
+        trigger: Trigger::Interval,
+        source: "https://authority.example/bundles/".to_owned(),
+        snapshot_sha256: Some("abc".to_owned()),
+        outcome: JobOutcome::Succeeded,
+        counts: Counts::default(),
+        summary: summary.to_owned(),
+    }
+}
+
+#[test]
+fn new_rules_while_running_check_the_datasets_again() {
+    let store = memory();
+    let source = Source::with(vec![entry("a"), entry("b")]);
+    let rules = Arc::new(Swappable(Mutex::new(Arc::new(Rules {
+        version: "v1",
+        refuse: &[],
+    }))));
+    let harvester = started(&source, &store, Arc::clone(&rules) as _);
+    assert_eq!(ids(&harvester.copy()), ["a", "b"]);
+    let status_before = store.status().unwrap();
+
+    // the bundle run is logged next to the harvest runs; it changes no
+    // dataset and keeps the harvest status
+    let id = harvester
+        .record_bundle_run(bundle_run("version v2 in use (was v1)"))
+        .unwrap();
+    let (logged, errors) = store.job(id).unwrap().unwrap();
+    assert_eq!(logged.record.kind, JobKind::Bundle);
+    assert!(errors.is_empty());
+    assert_eq!(store.status().unwrap(), status_before);
+
+    // new rules that refuse b: the stored datasets are checked again,
+    // then every entry of the unchanged source, both as `bundle` runs
+    *rules.0.lock().unwrap() = Arc::new(Rules {
+        version: "v2",
+        refuse: &["b"],
+    });
+    let run = done(harvester.rules_changed());
+    assert_eq!(run.record.kind, JobKind::Datasets);
+    assert_eq!(run.record.trigger, Trigger::Bundle);
+    assert_eq!(run.record.counts.seen, 2, "every entry checked again");
+    assert_eq!(ids(&harvester.copy()), ["a"]);
+    let jobs = store.jobs(None, 10).unwrap();
+    let triggers: Vec<_> = jobs
+        .iter()
+        .map(|j| (j.record.kind, j.record.trigger))
+        .collect();
+    assert_eq!(
+        triggers[..4],
+        [
+            (JobKind::Datasets, Trigger::Bundle),
+            (JobKind::Datasets, Trigger::Bundle),
+            (JobKind::Bundle, Trigger::Interval),
+            (JobKind::Datasets, Trigger::Start),
+        ]
+    );
+    assert_eq!(store.status().unwrap().rules_version.as_deref(), Some("v2"));
+}
+
 #[test]
 fn rules_that_change_with_an_unchanged_source_check_every_entry() {
     let store = memory();
@@ -446,6 +525,7 @@ fn a_new_portitor_version_checks_the_stored_datasets_again() {
     store
         .commit(&Commit {
             job: JobRecord {
+                kind: JobKind::Datasets,
                 started_at: 0,
                 finished_at: 0,
                 trigger: Trigger::Start,
@@ -547,6 +627,10 @@ fn every_stored_name_reads_back() {
     for outcome in JobOutcome::ALL {
         assert_eq!(JobOutcome::from_name(outcome.name()), Some(outcome));
     }
+    for kind in JobKind::ALL {
+        assert_eq!(JobKind::from_name(kind.name()), Some(kind));
+    }
+    assert_eq!(JobKind::from_name("Bundle"), None);
     assert_eq!(DatasetState::from_name("Active"), None);
     assert_eq!(JobOutcome::from_name(""), None);
 }

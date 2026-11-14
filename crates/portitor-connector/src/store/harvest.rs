@@ -10,7 +10,7 @@ use rusqlite::{OptionalExtension as _, Row, Transaction, params};
 use super::{SqliteNegotiations, StoreError, col, err, json, parsed};
 use crate::harvest::{
     CheckKind, Commit, Counts, DatasetState, DatasetStore, EntryError, HarvestJob, HarvestStatus,
-    JobOutcome, JobRecord, JobWithErrors, KEPT_JOBS, StoredDataset, Trigger, count,
+    JobKind, JobOutcome, JobRecord, JobWithErrors, KEPT_JOBS, StoredDataset, Trigger, count,
 };
 
 /// A number as `SQLite` stores it.
@@ -53,12 +53,13 @@ fn dataset_from_row(row: &Row<'_>) -> Result<StoredDataset, StoreError> {
 }
 
 const JOB_COLUMNS: &str = "id, started_at, finished_at, run_trigger, source, snapshot_sha256, \
-     outcome, seen, added, updated, unchanged, withdrawn, rejected, summary";
+     outcome, seen, added, updated, unchanged, withdrawn, rejected, summary, kind";
 
 fn job_from_row(row: &Row<'_>) -> Result<HarvestJob, StoreError> {
     Ok(HarvestJob {
         id: uint(col(row, 0)?)?,
         record: JobRecord {
+            kind: named("job kind", &col::<String>(row, 14)?, JobKind::from_name)?,
             started_at: uint(col(row, 1)?)?,
             finished_at: uint(col(row, 2)?)?,
             trigger: named("trigger", &col::<String>(row, 3)?, Trigger::from_name)?,
@@ -134,7 +135,7 @@ fn write_dataset(
 fn insert_job(tx: &Transaction<'_>, id: i64, job: &JobRecord) -> Result<(), StoreError> {
     let sql = format!(
         "INSERT INTO harvest_job ({JOB_COLUMNS})
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)"
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)"
     );
     let counts = &job.counts;
     tx.execute(
@@ -154,6 +155,7 @@ fn insert_job(tx: &Transaction<'_>, id: i64, job: &JobRecord) -> Result<(), Stor
             int(counts.withdrawn)?,
             int(counts.rejected)?,
             job.summary,
+            job.kind.name(),
         ],
     )
     .map_err(err)?;
@@ -390,6 +392,7 @@ mod tests {
         for n in 0..KEPT_JOBS + 3 {
             let commit = Commit {
                 job: JobRecord {
+                    kind: JobKind::Datasets,
                     started_at: n,
                     finished_at: n,
                     trigger: Trigger::Interval,

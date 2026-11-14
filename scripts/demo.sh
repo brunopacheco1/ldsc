@@ -7,7 +7,7 @@
 # a file. Each participant is a connector and its identity component
 # (portitor-identity); a portitor-issuer is the data space's authority.
 # The authority publishes the HealthDCAT-AP demo bundle
-# (scripts/demo-bundle.sh) on its issuer; the provider pins it and offers
+# (scripts/demo-bundle.sh) on its issuer; the provider follows it and offers
 # examples/healthdcat-datasets.json, with the files of examples/data
 # served by a local web server as their sources. The checks are in
 # scripts/demo-steps.sh; scripts/demo-compose.sh runs the same checks in
@@ -109,11 +109,10 @@ step "Start the provider on $PROVIDER and the consumer on $CONSUMER"
 openssl rand -hex 32 >"$WORK/consumer/management.key"
 openssl rand -hex 32 >"$WORK/provider/management.key"
 # both list the credential type of the offer for EU processors (ADR 0019);
-# the provider pins the bundle the issuer serves (ADR 0005)
+# the provider follows the newest bundle the issuer serves (ADR 0005)
 start_connector provider "$PROVIDER_ID" "$PROVIDER" "$PROVIDER_IDENTITY" \
   PORTITOR_DATASETS_FILE="$WORK/datasets.json" PORTITOR_POLICY_CREDENTIALS=DataProcessorCredential \
-  PORTITOR_BUNDLE_URL="http://$ISSUER_ADDRESS/bundles/$BUNDLE_VERSION/" \
-  PORTITOR_BUNDLE_VERSION="$BUNDLE_VERSION" PORTITOR_BUNDLE_AUTHORITY="$AUTHORITY" \
+  PORTITOR_BUNDLE_URL="http://$ISSUER_ADDRESS/bundles/" PORTITOR_BUNDLE_AUTHORITY="$AUTHORITY" \
   PORTITOR_MANAGEMENT_BIND="$PROVIDER_MANAGEMENT" \
   PORTITOR_MANAGEMENT_API_KEY_FILE="$WORK/provider/management.key"
 start_connector consumer "$CONSUMER_ID" "$CONSUMER" "$CONSUMER_IDENTITY" \

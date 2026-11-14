@@ -141,8 +141,8 @@ services:
       # the same scope as the EDC control plane's (config/edc-controlplane.properties)
       PORTITOR_DCP_SCOPES: org.eclipse.dspace.dcp.vc.type:MembershipCredential:read
       # the data space's HealthDCAT-AP bundle, from the issuer
-      PORTITOR_BUNDLE_URL: http://issuer:8070/bundles/r8-demo-1/
-      PORTITOR_BUNDLE_VERSION: r8-demo-1
+      # the newest version (latest.json), looked for every hour
+      PORTITOR_BUNDLE_URL: http://issuer:8070/bundles/
       PORTITOR_BUNDLE_AUTHORITY: did:web:issuer%3A8070
     volumes:
       - ./config/portitor-datasets.json:/config/datasets.json:ro

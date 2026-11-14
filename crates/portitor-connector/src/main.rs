@@ -8,8 +8,10 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use portitor_connector::auth::{AuthSettings, CallerVerifier, Prover, dcp_adapters};
-use portitor_connector::bundle_source::{BundleConfig, load_bundle};
-use portitor_connector::shacl::BundleRules;
+use portitor_connector::bundle_harvest::BundleHarvester;
+use portitor_connector::bundle_source::{BundleConfig, source_for};
+use portitor_connector::bundle_store::CacheFolder;
+use portitor_runtime::directory::{Directory, WebDirectory};
 use portitor_runtime::serve::{
     MAX_CONCURRENT_REQUESTS, REQUEST_TIMEOUT, bind_management, init_logging, serve, with_limits,
 };
@@ -45,12 +47,28 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     ports.use_sqlite(&store);
     let settings = AuthSettings::from_env(&config.participant_id, config.allow_http_callbacks)?;
     (ports.verifier, ports.prover) = auth_adapters(settings).await?;
-    load_bundle_rules(&config, &mut ports).await?;
+    let bundle = start_bundle_harvest(&config, &mut ports).await?;
     // `build` runs the first harvest before it returns: blocking work (a
     // file read, SQLite, SHACL) on this async task, done once at start
     // before anything is served, like the bundle read above
     let (app, negotiator) = portitor_connector::build(&config, ports)?;
     schedule_harvest(&config, &negotiator);
+    if let Some((harvester, start_job)) = bundle {
+        let listener = negotiator.bundle_listener();
+        // the start run goes into the job log, which exists from `build` on
+        listener.record(start_job);
+        let harvester = Arc::new(harvester);
+        if harvester.schedule(listener).is_some() {
+            tracing::info!(
+                refresh_seconds = harvester.refresh_seconds(),
+                "looking for new bundle versions"
+            );
+        } else {
+            tracing::info!(
+                "bundle: no new version is looked for (fixed PORTITOR_BUNDLE_VERSION, or PORTITOR_BUNDLE_REFRESH_SECONDS=0)"
+            );
+        }
+    }
     // messages saved but not acknowledged before the last stop
     match negotiator.resume() {
         Ok(0) => {}
@@ -84,25 +102,31 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Loads the authority's signed bundle (ADR 0005) and applies its rules
-/// to `ports`: the SHACL check of each harvested dataset and the guard on
-/// DSP messages. No bundle configured: nothing changes (no SHACL checks,
-/// no message guard).
+/// Takes the authority's signed bundle (ADR 0005), and applies its rules
+/// to `ports` through the bundle harvester's copy: the SHACL check of
+/// each harvested dataset and the guard on DSP messages. No bundle
+/// configured: nothing changes (no SHACL checks, no message guard).
 ///
 /// # Errors
-/// A bundle is configured but cannot be loaded, or its shapes cannot be
-/// read: the start stops, as for a bad signature.
-async fn load_bundle_rules(
+/// A bundle is configured but no version can be used, or its shapes
+/// cannot be read: the start stops, as for a bad signature.
+async fn start_bundle_harvest(
     config: &portitor_connector::Config,
     ports: &mut portitor_connector::Ports,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let bundle_config = BundleConfig::from_env(&config.db_file, config.allow_http_callbacks)?;
-    if let Some(bundle) = load_bundle(bundle_config).await? {
-        let rules = BundleRules::from_bundle(&bundle)?;
-        rules.log_start();
-        ports.use_bundle_rules(&rules);
-    }
-    Ok(())
+) -> Result<
+    Option<(BundleHarvester, portitor_connector::harvest::JobRecord)>,
+    Box<dyn std::error::Error>,
+> {
+    let Some(bundle_config) = BundleConfig::from_env(&config.db_file, config.allow_http_callbacks)?
+    else {
+        return Ok(None);
+    };
+    let directory: Arc<dyn Directory> = Arc::new(WebDirectory::new(bundle_config.allow_http)?);
+    let source = source_for(&bundle_config, directory)?;
+    let store = Arc::new(CacheFolder::new(&bundle_config.cache_dir));
+    let started = BundleHarvester::start(bundle_config, source, store).await?;
+    ports.use_bundle_rules(&started.harvester.copy());
+    Ok(Some((started.harvester, started.job)))
 }
 
 /// Starts the harvest schedule (`PORTITOR_HARVEST_INTERVAL_SECONDS`) and

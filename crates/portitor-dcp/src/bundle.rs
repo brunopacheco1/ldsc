@@ -525,7 +525,8 @@ pub fn sign_manifest(
 pub struct Expected<'a> {
     /// The authority's DID (the connector's `PORTITOR_BUNDLE_AUTHORITY`).
     pub authority: &'a str,
-    /// The pinned version (the connector's `PORTITOR_BUNDLE_VERSION`).
+    /// The version asked for: the connector's `PORTITOR_BUNDLE_VERSION`,
+    /// or the one `latest.json` named.
     pub version: &'a str,
 }
 
@@ -705,6 +706,13 @@ impl VerifiedBundle {
     #[must_use]
     pub fn version(&self) -> &str {
         &self.manifest.version
+    }
+
+    /// The issue date (`YYYY-MM-DD`). A connector that follows the
+    /// newest version never takes one issued before the one it uses.
+    #[must_use]
+    pub fn issued(&self) -> &str {
+        &self.manifest.issued
     }
 
     /// The profile IRI, to state as `dct:conformsTo` of a dataset that

@@ -20,7 +20,8 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
-use portitor_connector::harvest::FixedSource;
+use portitor_connector::bundle_harvest::BundleCopy;
+use portitor_connector::harvest::{DatasetCheck, FixedSource};
 use portitor_connector::http_client::Sender;
 use portitor_connector::management::{ApiKey, router as management_router};
 use portitor_connector::ports::Retry;
@@ -252,7 +253,7 @@ fn provider_ports(
         first_delay: Duration::from_millis(1),
     };
     if let Some(rules) = bundle {
-        ports.use_bundle_rules(rules);
+        ports.use_bundle_rules(&BundleCopy::new(rules.clone()));
     }
     ports
 }
@@ -499,7 +500,7 @@ async fn an_outbound_message_that_breaks_the_message_shapes_is_not_sent() {
         attempts: 1,
         first_delay: Duration::from_millis(1),
     };
-    ports.use_bundle_rules(&rules);
+    ports.use_bundle_rules(&BundleCopy::new(rules.clone()));
     let (_, consumer) =
         portitor_connector::build(&config(CONSUMER, "https://consumer.example"), ports).unwrap();
     let offer = |permission: Value| -> portitor_dsp::Offer {
@@ -641,7 +642,7 @@ async fn a_new_bundle_version_hides_a_failing_dataset_and_keeps_its_transfers() 
         );
         ports.use_sqlite(&store);
         ports.harvest.source = Some(Arc::new(FixedSource::new(vec![entry.clone()])));
-        ports.use_bundle_rules(&rules);
+        ports.use_bundle_rules(&BundleCopy::new(rules.clone()));
         let (app, negotiator) = portitor_connector::build(&provider_config, ports).unwrap();
         network.join(PROVIDER_URL, app.clone());
         (app, negotiator)
@@ -699,4 +700,35 @@ async fn a_new_bundle_version_hides_a_failing_dataset_and_keeps_its_transfers() 
         transfer_and_fetch(&consumer, &agreement_id, &provider, PROVIDER_URL).await,
         (StatusCode::OK, b"age,count\n18,3\n".to_vec())
     );
+}
+
+/// The bundle copy checks datasets with the version in use: a version
+/// without `datasets` shapes adds nothing to the DSP rules and states no
+/// `dct:conformsTo`; one with shapes checks them.
+#[test]
+fn the_bundle_copy_checks_datasets_with_the_version_in_use() {
+    let without = BundleCopy::new(rules(&bundle_of(
+        "2026.11.0",
+        vec![messages_file(ODRL_RULE)],
+    )));
+    assert_eq!(DatasetCheck::rules_version(&without), "bundle:2026.11.0");
+    let checked = DatasetCheck::check(
+        &without,
+        &plain_entry("urn:example:open", &json!({"action": "use"})),
+    )
+    .unwrap();
+    assert_eq!(checked.dataset.id, "urn:example:open");
+    assert_eq!(checked.conforms_to, None);
+    assert!(DatasetCheck::check(&without, &json!("not an object")).is_err());
+
+    let with = BundleCopy::new(rules(&bundle_of("2026.12.0", health_files())));
+    assert_eq!(DatasetCheck::rules_version(&with), "bundle:2026.12.0");
+    assert!(
+        DatasetCheck::check(&with, &health_entry("urn:example:good"))
+            .unwrap()
+            .conforms_to
+            .is_some()
+    );
+    assert!(DatasetCheck::check(&with, &invalid_entry("urn:example:bad")).is_err());
+    assert_eq!(with.current().version(), "2026.12.0");
 }

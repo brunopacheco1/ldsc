@@ -63,9 +63,12 @@ pub mod management;
 pub mod negotiation;
 mod outbox;
 pub mod ports;
-// the signed schema and vocabulary bundle (ADR 0005); its settings are
-// read by `bundle_source::BundleConfig`, not by `Config`
+// the signed schema and vocabulary bundle (ADR 0005): where it comes
+// from (its settings are read by `bundle_source::BundleConfig`, not by
+// `Config`), the read copy, and the harvester that pulls new versions
+pub mod bundle_harvest;
 pub mod bundle_source;
+pub mod bundle_store;
 // the bundle's rules: SHACL dataset check, message guard
 pub mod shacl;
 pub mod store;
@@ -379,6 +382,13 @@ impl Negotiator {
     #[must_use]
     pub fn schedule_harvest(&self, every: Duration) -> Option<tokio::task::JoinHandle<()>> {
         self.harvester.schedule(every)
+    }
+
+    /// The dataset harvester, told by the bundle harvester about its runs
+    /// and new rules.
+    #[must_use]
+    pub fn bundle_listener(&self) -> Arc<dyn bundle_harvest::BundleListener> {
+        Arc::clone(&self.harvester) as _
     }
 
     /// How many datasets are in the catalog now.

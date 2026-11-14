@@ -7,7 +7,7 @@
 #![allow(clippy::unwrap_used)]
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -222,6 +222,8 @@ struct Setup {
     store: SqliteStore,
     key: SigningKey,
     max_active_per_holder: u64,
+    /// `PORTITOR_ISSUER_BUNDLE_DIR`.
+    bundle_dir: Option<PathBuf>,
 }
 
 impl Setup {
@@ -230,6 +232,7 @@ impl Setup {
             store: SqliteStore::in_memory().unwrap(),
             key: SigningKey::generate().unwrap(),
             max_active_per_holder: 10,
+            bundle_dir: None,
         }
     }
 
@@ -240,6 +243,7 @@ impl Setup {
             store: SqliteStore::open(path).unwrap(),
             key: SigningKey::from_pkcs8(key.pkcs8()).unwrap(),
             max_active_per_holder: 10,
+            bundle_dir: None,
         }
     }
 }
@@ -268,7 +272,7 @@ impl World {
             allow_http: false,
             max_active_per_holder: setup.max_active_per_holder,
             bundle_key_file: None,
-            bundle_dir: None,
+            bundle_dir: setup.bundle_dir,
         };
         let store = Arc::new(setup.store);
         let ports = Ports {
@@ -1211,20 +1215,28 @@ fn published_management_description_is_current() {
     assert!(spec["openapi"].as_str().unwrap().starts_with("3.1"));
 }
 
-/// Every operation in docs/api/issuer-openapi.json is routed. Paths with
-/// their own `servers` entry sit under the issuer service URL, which is
+/// Every operation in docs/api/issuer-openapi.json is routed (the bundle
+/// routes with an empty bundle folder). Paths with their own `servers`
+/// entry sit under the issuer service URL, which is
 /// `https://issuer.example/issuer` here.
 #[tokio::test]
 async fn openapi_paths_are_served() {
     let raw = include_str!("../../../docs/api/issuer-openapi.json");
     let spec: Value = serde_json::from_str(raw).unwrap();
     assert_eq!(spec["info"]["version"], env!("CARGO_PKG_VERSION"));
-    let world = World::new();
+    let bundles = std::env::temp_dir().join(format!("portitor-issuer-openapi-{}", new_uuid()));
+    std::fs::create_dir_all(&bundles).unwrap();
+    let world = World::with(Setup {
+        bundle_dir: Some(bundles),
+        ..Setup::in_memory()
+    });
     let mut count = 0;
     for (path, item) in spec["paths"].as_object().unwrap() {
         let path = path
             .replace("{issuerPid}", "unknown")
-            .replace("{name}", "vc11");
+            .replace("{name}", "vc11")
+            .replace("{version}", "unknown")
+            .replace("{path}", "manifest.json");
         let uri = if item.get("servers").is_some() {
             format!("/issuer{path}")
         } else {
@@ -1250,7 +1262,7 @@ async fn openapi_paths_are_served() {
             count += 1;
         }
     }
-    assert_eq!(count, 6);
+    assert_eq!(count, 8);
 }
 
 /// Not a check: writes `docs/api/issuer-management-openapi.json` when run

@@ -160,18 +160,15 @@ impl Ports {
 }
 
 impl Ports {
-    /// Applies the rules of the dataspace's bundle (ADR 0005): the harvest
-    /// checks each dataset against the bundle's SHACL shapes after the DSP
-    /// rules (when the bundle has `datasets` shapes), and DSP messages are
-    /// checked against its `messages` shapes in both directions (when it
-    /// has any). Without a call, none of this happens.
-    pub fn use_bundle_rules(&mut self, rules: &crate::shacl::BundleRules) {
-        if let Some(check) = rules.dataset_check() {
-            self.harvest.extra_check = Some(check as _);
-        }
-        if let Some(guard) = rules.guard() {
-            self.guard = guard;
-        }
+    /// Applies the rules of the dataspace's bundle (ADR 0005), through
+    /// `copy`, which always holds the version in use: the harvest checks
+    /// each dataset against its SHACL shapes after the DSP rules (when it
+    /// has `datasets` shapes), and DSP messages are checked against its
+    /// `messages` shapes in both directions (when it has any). Without a
+    /// call, none of this happens.
+    pub fn use_bundle_rules(&mut self, copy: &crate::bundle_harvest::BundleCopy) {
+        self.harvest.extra_check = Some(Arc::new(copy.clone()) as _);
+        self.guard = Arc::new(copy.clone());
     }
 }
 

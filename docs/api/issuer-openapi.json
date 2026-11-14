@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Portitor issuer",
-    "description": "The public HTTP interface of portitor-issuer (ADR 0018): the issuer's did:web DID document, the DCP v1.0.1 issuer service (metadata, credential request, request status) and the Bitstring Status List credentials. Message bodies follow the DCP v1.0.1 JSON Schemas (copies in crates/portitor-dcp/tests/schemas, linked from each operation). Issued credentials are delivered to the holder's Storage API, not answered here. The management API is described separately in issuer-management-openapi.json. Written by hand; a test checks that every operation here is served.",
+    "description": "The public HTTP interface of portitor-issuer (ADR 0018): the issuer's did:web DID document, the DCP v1.0.1 issuer service (metadata, credential request, request status) the Bitstring Status List credentials, and, with PORTITOR_ISSUER_BUNDLE_DIR, the signed schema and vocabulary bundles (ADR 0005). Message bodies follow the DCP v1.0.1 JSON Schemas (copies in crates/portitor-dcp/tests/schemas, linked from each operation). Issued credentials are delivered to the holder's Storage API, not answered here. The management API is described separately in issuer-management-openapi.json. Written by hand; a test checks that every operation here is served.",
     "license": {
       "name": "Apache-2.0",
       "identifier": "Apache-2.0"
@@ -233,6 +233,79 @@
           },
           "404": {
             "description": "No such list"
+          }
+        }
+      }
+    },
+    "/bundles/latest.json": {
+      "get": {
+        "summary": "The newest schema and vocabulary bundle version (ADR 0005)",
+        "description": "Served when PORTITOR_ISSUER_BUNDLE_DIR is set: the folder's latest.json, written by `portitor-issuer bundle build` (unless --not-latest). Not signed: a connector that follows it still checks the signature of the version it names, and never takes a version issued before the one it uses. Sent with Cache-Control: no-cache.",
+        "operationId": "bundleLatest",
+        "responses": {
+          "200": {
+            "description": "The newest version",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "version"
+                  ],
+                  "properties": {
+                    "version": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No bundle folder, or no latest.json in it"
+          }
+        }
+      }
+    },
+    "/bundles/{version}/{path}": {
+      "get": {
+        "summary": "One file of a signed schema and vocabulary bundle (ADR 0005)",
+        "description": "Served when PORTITOR_ISSUER_BUNDLE_DIR is set: manifest.json, manifest.jws (the manifest's compact JWS, signed with the bundle key <did>#bundle-key) or a file the manifest lists, with the media type the manifest gives it. path may hold slashes (for example shapes/public.ttl). Read only: bundles are built and signed offline.",
+        "operationId": "bundleFile",
+        "parameters": [
+          {
+            "name": "version",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file",
+            "content": {
+              "application/json": {},
+              "application/jose": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "text/turtle": {},
+              "application/ld+json": {}
+            }
+          },
+          "404": {
+            "description": "No such version or file"
           }
         }
       }

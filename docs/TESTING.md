@@ -98,11 +98,14 @@ Where the tests are:
   `crates/portitor-issuer/tests/bundle.rs` builds and signs a bundle
   (`bundle build`), refuses RDF/XML and paths that leave the folder,
   serves built bundles, and lists the bundle key in the DID document.
-  `crates/portitor-connector/tests/bundle_source.rs` loads the bundle an
-  issuer on a local port serves: the cache is used when the authority is
-  down, an error without a cache, a key the DID document does not list or
-  another authority or version is refused, and a folder is checked like a
-  download.
+  `crates/portitor-connector/tests/bundle_source.rs` takes the bundle an
+  issuer on a local port serves: a newer version is taken without a
+  restart, an older one never, a new version that fails a check leaves
+  the rules in use, a fixed version never changes, the cache is used
+  when the authority is down, an error without a cache, a key the DID
+  document does not list or another authority or version is refused,
+  and a folder is checked like a download. `tests/bundle_cache.rs`
+  covers when the cache may replace a download.
 - **SHACL engine** (`crates/portitor-shacl`): `tests/w3c.rs` runs the
   W3C SHACL core test cases for the parts the engine implements (copied
   unchanged into `tests/w3c`), comparing every result;
@@ -566,7 +569,7 @@ the consumer also a `DataProcessorCredential`. Then the checks
 (`scripts/demo-steps.sh`). The issuer is also the bundle authority: the
 script builds and signs the HealthDCAT-AP demo bundle
 (`scripts/demo-bundle.sh`), the issuer serves it and lists the bundle key,
-and the provider pins it (`PORTITOR_BUNDLE_URL`, `_VERSION`,
+and the provider follows its newest version (`PORTITOR_BUNDLE_URL`,
 `_AUTHORITY`) and offers `examples/healthdcat-datasets.json`. A catalog
 request without a token is refused (401), one with a token from the
 consumer's STS is answered: under the plain DSP `@context`, the two

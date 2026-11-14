@@ -3,32 +3,36 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Where the connector gets the dataspace's shapes, vocabularies and
-//! JSON-LD contexts: the authority's signed bundle (ADR 0005, "Bundle
-//! format"). [`BundleSource`] is the port; it gives a
-//! [`VerifiedBundle`], whose signature and digests were checked. Two
-//! adapters:
+//! JSON-LD contexts: the authority's signed bundles (ADR 0005, "Bundle
+//! format"). The authority is the source of truth; the connector keeps a
+//! read copy ([`crate::bundle_store`]) and pulls new versions
+//! ([`crate::bundle_harvest`]), the same way it harvests datasets.
 //!
-//! - [`UrlSource`] (`PORTITOR_BUNDLE_URL`): downloads one version folder
-//!   over HTTPS, checks it, and keeps it in a disk cache. When the
-//!   authority's host or its DID document cannot be reached at a later
-//!   start, the cached copy of the pinned version is used, after its
-//!   digests and signature are checked again, with a warning.
-//! - [`FolderSource`] (`PORTITOR_BUNDLE_DIR`): reads a version folder from
-//!   disk (development and tests), with the same checks, and no cache.
+//! [`BundleSource`] is the port. It names the newest version (from
+//! `latest.json`) and gives one version as a [`Fetched`] bundle, whose
+//! signature and digests were checked. Two adapters, both on a folder of
+//! bundles (one sub-folder per version, and `latest.json`):
 //!
-//! Both check the signature against the key that the authority's
-//! `did:web` document lists under `assertionMethod`. Validation itself
-//! is not done here: the caller gets the files' bytes.
+//! - [`UrlSource`] (`PORTITOR_BUNDLE_URL`): over HTTPS, for example the
+//!   issuer's `/bundles/`;
+//! - [`FolderSource`] (`PORTITOR_BUNDLE_DIR`): on disk (development and
+//!   tests).
+//!
+//! Both check the signature against the bundle key that the authority's
+//! `did:web` document lists under `assertionMethod`. Validation itself is
+//! not done here: the caller gets the files' bytes.
 //!
 //! Settings ([`BundleConfig`]): `PORTITOR_BUNDLE_URL` or
 //! `PORTITOR_BUNDLE_DIR` (one of them, or neither: no bundle, no
-//! validation), `PORTITOR_BUNDLE_VERSION` (the pinned version, required
-//! with a bundle), `PORTITOR_BUNDLE_AUTHORITY` (the authority's DID,
-//! required with a bundle) and `PORTITOR_BUNDLE_CACHE_DIR` (default
-//! `bundle-cache` next to `PORTITOR_DB_FILE`, `/data/bundle-cache` in the
-//! image).
+//! validation), `PORTITOR_BUNDLE_AUTHORITY` (the authority's DID,
+//! required with a bundle), `PORTITOR_BUNDLE_VERSION` (`latest`, the
+//! default, or one fixed version), `PORTITOR_BUNDLE_REFRESH_SECONDS` (how
+//! often the newest version is looked for; default one hour, 0 only at
+//! start) and `PORTITOR_BUNDLE_CACHE_DIR` (default `bundle-cache` next to
+//! `PORTITOR_DB_FILE`, `/data/bundle-cache` in the image).
 //!
-//! Limits on what is read: [`MAX_MANIFEST_BYTES`] for `manifest.json` and
+//! Limits on what is read: [`bundle::MAX_LATEST_BYTES`] for
+//! `latest.json`, [`MAX_MANIFEST_BYTES`] for `manifest.json` and
 //! `manifest.jws` each, [`MAX_FILE_BYTES`] (64 MiB) for one file,
 //! [`MAX_BUNDLE_BYTES`] (256 MiB) for all files, and [`DOWNLOAD_TIMEOUT`]
 //! for one download.
@@ -42,30 +46,32 @@ use std::time::Duration;
 use http_body_util::{BodyExt as _, Full};
 use hyper::body::Bytes;
 use portitor_dcp::Jwk;
-use portitor_dcp::bundle::MAX_SIGNATURE_BYTES;
 use portitor_dcp::bundle::{
-    self, BundleError, Expected, MANIFEST_FILE, MAX_BUNDLE_BYTES, MAX_FILE_BYTES,
-    MAX_MANIFEST_BYTES, Manifest, SIGNATURE_FILE, VerifiedBundle,
+    self, BundleError, Expected, LATEST_FILE, MANIFEST_FILE, MAX_BUNDLE_BYTES, MAX_FILE_BYTES,
+    MAX_LATEST_BYTES, MAX_MANIFEST_BYTES, MAX_SIGNATURE_BYTES, Manifest, SIGNATURE_FILE,
+    VerifiedBundle,
 };
 use portitor_runtime::BoxFuture;
-use portitor_runtime::directory::{Directory, WebDirectory};
+use portitor_runtime::directory::Directory;
 use portitor_runtime::http::{HttpsClient, https_client, outbound_url_allowed};
 use serde::{Deserialize, Serialize};
 
-/// How long one download (the manifest, its signature, or one file) may
-/// take, from sending the request until the whole answer is read.
+use crate::MAX_SETTING_SECONDS;
+
+/// How long one download (`latest.json`, the manifest, its signature, or
+/// one file) may take, from sending the request until the whole answer
+/// is read.
 pub const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The name of the cache folder next to `PORTITOR_DB_FILE`, unless
 /// `PORTITOR_BUNDLE_CACHE_DIR` says otherwise.
 pub const DEFAULT_CACHE_FOLDER: &str = "bundle-cache";
 
-/// The file in a cached version folder that keeps the key the bundle was
-/// verified with. Its name starts with `.`, which no bundle file may, so
-/// it never collides with one.
-pub const CACHED_KEY_FILE: &str = ".bundle-key.json";
+/// How often the newest version is looked for by default
+/// (`PORTITOR_BUNDLE_REFRESH_SECONDS`): one hour, as for datasets.
+pub const DEFAULT_REFRESH_SECONDS: u64 = 3600;
 
-/// Why no bundle could be loaded.
+/// Why a bundle could not be found, read or used.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BundleSourceError {
     /// A bundle setting is missing or wrong.
@@ -76,12 +82,12 @@ pub enum BundleSourceError {
     /// The bundle was read but did not pass a check: signature, key,
     /// authority, version or a digest.
     Invalid(BundleError),
-    /// [`UrlSource`]: the download failed, and the cache could not be used
+    /// The source could not be read, and the read copy could not be used
     /// either.
     NoUsableCopy {
-        /// Why the download failed.
+        /// Why the source could not be read.
         download: String,
-        /// Why the cache could not be used.
+        /// Why the read copy could not be used.
         cache: String,
     },
 }
@@ -108,36 +114,79 @@ impl From<BundleError> for BundleSourceError {
     }
 }
 
-/// Port: gives the verified bundle. Called once at start; a new version
-/// needs a restart (ADR 0005).
-pub trait BundleSource: Send + Sync {
-    /// The bundle, checked (signature and every digest).
-    fn load(&self) -> BoxFuture<'_, Result<VerifiedBundle, BundleSourceError>>;
+/// A bundle as the source gave it, checked: the signed parts as read,
+/// the key that verified them, and the verified bundle. The store keeps
+/// all three, so a copy can be checked again without the authority.
+#[derive(Debug, Clone)]
+pub struct Fetched {
+    /// `manifest.json` and `manifest.jws` as read.
+    pub signed: Signed,
+    /// The key the signature was verified with.
+    pub key: BundleKey,
+    /// The bundle, signature and digests checked.
+    pub bundle: VerifiedBundle,
 }
 
-/// Where the bundle comes from.
+/// Port: the authority's bundles.
+pub trait BundleSource: Send + Sync {
+    /// Where the bundles are, for logs and the job log (a URL or a folder).
+    fn name(&self) -> String;
+
+    /// The newest version, from `latest.json`.
+    ///
+    /// # Errors
+    /// [`BundleSourceError::Unavailable`] when it cannot be read,
+    /// [`BundleSourceError::Invalid`] when it is not a `latest.json`.
+    fn latest(&self) -> BoxFuture<'_, Result<String, BundleSourceError>>;
+
+    /// One version, checked: the signature against the authority's DID
+    /// document, the authority and version against `expected`, and every
+    /// file's digest. The manifest and its signature are checked before
+    /// any listed file is read.
+    ///
+    /// # Errors
+    /// [`BundleSourceError::Unavailable`] when something cannot be read,
+    /// [`BundleSourceError::Invalid`] when a check fails.
+    fn fetch(&self, version: &str) -> BoxFuture<'_, Result<Fetched, BundleSourceError>>;
+}
+
+/// Where the bundles are.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BundleLocation {
-    /// `PORTITOR_BUNDLE_URL`: the base URL of one version folder, for
-    /// example `https://authority.example/bundles/2026.11.0/`.
+    /// `PORTITOR_BUNDLE_URL`: the base URL of the folder of bundles, for
+    /// example `https://authority.example/bundles/`.
     Url(String),
-    /// `PORTITOR_BUNDLE_DIR`: a version folder on disk.
+    /// `PORTITOR_BUNDLE_DIR`: the folder of bundles on disk.
     Folder(PathBuf),
+}
+
+/// Which version to use (`PORTITOR_BUNDLE_VERSION`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VersionChoice {
+    /// `latest` (the default): the version `latest.json` names, looked
+    /// for again every `PORTITOR_BUNDLE_REFRESH_SECONDS`. A version issued
+    /// before the one in use is never taken.
+    Latest,
+    /// One version, never changed while the connector runs.
+    Fixed(String),
 }
 
 /// The bundle settings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BundleConfig {
-    /// Where the bundle is.
+    /// Where the bundles are.
     pub location: BundleLocation,
-    /// The pinned version (`PORTITOR_BUNDLE_VERSION`): the manifest must
-    /// have exactly this version.
-    pub version: String,
+    /// Which version to use.
+    pub version: VersionChoice,
     /// The authority's DID (`PORTITOR_BUNDLE_AUTHORITY`): the manifest
-    /// must name it, and its key must have signed the manifest.
+    /// must name it, and its bundle key must have signed the manifest.
     pub authority: String,
-    /// Where a downloaded bundle is kept (`PORTITOR_BUNDLE_CACHE_DIR`).
+    /// Where the read copy is kept (`PORTITOR_BUNDLE_CACHE_DIR`).
     pub cache_dir: PathBuf,
+    /// How often the newest version is looked for
+    /// (`PORTITOR_BUNDLE_REFRESH_SECONDS`); 0: only at start. Only used
+    /// with [`VersionChoice::Latest`].
+    pub refresh_seconds: u64,
     /// Plain-HTTP URLs and DIDs allowed (`PORTITOR_ALLOW_HTTP_CALLBACKS`,
     /// development and tests only).
     pub allow_http: bool,
@@ -149,8 +198,8 @@ impl BundleConfig {
     /// cache goes by default. `None`: no bundle is configured.
     ///
     /// # Errors
-    /// Both a URL and a folder, a bundle without version or authority, a
-    /// version or authority without a bundle, or a value that cannot be
+    /// Both a URL and a folder, a bundle without authority, a version,
+    /// authority or refresh without a bundle, or a value that cannot be
     /// used.
     pub fn from_vars(
         var: impl Fn(&str) -> Option<OsString>,
@@ -162,34 +211,59 @@ impl BundleConfig {
                 .map(|value| value.to_string_lossy().trim().to_owned())
                 .filter(|value| !value.is_empty())
         };
-        let config_error = |why: &str| Err(BundleSourceError::Config(why.to_owned()));
+        let config_error = |why: String| Err(BundleSourceError::Config(why));
         let location = match (text("PORTITOR_BUNDLE_URL"), text("PORTITOR_BUNDLE_DIR")) {
             (Some(_), Some(_)) => {
-                return config_error("set PORTITOR_BUNDLE_URL or PORTITOR_BUNDLE_DIR, not both");
+                return config_error(
+                    "set PORTITOR_BUNDLE_URL or PORTITOR_BUNDLE_DIR, not both".to_owned(),
+                );
             }
             (Some(url), None) => BundleLocation::Url(checked_base_url(&url, allow_http)?),
             (None, Some(folder)) => BundleLocation::Folder(PathBuf::from(folder)),
             (None, None) => {
-                if text("PORTITOR_BUNDLE_VERSION").is_some()
-                    || text("PORTITOR_BUNDLE_AUTHORITY").is_some()
-                {
-                    return config_error(
-                        "PORTITOR_BUNDLE_VERSION or PORTITOR_BUNDLE_AUTHORITY is set, but neither PORTITOR_BUNDLE_URL nor PORTITOR_BUNDLE_DIR",
-                    );
+                let stray = [
+                    "PORTITOR_BUNDLE_VERSION",
+                    "PORTITOR_BUNDLE_AUTHORITY",
+                    "PORTITOR_BUNDLE_REFRESH_SECONDS",
+                ]
+                .into_iter()
+                .find(|name| text(name).is_some());
+                if let Some(name) = stray {
+                    return config_error(format!(
+                        "{name} is set, but neither PORTITOR_BUNDLE_URL nor PORTITOR_BUNDLE_DIR"
+                    ));
                 }
                 return Ok(None);
             }
         };
-        let Some(version) = text("PORTITOR_BUNDLE_VERSION") else {
-            return config_error("PORTITOR_BUNDLE_VERSION is required with a bundle");
+        let version = match text("PORTITOR_BUNDLE_VERSION") {
+            None => VersionChoice::Latest,
+            Some(value) if value.eq_ignore_ascii_case(bundle::FOLLOW_LATEST) => {
+                VersionChoice::Latest
+            }
+            Some(value) => {
+                bundle::check_version(&value).map_err(|e| {
+                    BundleSourceError::Config(format!("PORTITOR_BUNDLE_VERSION: {e}"))
+                })?;
+                VersionChoice::Fixed(value)
+            }
         };
-        bundle::check_version(&version)
-            .map_err(|e| BundleSourceError::Config(format!("PORTITOR_BUNDLE_VERSION: {e}")))?;
         let Some(authority) = text("PORTITOR_BUNDLE_AUTHORITY") else {
-            return config_error("PORTITOR_BUNDLE_AUTHORITY is required with a bundle");
+            return config_error("PORTITOR_BUNDLE_AUTHORITY is required with a bundle".to_owned());
         };
         portitor_dcp::did_web_url(&authority)
             .map_err(|e| BundleSourceError::Config(format!("PORTITOR_BUNDLE_AUTHORITY: {e}")))?;
+        let refresh_seconds = match text("PORTITOR_BUNDLE_REFRESH_SECONDS") {
+            None => DEFAULT_REFRESH_SECONDS,
+            Some(value) => match value.parse::<u64>() {
+                Ok(seconds) if seconds <= MAX_SETTING_SECONDS => seconds,
+                _ => {
+                    return config_error(format!(
+                        "PORTITOR_BUNDLE_REFRESH_SECONDS must be 0 to {MAX_SETTING_SECONDS}, not {value:?}"
+                    ));
+                }
+            },
+        };
         let cache_dir = text("PORTITOR_BUNDLE_CACHE_DIR")
             .map_or_else(|| default_cache_dir(db_file), PathBuf::from);
         Ok(Some(Self {
@@ -197,6 +271,7 @@ impl BundleConfig {
             version,
             authority,
             cache_dir,
+            refresh_seconds,
             allow_http,
         }))
     }
@@ -209,11 +284,24 @@ impl BundleConfig {
         Self::from_vars(|name| std::env::var_os(name), db_file, allow_http)
     }
 
-    /// What the bundle must be.
-    fn expected(&self) -> Expected<'_> {
+    /// What version `version` of the bundle must be.
+    #[must_use]
+    pub fn expected<'a>(&'a self, version: &'a str) -> Expected<'a> {
         Expected {
             authority: &self.authority,
-            version: &self.version,
+            version,
+        }
+    }
+
+    /// How often the newest version is looked for: `None` for a fixed
+    /// version or a refresh of 0 (only at start).
+    #[must_use]
+    pub fn refresh_every(&self) -> Option<Duration> {
+        match self.version {
+            VersionChoice::Latest if self.refresh_seconds > 0 => {
+                Some(Duration::from_secs(self.refresh_seconds))
+            }
+            _ => None,
         }
     }
 }
@@ -226,8 +314,8 @@ fn default_cache_dir(db_file: &Path) -> PathBuf {
     }
 }
 
-/// Checks a bundle URL and makes it end in `/`, so file paths can be
-/// added to it.
+/// Checks a bundle URL and makes it end in `/`, so paths can be added to
+/// it.
 fn checked_base_url(url: &str, allow_http: bool) -> Result<String, BundleSourceError> {
     if !outbound_url_allowed(url, allow_http) || url.contains(['?', '#']) {
         return Err(BundleSourceError::Config(format!(
@@ -241,60 +329,45 @@ fn checked_base_url(url: &str, allow_http: bool) -> Result<String, BundleSourceE
     }
 }
 
-/// Loads the configured bundle at start: `Ok(None)` when no bundle is
-/// configured (validation stays off), the verified bundle otherwise. DID
-/// documents are resolved over HTTPS (HTTP only when allowed).
-///
-/// # Errors
-/// A bundle is configured but cannot be loaded and checked; the caller
-/// should stop, as for a missing key.
-pub async fn load_bundle(
-    config: Option<BundleConfig>,
-) -> Result<Option<VerifiedBundle>, BundleSourceError> {
-    let Some(config) = config else {
-        return Ok(None);
-    };
-    let directory: Arc<dyn Directory> =
-        Arc::new(WebDirectory::new(config.allow_http).map_err(BundleSourceError::Unavailable)?);
-    let source = source_for(config, directory)?;
-    source.load().await.map(Some)
-}
-
-/// The adapter for the configured location.
+/// The adapter for the configured location. DID documents are resolved
+/// with `directory`.
 ///
 /// # Errors
 /// The HTTP client cannot be built.
 pub fn source_for(
-    config: BundleConfig,
+    config: &BundleConfig,
     directory: Arc<dyn Directory>,
-) -> Result<Box<dyn BundleSource>, BundleSourceError> {
+) -> Result<Arc<dyn BundleSource>, BundleSourceError> {
     match &config.location {
-        BundleLocation::Url(url) => {
-            let url = url.clone();
-            Ok(Box::new(UrlSource::new(config, &url, directory)?))
-        }
-        BundleLocation::Folder(folder) => {
-            let folder = folder.clone();
-            Ok(Box::new(FolderSource {
-                config,
-                folder,
-                directory,
-            }))
-        }
+        BundleLocation::Url(url) => Ok(Arc::new(UrlSource::new(config, url, directory)?)),
+        BundleLocation::Folder(folder) => Ok(Arc::new(FolderSource {
+            config: config.clone(),
+            root: folder.clone(),
+            directory,
+        })),
     }
 }
 
 /// The signed parts of a bundle as read: `manifest.json` and
 /// `manifest.jws`.
-struct Signed {
-    manifest_bytes: Vec<u8>,
-    jws: String,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Signed {
+    /// The bytes of `manifest.json`, exactly as signed.
+    pub manifest_bytes: Vec<u8>,
+    /// `manifest.jws`, a compact JWS, trimmed.
+    pub jws: String,
 }
 
 impl Signed {
     /// The two parts from their bytes, however they were read. The
     /// signature must be text; spaces and line ends around it are dropped.
-    fn from_parts(manifest_bytes: Vec<u8>, jws_bytes: Vec<u8>) -> Result<Self, BundleSourceError> {
+    ///
+    /// # Errors
+    /// The signature is not text.
+    pub fn from_parts(
+        manifest_bytes: Vec<u8>,
+        jws_bytes: Vec<u8>,
+    ) -> Result<Self, BundleSourceError> {
         let jws = String::from_utf8(jws_bytes)
             .map_err(|_| BundleSourceError::Unavailable(format!("{SIGNATURE_FILE} is not text")))?;
         Ok(Self {
@@ -307,14 +380,14 @@ impl Signed {
 /// The listed files of a bundle as they are read, by path, with their
 /// total size kept within [`MAX_BUNDLE_BYTES`].
 #[derive(Default)]
-struct CollectedFiles {
-    files: BTreeMap<String, Vec<u8>>,
+pub(crate) struct CollectedFiles {
+    pub(crate) files: BTreeMap<String, Vec<u8>>,
     total: usize,
 }
 
 impl CollectedFiles {
     /// Adds one file, refusing to go over [`MAX_BUNDLE_BYTES`] in all.
-    fn add(&mut self, path: &str, bytes: Vec<u8>) -> Result<(), BundleSourceError> {
+    pub(crate) fn add(&mut self, path: &str, bytes: Vec<u8>) -> Result<(), BundleSourceError> {
         self.total = self.total.saturating_add(bytes.len());
         if self.total > MAX_BUNDLE_BYTES {
             return Err(BundleSourceError::Unavailable(format!(
@@ -327,72 +400,102 @@ impl CollectedFiles {
     }
 }
 
-/// The key a bundle was verified with, as kept in the cache.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// The key a bundle was verified with: its id and public key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct CachedKey {
-    kid: String,
-    public_key_jwk: Jwk,
+pub struct BundleKey {
+    /// `<authority>#bundle-key`.
+    pub kid: String,
+    /// The public key.
+    pub public_key_jwk: Jwk,
 }
 
 /// Checks the signature against the authority's DID document: the `kid`
-/// is a key of the authority, the document lists it under
+/// is the authority's bundle key, the document lists it under
 /// `assertionMethod`, and the manifest verifies with it. Returns the
 /// manifest and the key used.
 async fn verify_with_authority(
     signed: &Signed,
-    config: &BundleConfig,
+    expected: Expected<'_>,
     directory: &dyn Directory,
-) -> Result<(Manifest, CachedKey), BundleSourceError> {
-    let kid = bundle::signing_kid(&signed.jws, &config.authority)?;
+) -> Result<(Manifest, BundleKey), BundleSourceError> {
+    let kid = bundle::signing_kid(&signed.jws, expected.authority)?;
     let document = directory
-        .did_document(&config.authority)
+        .did_document(expected.authority)
         .await
         .map_err(|e| {
             BundleSourceError::Unavailable(format!("DID document of the authority: {e}"))
         })?;
-    let jwk = bundle::key_from_document(&document, &kid, &config.authority)?;
-    let manifest = bundle::verify(&signed.manifest_bytes, &signed.jws, jwk, config.expected())?;
-    let key = CachedKey {
+    let jwk = bundle::key_from_document(&document, &kid, expected.authority)?;
+    let manifest = bundle::verify(&signed.manifest_bytes, &signed.jws, jwk, expected)?;
+    let key = BundleKey {
         kid,
         public_key_jwk: jwk.clone(),
     };
     Ok((manifest, key))
 }
 
-/// Adapter: a version folder on disk (`PORTITOR_BUNDLE_DIR`). Only the
-/// files the manifest lists are read; other files in the folder are
+/// The version named in `latest.json`'s bytes.
+fn parse_latest(bytes: &[u8]) -> Result<String, BundleSourceError> {
+    Ok(bundle::Latest::parse(bytes)?.version)
+}
+
+/// Adapter: a folder of bundles on disk (`PORTITOR_BUNDLE_DIR`). Only the
+/// files a manifest lists are read; other files in a version folder are
 /// ignored.
 pub struct FolderSource {
     config: BundleConfig,
-    folder: PathBuf,
+    root: PathBuf,
     directory: Arc<dyn Directory>,
 }
 
+// Reading from disk uses `std::fs`, which blocks the thread. The files
+// are small (a few MiB of code lists), and this adapter is for
+// development and tests.
+
 impl BundleSource for FolderSource {
-    fn load(&self) -> BoxFuture<'_, Result<VerifiedBundle, BundleSourceError>> {
+    fn name(&self) -> String {
+        format!("folder:{}", self.root.display())
+    }
+
+    fn latest(&self) -> BoxFuture<'_, Result<String, BundleSourceError>> {
         Box::pin(async move {
-            let signed = read_signed(&self.folder)?;
-            let (manifest, _key) =
-                verify_with_authority(&signed, &self.config, self.directory.as_ref()).await?;
-            let files = read_listed_files(&self.folder, &manifest)?;
-            Ok(bundle::check_files(manifest, files)?)
+            parse_latest(&read_limited(
+                &self.root.join(LATEST_FILE),
+                MAX_LATEST_BYTES,
+            )?)
+        })
+    }
+
+    fn fetch(&self, version: &str) -> BoxFuture<'_, Result<Fetched, BundleSourceError>> {
+        let version = version.to_owned();
+        Box::pin(async move {
+            bundle::check_version(&version)?;
+            let folder = self.root.join(&version);
+            let signed = read_signed(&folder)?;
+            let expected = self.config.expected(&version);
+            let (manifest, key) =
+                verify_with_authority(&signed, expected, self.directory.as_ref()).await?;
+            let files = read_listed_files(&folder, &manifest)?;
+            let bundle = bundle::check_files(manifest, files)?;
+            Ok(Fetched {
+                signed,
+                key,
+                bundle,
+            })
         })
     }
 }
 
-// Reading from disk uses `std::fs`, which blocks the thread: it runs once
-// at start, before the connector serves anything.
-
 /// Reads `manifest.json` and `manifest.jws` from `folder`.
-fn read_signed(folder: &Path) -> Result<Signed, BundleSourceError> {
+pub(crate) fn read_signed(folder: &Path) -> Result<Signed, BundleSourceError> {
     let manifest_bytes = read_limited(&folder.join(MANIFEST_FILE), MAX_MANIFEST_BYTES)?;
     let jws_bytes = read_limited(&folder.join(SIGNATURE_FILE), MAX_SIGNATURE_BYTES)?;
     Signed::from_parts(manifest_bytes, jws_bytes)
 }
 
 /// Reads every file the manifest lists from `folder`.
-fn read_listed_files(
+pub(crate) fn read_listed_files(
     folder: &Path,
     manifest: &Manifest,
 ) -> Result<BTreeMap<String, Vec<u8>>, BundleSourceError> {
@@ -407,7 +510,7 @@ fn read_listed_files(
 }
 
 /// Reads a file of at most `max_bytes`.
-fn read_limited(path: &Path, max_bytes: usize) -> Result<Vec<u8>, BundleSourceError> {
+pub(crate) fn read_limited(path: &Path, max_bytes: usize) -> Result<Vec<u8>, BundleSourceError> {
     let unavailable = |e: std::io::Error| {
         BundleSourceError::Unavailable(format!("cannot read {}: {e}", path.display()))
     };
@@ -421,11 +524,10 @@ fn read_limited(path: &Path, max_bytes: usize) -> Result<Vec<u8>, BundleSourceEr
     std::fs::read(path).map_err(unavailable)
 }
 
-/// Adapter: a version folder over HTTPS (`PORTITOR_BUNDLE_URL`), kept
-/// in a disk cache.
+/// Adapter: a folder of bundles over HTTPS (`PORTITOR_BUNDLE_URL`).
 pub struct UrlSource {
     config: BundleConfig,
-    /// The version folder's URL, ending in `/`.
+    /// The folder of bundles' URL, ending in `/`.
     base_url: String,
     directory: Arc<dyn Directory>,
     client: HttpsClient,
@@ -433,12 +535,13 @@ pub struct UrlSource {
 }
 
 impl UrlSource {
-    /// An adapter for the bundle at `base_url` (see [`BundleLocation::Url`]).
+    /// An adapter for the folder of bundles at `base_url` (see
+    /// [`BundleLocation::Url`]).
     ///
     /// # Errors
     /// The URL is not allowed, or the HTTP client cannot be built.
     pub fn new(
-        config: BundleConfig,
+        config: &BundleConfig,
         base_url: &str,
         directory: Arc<dyn Directory>,
     ) -> Result<Self, BundleSourceError> {
@@ -446,35 +549,12 @@ impl UrlSource {
         let (client, has_ca_certificates) =
             https_client(config.allow_http).map_err(BundleSourceError::Unavailable)?;
         Ok(Self {
-            config,
+            config: config.clone(),
             base_url,
             directory,
             client,
             has_ca_certificates,
         })
-    }
-
-    /// The version's folder in the cache.
-    fn cache_folder(&self) -> PathBuf {
-        self.config.cache_dir.join(&self.config.version)
-    }
-
-    /// Downloads and checks the bundle: first the manifest and its
-    /// signature, which are checked before any listed file is
-    /// downloaded.
-    async fn download(&self) -> Result<(Signed, CachedKey, VerifiedBundle), BundleSourceError> {
-        let manifest_bytes = self.get(MANIFEST_FILE, MAX_MANIFEST_BYTES).await?;
-        let jws_bytes = self.get(SIGNATURE_FILE, MAX_SIGNATURE_BYTES).await?;
-        let signed = Signed::from_parts(manifest_bytes, jws_bytes)?;
-        let (manifest, key) =
-            verify_with_authority(&signed, &self.config, self.directory.as_ref()).await?;
-        let mut collected = CollectedFiles::default();
-        for entry in &manifest.files {
-            let bytes = self.get(&entry.path, MAX_FILE_BYTES).await?;
-            collected.add(&entry.path, bytes)?;
-        }
-        let verified = bundle::check_files(manifest, collected.files)?;
-        Ok((signed, key, verified))
     }
 
     /// GETs `<base_url><path>`, at most `max_bytes`, within
@@ -520,194 +600,46 @@ impl UrlSource {
             ))),
         }
     }
-
-    /// The cached copy of the pinned version, checked again: the
-    /// signature with the key kept next to it, and every digest.
-    fn load_cached(&self) -> Result<VerifiedBundle, BundleSourceError> {
-        let folder = self.cache_folder();
-        let signed = read_signed(&folder)?;
-        let key_bytes = read_limited(&folder.join(CACHED_KEY_FILE), MAX_MANIFEST_BYTES)?;
-        let key: CachedKey = serde_json::from_slice(&key_bytes).map_err(|e| {
-            BundleSourceError::Unavailable(format!("{CACHED_KEY_FILE} cannot be read: {e}"))
-        })?;
-        // the cached key must be the one that signed
-        let kid = bundle::signing_kid(&signed.jws, &self.config.authority)?;
-        if kid != key.kid {
-            return Err(BundleSourceError::Unavailable(format!(
-                "the cached key is {}, the bundle names {kid}",
-                key.kid
-            )));
-        }
-        let manifest = bundle::verify(
-            &signed.manifest_bytes,
-            &signed.jws,
-            &key.public_key_jwk,
-            self.config.expected(),
-        )?;
-        let files = read_listed_files(&folder, &manifest)?;
-        Ok(bundle::check_files(manifest, files)?)
-    }
-}
-
-impl UrlSource {
-    /// Keeps a bundle just downloaded in the cache. A failure is only
-    /// logged: the bundle was verified and is used.
-    fn keep_in_cache(&self, signed: &Signed, key: &CachedKey, verified: &VerifiedBundle) {
-        if let Err(error) = write_cache(&self.cache_folder(), signed, key, verified) {
-            tracing::warn!(%error, "bundle verified, but not written to the cache");
-        }
-        tracing::info!(
-            version = %verified.version(),
-            url = %self.base_url,
-            "bundle downloaded and verified"
-        );
-    }
-
-    /// After a download that failed with `download` (something could not
-    /// be reached): the cached copy, checked again, with a warning.
-    ///
-    /// # Errors
-    /// [`BundleSourceError::NoUsableCopy`]: the cached copy cannot be used
-    /// either.
-    fn use_cache_after(&self, download: String) -> Result<VerifiedBundle, BundleSourceError> {
-        match self.load_cached() {
-            Ok(verified) => {
-                tracing::warn!(
-                    error = %download,
-                    version = %verified.version(),
-                    cache = %self.cache_folder().display(),
-                    "bundle download failed; using the cached copy, checked again"
-                );
-                Ok(verified)
-            }
-            Err(cache) => Err(BundleSourceError::NoUsableCopy {
-                download,
-                cache: cache.to_string(),
-            }),
-        }
-    }
 }
 
 impl BundleSource for UrlSource {
-    /// Downloads and checks the bundle, and keeps it in the cache. If
-    /// the download fails because something cannot be reached (the host,
-    /// the authority's DID document, a missing or too large file), the
-    /// cached copy is used. A bundle that was downloaded but fails a
-    /// check is never replaced by the cache: that is an error.
-    fn load(&self) -> BoxFuture<'_, Result<VerifiedBundle, BundleSourceError>> {
+    fn name(&self) -> String {
+        self.base_url.clone()
+    }
+
+    fn latest(&self) -> BoxFuture<'_, Result<String, BundleSourceError>> {
+        Box::pin(async move { parse_latest(&self.get(LATEST_FILE, MAX_LATEST_BYTES).await?) })
+    }
+
+    fn fetch(&self, version: &str) -> BoxFuture<'_, Result<Fetched, BundleSourceError>> {
+        let version = version.to_owned();
         Box::pin(async move {
-            match self.download().await {
-                Ok((signed, key, verified)) => {
-                    self.keep_in_cache(&signed, &key, &verified);
-                    Ok(verified)
-                }
-                Err(BundleSourceError::Unavailable(download)) => self.use_cache_after(download),
-                Err(other) => Err(other),
+            // the version becomes part of the URL: only safe names
+            bundle::check_version(&version)?;
+            let manifest_bytes = self
+                .get(&format!("{version}/{MANIFEST_FILE}"), MAX_MANIFEST_BYTES)
+                .await?;
+            let jws_bytes = self
+                .get(&format!("{version}/{SIGNATURE_FILE}"), MAX_SIGNATURE_BYTES)
+                .await?;
+            let signed = Signed::from_parts(manifest_bytes, jws_bytes)?;
+            let expected = self.config.expected(&version);
+            let (manifest, key) =
+                verify_with_authority(&signed, expected, self.directory.as_ref()).await?;
+            let mut collected = CollectedFiles::default();
+            for entry in &manifest.files {
+                let bytes = self
+                    .get(&format!("{version}/{}", entry.path), MAX_FILE_BYTES)
+                    .await?;
+                collected.add(&entry.path, bytes)?;
             }
+            let bundle = bundle::check_files(manifest, collected.files)?;
+            Ok(Fetched {
+                signed,
+                key,
+                bundle,
+            })
         })
-    }
-}
-
-/// A function that turns an I/O error on `path` into a message naming
-/// the path, for `map_err`.
-fn io_error(path: &Path) -> impl Fn(std::io::Error) -> String + '_ {
-    move |error| format!("{}: {error}", path.display())
-}
-
-/// Writes a verified bundle to `folder`: the files, `manifest.json`,
-/// `manifest.jws` and the key used ([`CACHED_KEY_FILE`]), with
-/// [`replace_folder`].
-fn write_cache(
-    folder: &Path,
-    signed: &Signed,
-    key: &CachedKey,
-    verified: &VerifiedBundle,
-) -> Result<(), String> {
-    let key_json = serde_json::to_vec_pretty(key).map_err(|e| e.to_string())?;
-    let mut files: Vec<(&str, &[u8])> = Vec::new();
-    for file in verified.files() {
-        files.push((file.entry.path.as_str(), file.bytes));
-    }
-    files.push((MANIFEST_FILE, &signed.manifest_bytes));
-    files.push((SIGNATURE_FILE, signed.jws.as_bytes()));
-    files.push((CACHED_KEY_FILE, &key_json));
-    replace_folder(folder, &files)
-}
-
-/// Replaces `folder` with a folder that holds `files` (relative path,
-/// bytes). The files are written into a `.partial-*` folder next to it
-/// first, and then swapped in by renaming, so a crash never leaves a
-/// half-written copy in place. (The issuer's `bundle build` writes its
-/// output the same way, without the swap.)
-///
-/// Nothing is left behind: a failed write removes its `.partial-*`
-/// folder, a failed swap puts the old copy back, and the `.partial-*` and
-/// `.old-*` folders that a crash left are removed first.
-fn replace_folder(folder: &Path, files: &[(&str, &[u8])]) -> Result<(), String> {
-    let Some(parent) = folder.parent() else {
-        return Err("the cache folder has no parent".to_owned());
-    };
-    let Some(name) = folder.file_name() else {
-        return Err("the cache folder has no name".to_owned());
-    };
-    let name = name.to_string_lossy();
-    remove_leftovers(parent, &name);
-    let suffix = portitor_runtime::system::new_uuid();
-    let partial = parent.join(format!(".{name}.partial-{suffix}"));
-    let old = parent.join(format!(".{name}.old-{suffix}"));
-    if let Err(error) = write_files(&partial, files) {
-        // best effort: what is left is removed at the next write
-        let _ = std::fs::remove_dir_all(&partial);
-        return Err(error);
-    }
-    // swap: the old copy aside, the new one in, the old one removed
-    let had_old = folder.exists();
-    if had_old && let Err(error) = std::fs::rename(folder, &old) {
-        let _ = std::fs::remove_dir_all(&partial);
-        return Err(io_error(folder)(error));
-    }
-    if let Err(error) = std::fs::rename(&partial, folder) {
-        let _ = std::fs::remove_dir_all(&partial);
-        if had_old {
-            let _ = std::fs::rename(&old, folder);
-        }
-        return Err(io_error(folder)(error));
-    }
-    if had_old {
-        std::fs::remove_dir_all(&old).map_err(io_error(&old))?;
-    }
-    Ok(())
-}
-
-/// Writes `files` (relative path, bytes) under `folder`, creating the
-/// folders they need.
-fn write_files(folder: &Path, files: &[(&str, &[u8])]) -> Result<(), String> {
-    for (relative, bytes) in files {
-        let path = folder.join(relative);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(io_error(parent))?;
-        }
-        std::fs::write(&path, bytes).map_err(io_error(&path))?;
-    }
-    Ok(())
-}
-
-/// Removes the `.<name>.partial-*` and `.<name>.old-*` folders in
-/// `parent` that an earlier write left when it was stopped (a crash, a
-/// full disk). Best effort: a folder that cannot be removed is left.
-fn remove_leftovers(parent: &Path, name: &str) {
-    let Ok(entries) = std::fs::read_dir(parent) else {
-        // no cache folder yet: nothing to remove
-        return;
-    };
-    let partial = format!(".{name}.partial-");
-    let old = format!(".{name}.old-");
-    for entry in entries.flatten() {
-        let file_name = entry.file_name();
-        let file_name = file_name.to_string_lossy();
-        if file_name.starts_with(&partial) || file_name.starts_with(&old) {
-            let _ = std::fs::remove_dir_all(entry.path());
-        }
     }
 }
 
@@ -729,58 +661,6 @@ mod tests {
         )
     }
 
-    /// A new empty folder under the system's temporary folder.
-    fn scratch() -> PathBuf {
-        let folder = std::env::temp_dir().join(format!(
-            "portitor-cache-{}",
-            portitor_runtime::system::new_uuid()
-        ));
-        std::fs::create_dir_all(&folder).unwrap();
-        folder
-    }
-
-    /// The names in `folder`, sorted.
-    fn names(folder: &Path) -> Vec<String> {
-        let mut names: Vec<String> = std::fs::read_dir(folder)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        names.sort();
-        names
-    }
-
-    #[test]
-    fn a_cache_write_replaces_the_copy_and_leaves_nothing_behind() {
-        let cache = scratch();
-        let folder = cache.join("1");
-        replace_folder(&folder, &[("a.ttl", b"one"), ("sub/b.ttl", b"two")]).unwrap();
-        assert_eq!(std::fs::read(folder.join("sub/b.ttl")).unwrap(), b"two");
-        // what a stopped write left, of this version and of another one
-        for leftover in [".1.partial-x", ".1.old-y", ".2.partial-z"] {
-            std::fs::create_dir_all(cache.join(leftover).join("f")).unwrap();
-        }
-        replace_folder(&folder, &[("a.ttl", b"new")]).unwrap();
-        assert_eq!(std::fs::read(folder.join("a.ttl")).unwrap(), b"new");
-        assert!(!folder.join("sub").exists(), "the old copy is gone");
-        // only this version's leftovers are removed
-        assert_eq!(names(&cache), [".2.partial-z", "1"]);
-        std::fs::remove_dir_all(&cache).unwrap();
-    }
-
-    #[test]
-    fn a_failed_cache_write_keeps_the_old_copy_and_removes_its_partial_folder() {
-        let cache = scratch();
-        let folder = cache.join("1");
-        replace_folder(&folder, &[("a.ttl", b"one")]).unwrap();
-        // `a` is a file, so `a/b` cannot be written
-        let error = replace_folder(&folder, &[("a", b"x"), ("a/b", b"y")]).unwrap_err();
-        // the message names the path that failed (not printed: it holds the scratch folder)
-        assert!(error.contains("/a"));
-        assert_eq!(names(&cache), ["1"]);
-        assert_eq!(std::fs::read(folder.join("a.ttl")).unwrap(), b"one");
-        std::fs::remove_dir_all(&cache).unwrap();
-    }
-
     #[test]
     fn no_bundle_is_no_change() {
         assert_eq!(read(&[]).unwrap(), None);
@@ -789,27 +669,45 @@ mod tests {
     #[test]
     fn settings_are_read() {
         let config = read(&[
-            ("PORTITOR_BUNDLE_URL", "https://authority.example/bundles/1"),
-            ("PORTITOR_BUNDLE_VERSION", "1"),
+            ("PORTITOR_BUNDLE_URL", "https://authority.example/bundles"),
             ("PORTITOR_BUNDLE_AUTHORITY", "did:web:authority.example"),
         ])
         .unwrap()
         .unwrap();
         assert_eq!(
             config.location,
-            BundleLocation::Url("https://authority.example/bundles/1/".to_owned())
+            BundleLocation::Url("https://authority.example/bundles/".to_owned())
         );
+        assert_eq!(config.version, VersionChoice::Latest, "the default");
+        assert_eq!(config.refresh_seconds, DEFAULT_REFRESH_SECONDS);
+        assert_eq!(config.refresh_every(), Some(Duration::from_secs(3600)));
         assert_eq!(config.cache_dir, PathBuf::from("/data/bundle-cache"));
         let config = read(&[
-            ("PORTITOR_BUNDLE_DIR", "/bundles/1"),
+            ("PORTITOR_BUNDLE_DIR", "/bundles"),
             ("PORTITOR_BUNDLE_VERSION", "1"),
             ("PORTITOR_BUNDLE_AUTHORITY", "did:web:authority.example"),
             ("PORTITOR_BUNDLE_CACHE_DIR", "/cache"),
         ])
         .unwrap()
         .unwrap();
-        assert_eq!(config.location, BundleLocation::Folder("/bundles/1".into()));
+        assert_eq!(config.location, BundleLocation::Folder("/bundles".into()));
+        assert_eq!(config.version, VersionChoice::Fixed("1".to_owned()));
+        assert_eq!(
+            config.refresh_every(),
+            None,
+            "a fixed version never changes"
+        );
         assert_eq!(config.cache_dir, PathBuf::from("/cache"));
+        let config = read(&[
+            ("PORTITOR_BUNDLE_DIR", "/bundles"),
+            ("PORTITOR_BUNDLE_VERSION", "Latest"),
+            ("PORTITOR_BUNDLE_REFRESH_SECONDS", "0"),
+            ("PORTITOR_BUNDLE_AUTHORITY", "did:web:authority.example"),
+        ])
+        .unwrap()
+        .unwrap();
+        assert_eq!(config.version, VersionChoice::Latest);
+        assert_eq!(config.refresh_every(), None, "0: only at start");
         assert_eq!(
             default_cache_dir(Path::new("portitor.db")),
             PathBuf::from("bundle-cache")
@@ -819,31 +717,27 @@ mod tests {
     #[test]
     fn wrong_settings_are_refused() {
         let full = [
-            (
-                "PORTITOR_BUNDLE_URL",
-                "https://authority.example/bundles/1/",
-            ),
-            ("PORTITOR_BUNDLE_VERSION", "1"),
+            ("PORTITOR_BUNDLE_URL", "https://authority.example/bundles/"),
             ("PORTITOR_BUNDLE_AUTHORITY", "did:web:authority.example"),
         ];
-        // each of the three is needed
-        for missing in 1..3 {
-            let mut vars = full.to_vec();
-            vars.remove(missing);
-            assert!(read(&vars).is_err(), "without {}", full[missing].0);
+        assert!(read(&full[..1]).is_err(), "without an authority");
+        for stray in [
+            ("PORTITOR_BUNDLE_AUTHORITY", "did:web:authority.example"),
+            ("PORTITOR_BUNDLE_VERSION", "1"),
+            ("PORTITOR_BUNDLE_REFRESH_SECONDS", "60"),
+        ] {
+            assert!(read(&[stray]).is_err(), "{} without a bundle", stray.0);
         }
-        assert!(
-            read(&full[1..]).is_err(),
-            "version and authority without a bundle"
-        );
         let mut both = full.to_vec();
-        both.push(("PORTITOR_BUNDLE_DIR", "/bundles/1"));
+        both.push(("PORTITOR_BUNDLE_DIR", "/bundles"));
         assert!(read(&both).is_err());
         for (name, value) in [
-            ("PORTITOR_BUNDLE_URL", "http://authority.example/bundles/1/"),
+            ("PORTITOR_BUNDLE_URL", "http://authority.example/bundles/"),
             ("PORTITOR_BUNDLE_URL", "https://authority.example/b?x=1"),
             ("PORTITOR_BUNDLE_VERSION", "../1"),
             ("PORTITOR_BUNDLE_AUTHORITY", "did:key:z6Mk"),
+            ("PORTITOR_BUNDLE_REFRESH_SECONDS", "-1"),
+            ("PORTITOR_BUNDLE_REFRESH_SECONDS", "31536001"),
         ] {
             let mut vars = full.to_vec();
             vars.retain(|(n, _)| *n != name);

@@ -311,10 +311,22 @@ Four ports carry the 0.7 work, each with its adapters
   in memory that the DSP code (`CatalogDatasets`) and the data plane
   (`UpstreamSources`) read; it is replaced as a whole after a run that
   changed it.
-- `BundleSource` (`bundle_source.rs`): the verified bundle. `UrlSource`
-  downloads one version over HTTPS and keeps it in a disk cache;
-  `FolderSource` reads a local folder. Both check the signature against
-  the authority's `did:web` document and every digest.
+- `BundleSource` (`bundle_source.rs`): the authority's bundles. It names
+  the newest version (`latest.json`) and gives one version, verified.
+  `UrlSource` downloads over HTTPS; `FolderSource` reads a local folder.
+  Both check the signature against the authority's `did:web` document
+  and every digest.
+- `BundleStore` (`bundle_store.rs`): the read copy of the bundle on
+  disk and the version in use. `CacheFolder` keeps one version folder
+  and `.in-use.json`.
+- `BundleHarvester` (`bundle_harvest.rs`) takes the configured version
+  at start and looks for a newer one on a schedule, the bundle side of
+  `DatasetHarvester`. It never takes a version issued before the one in
+  use. `BundleCopy` holds the rules in use; it is the `DatasetCheck` and
+  `MessageGuard` the connector uses with a bundle, and a new version
+  replaces its rules without a restart. Its runs go to the harvest job
+  log (kind `bundle`), and a new version makes the `DatasetHarvester`
+  check the stored datasets again.
 
 DSP messages are checked through the `MessageGuard` port of
 `portitor-dsp` (`guard.rs`). With a bundle that has `messages` shapes,

@@ -17,7 +17,9 @@
 #                      keys, if the file does not exist yet); keep it
 #                      offline in a real data space
 #     bundle-key.jwk   its public key, for PORTITOR_ISSUER_BUNDLE_KEY_FILE
-#     bundles/<version>/  the signed bundle, for PORTITOR_ISSUER_BUNDLE_DIR
+#     bundles/         for PORTITOR_ISSUER_BUNDLE_DIR: <version>/, the
+#                      signed bundle, and latest.json, which names it as
+#                      the newest version
 #
 # Settings (environment), with the defaults of scripts/demo.sh's issuer:
 #   AUTHORITY      the authority's DID         did:web:127.0.0.1%3A18060

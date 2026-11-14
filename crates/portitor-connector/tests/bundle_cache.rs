@@ -5,7 +5,8 @@
 //! When the connector falls back to its cached bundle (ADR 0005): a file
 //! that cannot be downloaded (missing, or larger than its limit) means
 //! the cache is used; a file that was downloaded but has another digest
-//! is an error, and the cache is not used.
+//! is an error, and the cache is not used. The version is fixed here, so
+//! only the cache of that same version can be used.
 //!
 //! The authority's DID document comes from an issuer on 127.0.0.1; the
 //! bundle files come from a small file server in this test, which can be
@@ -20,9 +21,12 @@ use axum::extract::{Path as UrlPath, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use portitor_connector::bundle_harvest::{BundleHarvester, Started};
 use portitor_connector::bundle_source::{
-    BundleConfig, BundleLocation, BundleSourceError, load_bundle,
+    BundleConfig, BundleLocation, BundleSource, BundleSourceError, VersionChoice, source_for,
 };
+use portitor_connector::bundle_store::CacheFolder;
+use portitor_connector::harvest::JobOutcome;
 use portitor_dcp::SigningKey;
 use portitor_dcp::bundle::{BundleError, MAX_FILE_BYTES};
 use portitor_issuer::bundle_build::{Options, build};
@@ -60,17 +64,17 @@ enum Serve {
     Changed,
 }
 
-/// The file server's state: the built version folder and what to do.
+/// The file server's state: the bundles root and what to do.
 struct Files {
     folder: PathBuf,
     serve: Mutex<Serve>,
 }
 
-/// `GET /bundles/<path>`: the file from the version folder, unless the
-/// test broke it.
+/// `GET /bundles/<path>`: the file from the bundles root, unless the test
+/// broke it.
 async fn serve_file(State(files): State<Arc<Files>>, UrlPath(path): UrlPath<String>) -> Response {
     let serve = *files.serve.lock().unwrap();
-    if path == BROKEN_FILE {
+    if path == format!("{VERSION}/{BROKEN_FILE}") {
         match serve {
             Serve::AsBuilt => {}
             Serve::Missing => return StatusCode::NOT_FOUND.into_response(),
@@ -128,7 +132,7 @@ impl Authority {
         });
 
         let files = Arc::new(Files {
-            folder: bundles.join(VERSION),
+            folder: bundles,
             serve: Mutex::new(Serve::AsBuilt),
         });
         let files_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -147,13 +151,14 @@ impl Authority {
         }
     }
 
-    /// The connector's settings for this bundle, over HTTP.
+    /// The connector's settings for this version, over HTTP.
     fn settings(&self, cache: &Path) -> BundleConfig {
         BundleConfig {
             location: BundleLocation::Url(self.files_url.clone()),
-            version: VERSION.to_owned(),
+            version: VersionChoice::Fixed(VERSION.to_owned()),
             authority: self.did.clone(),
             cache_dir: cache.to_owned(),
+            refresh_seconds: 0,
             allow_http: true,
         }
     }
@@ -187,7 +192,19 @@ fn build_options(did: &str, output: &Path) -> Options {
         kid: format!("{did}#bundle-key"),
         key: "unused.pem".into(),
         issued: None,
+        not_latest: false,
     }
+}
+
+/// The source for `settings`, resolving DIDs over plain HTTP.
+fn source(settings: &BundleConfig) -> Arc<dyn BundleSource> {
+    source_for(settings, Arc::new(WebDirectory::new(true).unwrap())).unwrap()
+}
+
+/// A connector start: the bundle harvester takes the version.
+async fn start(settings: &BundleConfig) -> Result<Started, String> {
+    let store = Arc::new(CacheFolder::new(&settings.cache_dir));
+    BundleHarvester::start(settings.clone(), source(settings), store).await
 }
 
 #[tokio::test]
@@ -195,31 +212,33 @@ async fn a_file_that_cannot_be_downloaded_falls_back_to_the_cache() {
     let authority = Authority::start().await;
     let cache = scratch();
     // a first start fills the cache
-    load_bundle(Some(authority.settings(&cache)))
-        .await
-        .unwrap()
-        .unwrap();
+    let first = start(&authority.settings(&cache)).await.unwrap();
+    assert!(first.job.snapshot_sha256.is_some(), "downloaded");
     for (serve, why) in [
         (Serve::Missing, "HTTP 404"),
         (Serve::TooLarge, "answer not read"),
     ] {
         authority.serve(serve);
-        let bundle = load_bundle(Some(authority.settings(&cache)))
+        let error = source(&authority.settings(&cache))
+            .fetch(VERSION)
             .await
-            .unwrap()
+            .err()
             .unwrap();
-        assert_eq!(bundle.version(), VERSION, "{serve:?}");
-        assert_eq!(
-            bundle.datasets_files_for(PUBLIC)[0].bytes,
-            SHAPES.as_bytes(),
-            "{serve:?}: the cached file"
-        );
-        // without a cache, the same failure is an error that says why
-        let error = load_bundle(Some(authority.settings(&scratch())))
-            .await
-            .unwrap_err();
         assert!(
-            matches!(&error, BundleSourceError::NoUsableCopy { download, .. } if download.contains(why)),
+            matches!(&error, BundleSourceError::Unavailable(download) if download.contains(why)),
+            "{serve:?}: {error}"
+        );
+        let started = start(&authority.settings(&cache)).await.unwrap();
+        assert_eq!(started.harvester.in_use().version, VERSION, "{serve:?}");
+        assert_eq!(started.job.outcome, JobOutcome::Succeeded, "{serve:?}");
+        assert_eq!(
+            started.job.snapshot_sha256, None,
+            "{serve:?}: the cached copy"
+        );
+        // without a cache, the same failure stops the start and says why
+        let error = start(&authority.settings(&scratch())).await.err().unwrap();
+        assert!(
+            error.contains("no usable cached copy") && error.contains(why),
             "{serve:?}: {error}"
         );
     }
@@ -230,19 +249,22 @@ async fn a_file_that_cannot_be_downloaded_falls_back_to_the_cache() {
 async fn a_downloaded_file_with_another_digest_does_not_fall_back() {
     let authority = Authority::start().await;
     let cache = scratch();
-    load_bundle(Some(authority.settings(&cache)))
-        .await
-        .unwrap()
-        .unwrap();
+    start(&authority.settings(&cache)).await.unwrap();
     authority.serve(Serve::Changed);
+    let error = source(&authority.settings(&cache))
+        .fetch(VERSION)
+        .await
+        .err()
+        .unwrap();
     assert_eq!(
-        load_bundle(Some(authority.settings(&cache))).await,
-        Err(BundleSourceError::Invalid(BundleError::DigestMismatch(
-            BROKEN_FILE.to_owned()
-        )))
+        error,
+        BundleSourceError::Invalid(BundleError::DigestMismatch(BROKEN_FILE.to_owned()))
     );
+    let refused = start(&authority.settings(&cache)).await.err().unwrap();
+    assert!(refused.contains(BROKEN_FILE), "{refused}");
     // the cached copy is still the good one
     authority.serve(Serve::Missing);
-    assert!(load_bundle(Some(authority.settings(&cache))).await.is_ok());
+    let started = start(&authority.settings(&cache)).await.unwrap();
+    assert_eq!(started.harvester.in_use().version, VERSION);
     authority.stop().await;
 }

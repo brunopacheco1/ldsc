@@ -523,31 +523,40 @@ pub struct HarvestCountsView {
     rejected: u64,
 }
 
-/// A dataset harvest run.
+/// A harvest run: of the datasets, or of the authority's bundle.
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct HarvestJobView {
     /// The job id; a newer job has a higher id.
     #[schema(example = 42)]
     id: u64,
+    /// What it harvested: `datasets`, or `bundle` (a check for a new
+    /// version of the authority's schema and vocabulary bundle; its
+    /// counts are all 0, and its summary says which version is in use).
+    #[schema(example = "datasets")]
+    kind: String,
     /// When it started (UTC).
     #[schema(example = "2026-11-14T10:00:00Z")]
     started_at: String,
     /// When it ended (UTC).
     finished_at: String,
-    /// What started it: `start`, `interval`, or `bundle` (the rules
-    /// changed, so the stored datasets were checked again).
+    /// What started it: `start`, `interval`, or `bundle` (a new bundle
+    /// version came in, so the stored datasets were checked again).
     #[schema(example = "interval")]
     trigger: String,
-    /// The source's name, for example `file:/etc/portitor/datasets.json`.
+    /// The source's name, for example `file:/etc/portitor/datasets.json`,
+    /// or the bundles' URL.
     source: String,
-    /// SHA-256 of the snapshot, hex; absent when the source failed or for
-    /// a `bundle` job.
+    /// SHA-256 of the snapshot (for a bundle, of the new version's
+    /// `manifest.json`), hex; absent when the source failed, nothing new
+    /// was fetched, or the stored datasets were checked again.
     #[serde(skip_serializing_if = "Option::is_none")]
     snapshot_sha256: Option<String>,
-    /// `succeeded` (nothing rejected), `partial` (some entries rejected),
-    /// `unchanged` (same snapshot as the last run) or `failed` (the source
-    /// could not be read; the catalog was left as it was).
+    /// `succeeded` (nothing rejected; for a bundle, a new version is in
+    /// use), `partial` (some entries rejected), `unchanged` (same snapshot
+    /// as the last run; for a bundle, no newer version) or `failed` (the
+    /// source could not be read, or a new bundle version was refused; the
+    /// catalog and the rules were left as they were).
     #[schema(example = "succeeded")]
     outcome: String,
     /// What the run did.
@@ -563,6 +572,7 @@ impl From<HarvestJob> for HarvestJobView {
         let counts = record.counts;
         Self {
             id: job.id,
+            kind: record.kind.name().to_owned(),
             started_at: xsd_date_time(record.started_at),
             finished_at: xsd_date_time(record.finished_at),
             trigger: record.trigger.name().to_owned(),

@@ -100,17 +100,20 @@ entry never replaces a good one.**
 7. A source that cannot be read makes the run `failed` and leaves the
    copy as it is. With no copy yet, the catalog is empty and the
    connector still starts.
-8. When the connector starts with a new bundle version, stored datasets
-   are checked again; a dataset that now fails is **hidden** (not
-   deleted), and the reason is stored.
+8. When a new bundle version is put in use (at start, or while the
+   connector runs, ADR 0005), stored datasets are checked again; a
+   dataset that now fails is **hidden** (not deleted), and the reason is
+   stored. Then the source is harvested again, every entry checked, as
+   some rejected before may pass now.
 
 ### What is stored
 
 - Dataset: id, JSON-LD content, upstream source (never shown), content
   SHA-256, state (`active`, `withdrawn`, `hidden`), `dct:conformsTo`,
   first seen, last changed, last job.
-- Job: id, start and end times, trigger (`start`, `interval`, `bundle`),
-  source name, snapshot SHA-256, outcome (`succeeded`, `partial`,
+- Job: id, kind (`datasets`, or `bundle` for a check for a new bundle
+  version, whose counts are all 0), start and end times, trigger
+  (`start`, `interval`, `bundle`), source name, snapshot SHA-256, outcome (`succeeded`, `partial`,
   `unchanged`, `failed`), counts (seen, added, updated, unchanged,
   withdrawn, rejected), a one-line summary.
 - Entry error: job, dataset id if readable, position in the source, the

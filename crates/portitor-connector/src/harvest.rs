@@ -118,12 +118,45 @@ pub struct StoredDataset {
     pub last_job: u64,
 }
 
+/// What a run harvested: datasets, or the authority's bundle. Both are
+/// kept in the same job log, so an operator sees in one place when a new
+/// bundle came in and what it did to the datasets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobKind {
+    /// The datasets (ADR 0020).
+    Datasets,
+    /// The schema and vocabulary bundle (ADR 0005): a check for a new
+    /// version. Its counts are all 0.
+    Bundle,
+}
+
+impl JobKind {
+    /// Every value, for [`JobKind::from_name`].
+    const ALL: [Self; 2] = [Self::Datasets, Self::Bundle];
+
+    /// The name stored and shown: `datasets` or `bundle`.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Datasets => "datasets",
+            Self::Bundle => "bundle",
+        }
+    }
+
+    /// The kind with this name.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|value| value.name() == name)
+    }
+}
+
 /// What started a run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Trigger {
     /// The connector started.
     Start,
-    /// The schedule (`PORTITOR_HARVEST_INTERVAL_SECONDS`).
+    /// The schedule (`PORTITOR_HARVEST_INTERVAL_SECONDS`, or
+    /// `PORTITOR_BUNDLE_REFRESH_SECONDS` for the bundle).
     Interval,
     /// The rules changed (for example a new bundle version), so the stored
     /// datasets were checked again.
@@ -213,6 +246,8 @@ pub struct Counts {
 /// A run, as stored (without its id, which the store gives).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JobRecord {
+    /// What it harvested.
+    pub kind: JobKind,
     /// When it started, in seconds since 1970.
     pub started_at: u64,
     /// When it ended.
@@ -426,12 +461,7 @@ impl DatasetHarvester {
     pub fn start(&self) -> Result<(), StoreError> {
         let _running = self.busy.lock().unwrap_or_else(PoisonError::into_inner);
         self.reload()?;
-        let status = self.store.status()?;
-        let rules = self.check.rules_version();
-        let rules_changed = status.rules_version.as_deref() != Some(rules.as_str());
-        if rules_changed && let Err(e) = self.recheck(&rules) {
-            tracing::error!(error = %e, "harvest: cannot check the stored datasets again");
-        }
+        let rules_changed = self.recheck_if_rules_changed()?;
         // new rules: every entry of the source is checked again, even if
         // the snapshot is the same, as some rejected before may pass now
         if let Err(e) = self.run_now(Trigger::Start, rules_changed) {
@@ -442,6 +472,59 @@ impl DatasetHarvester {
         }
         tracing::info!(datasets = self.copy.active_count(), "catalog ready");
         Ok(())
+    }
+
+    /// The rules changed while the connector runs (a new bundle version,
+    /// ADR 0005): waits for a run going on, checks the stored datasets
+    /// again (a `bundle` job), then runs a harvest that checks every entry
+    /// of the source (also a `bundle` job), as some rejected before may
+    /// pass now. Blocking.
+    pub fn rules_changed(&self) -> RunResult {
+        let _running = self.busy.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Err(e) = self.recheck_if_rules_changed() {
+            tracing::error!(error = %e, "harvest: cannot check the stored datasets again");
+        }
+        match self.run_now(Trigger::Bundle, true) {
+            Ok(job) => RunResult::Done(job),
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    "harvest: cannot store the run; the catalog is unchanged"
+                );
+                RunResult::StoreFailed(e)
+            }
+        }
+    }
+
+    /// Adds a run of the bundle harvester (kind `bundle`) to the job log.
+    /// It writes no dataset and keeps the harvest status. Waits for a
+    /// run going on, so the status it keeps is the latest. Blocking.
+    ///
+    /// # Errors
+    ///
+    /// The store cannot be written.
+    pub fn record_bundle_run(&self, job: JobRecord) -> Result<u64, StoreError> {
+        let _running = self.busy.lock().unwrap_or_else(PoisonError::into_inner);
+        let status = self.store.status()?;
+        self.store.commit(&Commit {
+            job,
+            errors: Vec::new(),
+            writes: Vec::new(),
+            status,
+        })
+    }
+
+    /// Checks the stored datasets again if the rules are not the ones
+    /// they were last checked with. Returns whether they changed. A check
+    /// that cannot be stored is logged; the caller goes on.
+    fn recheck_if_rules_changed(&self) -> Result<bool, StoreError> {
+        let status = self.store.status()?;
+        let rules = self.check.rules_version();
+        let changed = status.rules_version.as_deref() != Some(rules.as_str());
+        if changed && let Err(e) = self.recheck(&rules) {
+            tracing::error!(error = %e, "harvest: cannot check the stored datasets again");
+        }
+        Ok(changed)
     }
 
     /// One run, unless one is going on. Blocking: it reads the source and
@@ -508,6 +591,7 @@ impl DatasetHarvester {
         let status = self.store.status()?;
         // the job record of this run: only how it ended differs
         let job = |snapshot_sha256, outcome, counts, summary| JobRecord {
+            kind: JobKind::Datasets,
             started_at,
             finished_at: now_secs(),
             trigger,
@@ -571,6 +655,7 @@ impl DatasetHarvester {
             return Ok(());
         }
         let job = JobRecord {
+            kind: JobKind::Datasets,
             started_at,
             finished_at: now_secs(),
             trigger: Trigger::Bundle,

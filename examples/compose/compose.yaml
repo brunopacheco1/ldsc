@@ -56,7 +56,8 @@ services:
       PORTITOR_ALLOW_HTTP_CALLBACKS: "true"
       # the demo bundle: its public key in the DID document
       # (did:web:issuer%3A8070#bundle-key), the signed versions served at
-      # http://issuer:8070/bundles/<version>/
+      # http://issuer:8070/bundles/<version>/, the newest named in
+      # http://issuer:8070/bundles/latest.json
       PORTITOR_ISSUER_BUNDLE_KEY_FILE: /config/bundle/bundle-key.jwk
       PORTITOR_ISSUER_BUNDLE_DIR: /config/bundle/bundles
     secrets:
@@ -114,8 +115,8 @@ services:
       PORTITOR_PUBLIC_URL: http://127.0.0.1:18080
       # HealthDCAT-AP datasets, checked against the data space's bundle
       PORTITOR_DATASETS_FILE: /config/datasets.json
-      PORTITOR_BUNDLE_URL: http://issuer:8070/bundles/r8-demo-1/
-      PORTITOR_BUNDLE_VERSION: r8-demo-1
+      # the newest version (latest.json), looked for every hour
+      PORTITOR_BUNDLE_URL: http://issuer:8070/bundles/
       PORTITOR_BUNDLE_AUTHORITY: did:web:issuer%3A8070
       # the offer for EU processors checks a DataProcessorCredential claim (ADR 0019)
       PORTITOR_POLICY_CREDENTIALS: DataProcessorCredential

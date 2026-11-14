@@ -102,9 +102,10 @@ All configuration is by environment variable. The full table is in the
 | `PORTITOR_PUBLIC_URL` | your public `https://` URL |
 | `PORTITOR_DATASETS_FILE` | path of the mounted datasets file, harvested at start and at each run |
 | `PORTITOR_HARVEST_INTERVAL_SECONDS` | leave the default, `3600` (one hour); `0` harvests only at start. A value that is not a whole number, or is above `31536000` (one year), stops the start |
-| `PORTITOR_BUNDLE_URL` | with a bundle: the `https://` base URL of one bundle version folder, for example `https://issuer.example.com/bundles/2026-11/`; plain `http://` only with `PORTITOR_ALLOW_HTTP_CALLBACKS=true` |
-| `PORTITOR_BUNDLE_DIR` | unset; a local bundle version folder, for development and tests only. Not together with `PORTITOR_BUNDLE_URL` |
-| `PORTITOR_BUNDLE_VERSION` | with a bundle, **required**: the version you pin; the manifest must have exactly this version |
+| `PORTITOR_BUNDLE_URL` | with a bundle: the `https://` URL of the authority's bundles folder (one folder per version, and `latest.json`), for example `https://issuer.example.com/bundles/`; plain `http://` only with `PORTITOR_ALLOW_HTTP_CALLBACKS=true` |
+| `PORTITOR_BUNDLE_DIR` | unset; a local bundles folder (one folder per version, and `latest.json`), for development and tests only. Not together with `PORTITOR_BUNDLE_URL` |
+| `PORTITOR_BUNDLE_VERSION` | `latest`: follow the newest version the authority names in `latest.json`; or one fixed version, never changed while the connector runs (the manifest must have exactly this version) |
+| `PORTITOR_BUNDLE_REFRESH_SECONDS` | `3600`: how often the newest version is looked for; `0` only at start. A value that is not a whole number, or is above `31536000` (one year), stops the start. Not used with a fixed version |
 | `PORTITOR_BUNDLE_AUTHORITY` | with a bundle, **required**: the authority's `did:web` DID; the manifest must name it, and its bundle key `<DID>#bundle-key`, listed under `assertionMethod` in its DID document, must have signed it with ES256; a bundle signed with any other key of the authority (such as its credential key) is refused |
 | `PORTITOR_BUNDLE_CACHE_DIR` | leave the default, `bundle-cache` next to `PORTITOR_DB_FILE` (`/data/bundle-cache` in the image) |
 | `PORTITOR_DB_FILE` | leave the image default, `/data/portitor.db` |
@@ -229,10 +230,11 @@ and, if the bundle has message shapes, DSP negotiation and transfer
 messages against them. A dataset that passes is served with
 `"dct:conformsTo": {"@id": "<the bundle's profile>", "@type": "dct:Standard"}`.
 
-- Set `PORTITOR_BUNDLE_URL`, `PORTITOR_BUNDLE_VERSION` and
-  `PORTITOR_BUNDLE_AUTHORITY` from what the authority gives you. Without
-  them nothing is checked against shapes.
-- At start the connector downloads `manifest.json` and `manifest.jws`
+- Set `PORTITOR_BUNDLE_URL` and `PORTITOR_BUNDLE_AUTHORITY` from what
+  the authority gives you. Without them nothing is checked against
+  shapes. By default the connector follows the newest version
+  (`latest.json`); set `PORTITOR_BUNDLE_VERSION` to keep one version.
+- For a version, the connector downloads `manifest.json` and `manifest.jws`
   first, checks the signature (ES256) with the bundle key listed in the
   authority's `did:web` document (`<did>#bundle-key`, under
   `assertionMethod`), the version and the authority, then downloads each
@@ -249,9 +251,19 @@ messages against them. A dataset that passes is served with
   connector cannot use (for example a SHACL term the engine does not
   implement): the log line `portitor-connector stopped` says why. Start
   the connector after the authority's issuer, or let it restart.
-- A new version needs a restart with the new `PORTITOR_BUNDLE_VERSION`.
-  The stored datasets are then checked again; those that fail are
-  hidden.
+- New versions are pulled, never pushed: at start and every
+  `PORTITOR_BUNDLE_REFRESH_SECONDS` the connector reads `latest.json`.
+  A newer version is checked as above and put in use without a restart;
+  then the stored datasets are checked again (those that fail are
+  hidden) and the datasets source is harvested again. Each check is a
+  run in `GET /v1/harvest-jobs`, with `"kind": "bundle"`.
+- The connector never goes back to a version issued before the one in
+  use, which it remembers in the cache. A version that cannot be taken
+  (unreachable, refused, older) leaves the version in use and the run
+  is `failed` with the reason. At start, with `latest`, the version in
+  use before is read back from the cache if the newest cannot be taken.
+  Limit: `issued` is a date, so of two versions issued on the same day
+  the second can be replaced by the first.
 - The catalog's `@context` is always the DSP 2025-1 context alone, with
   or without a bundle. The connector never fetches a JSON-LD context from
   the network: it has its own copy of the DSP 2025-1 contexts, and a
@@ -647,7 +659,7 @@ DID, so usually not).
   version you pinned; a changed file or signature stops the start. The
   bundle key is separate from the issuer's credential key, and the issuer
   holds only its public part. Shapes, code lists and contexts are never
-  fetched from the network apart from the pinned bundle, and no Portitor
+  fetched from the network apart from the authority's signed bundle, and no Portitor
   binary parses RDF/XML.
 - **Outbound calls.** The connector POSTs to the `callbackAddress` that the
   partner chooses. Only `https://` is allowed, but internal addresses are
@@ -701,8 +713,13 @@ DID, so usually not).
 | `harvest: dataset has no portitor:source; its transfers will be refused` (WARN) | A dataset was added or changed without a data source | Add `portitor:source`, unless the dataset is not transferred |
 | `harvest skipped: a run is going on` (INFO) | A timer tick came while a run was going on | Nothing, unless it repeats: then lengthen the interval |
 | `harvest: cannot store the run; ...` (ERROR) | The database could not be written; the catalog keeps what it had | Check disk space and the `/data` volume |
-| `bundle downloaded and verified` (INFO, at start) | The pinned bundle was downloaded and passed every check | Nothing |
+| `looking for new bundle versions` (INFO, at start) | The bundles URL or folder and how often `latest.json` is read | Nothing |
+| `bundle: no new version is looked for (...)` (INFO, at start) | A fixed `PORTITOR_BUNDLE_VERSION`, or `PORTITOR_BUNDLE_REFRESH_SECONDS=0` | Nothing |
+| `bundle downloaded and verified` (INFO) | A bundle version was downloaded and passed every check | Nothing |
 | `bundle download failed; using the cached copy, checked again` (WARN, at start) | The authority's host or DID document could not be reached; the cached copy is used | Check the network to the authority; nothing breaks meanwhile |
+| `bundle: the newest version cannot be taken; keeping the version in use` (ERROR, at start) | With `latest`: the newest version could not be downloaded, failed a check or is older than the one in use; the cached version in use before is kept | Check the reason in the log line or in `GET /v1/harvest-jobs`; ask the authority |
+| `bundle: no new version taken; keeping the version in use` (WARN) | A scheduled check failed for the same reasons; nothing changed | As above; the next check tries again |
+| `bundle: new version in use; checking the stored datasets again` (INFO) | A newer version was put in use without a restart | Nothing; watch the next harvest jobs for hidden datasets |
 | `bundle verified, but not written to the cache` (WARN) | The cache folder is not writable | Check `PORTITOR_BUNDLE_CACHE_DIR` and the volume |
 | `bundle rules in force` (INFO, at start) | The bundle's `version`, `profile`, the `access_rights` it has dataset shapes for, and whether it has `message_shapes` | Nothing |
 | `bundle shapes: ignored by the SHACL engine` (INFO or WARN, at start) | A SHACL term the engine ignores (`sh:extends`, `sh:shape`, `sh:property` without `sh:path` at INFO: expected for HealthDCAT-AP and DCAT-AP; anything else at WARN) | Nothing at INFO; at WARN, ask the authority |
@@ -808,7 +825,10 @@ against the authority's signed bundle (ADR 0005).
    terms outside the DSP context; a dataset without them is rejected
    (logged, shown in the harvest job), the connector still starts.
    The verified bundle is kept in `/data/bundle-cache` (next to the
-   database), so keep `/data` on a volume.
+   database), so keep `/data` on a volume. `PORTITOR_BUNDLE_URL` is the
+   authority's bundles folder, not a version folder, and new versions
+   are taken without a restart (`PORTITOR_BUNDLE_VERSION` defaults to
+   `latest`).
 5. The issuer can serve bundles and list a bundle key
    (`PORTITOR_ISSUER_BUNDLE_DIR`, `PORTITOR_ISSUER_BUNDLE_KEY_FILE`, both
    optional; [section 7](#7-run-the-issuer-dataspace-authority-only)).
@@ -867,7 +887,7 @@ DID.
 | `PORTITOR_MANAGEMENT_BIND` | `127.0.0.1:8071` | `0.0.0.0:8071` in a container, published only on an internal interface |
 | `PORTITOR_ALLOW_HTTP_CALLBACKS` | unset | **unset**; `true` only for local tests with plain-HTTP DIDs |
 | `PORTITOR_ISSUER_BUNDLE_KEY_FILE` | unset | with a bundle: the **public** bundle key as a JWK (as `bundle build` prints it), so the private key stays offline; a PKCS#8 PEM is accepted too. Listed in the DID document as `<did>#bundle-key` under `assertionMethod`. The start fails if it is the credential key |
-| `PORTITOR_ISSUER_BUNDLE_DIR` | unset | with a bundle: the folder of built bundles, served read only at `GET /bundles/{version}/{path}` on the public port |
+| `PORTITOR_ISSUER_BUNDLE_DIR` | unset | with a bundle: the folder of built bundles, served read only at `GET /bundles/{version}/{path}` on the public port, and its `latest.json` at `GET /bundles/latest.json` |
 | `PORTITOR_ISSUER_MAX_ACTIVE_PER_HOLDER` | `10` | keep; the most credentials of one definition a participant may hold that are neither revoked nor expired. A request beyond it ends `REJECTED`. It keeps one participant from filling a status list (131,072 positions) |
 | `RUST_LOG` | `info` | `info` |
 
@@ -948,13 +968,18 @@ catalog.
    It refuses RDF/XML, paths that leave the folder, files over 64 MiB, and
    a version folder that exists already: a published version never
    changes. It checks its own result as a connector will, and prints the
-   public key as a JWK.
+   public key as a JWK. It also points `latest.json` at the new version,
+   unless that file names a version issued later, or you pass
+   `--not-latest` (to publish a version that connectors do not take
+   yet).
 4. Put the public JWK in `PORTITOR_ISSUER_BUNDLE_KEY_FILE` and the output
    folder in `PORTITOR_ISSUER_BUNDLE_DIR`, and restart the issuer. Check:
-   `curl -sf https://issuer.example.com/bundles/2026-11/manifest.json`.
-5. Tell participants the URL (`https://issuer.example.com/bundles/2026-11/`),
-   the version and your DID. A new version is a new folder; connectors
-   move to it when they restart with the new version.
+   `curl -sf https://issuer.example.com/bundles/latest.json`.
+5. Tell participants the URL (`https://issuer.example.com/bundles/`) and
+   your DID. A new version is a new folder; connectors that follow
+   `latest` take it at their next check (within an hour by default),
+   without a restart. They never go back to an older version, so to undo
+   a version, publish a newer one.
 
 The issuer serves only `manifest.json`, `manifest.jws` and the files the
 version's manifest lists; anything else is 404.

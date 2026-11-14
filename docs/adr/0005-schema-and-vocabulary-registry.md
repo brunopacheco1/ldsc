@@ -183,10 +183,35 @@ SHACL 1.2 draft).
   N-Triples and JSON-LD contexts, so no Portitor binary parses RDF/XML.
 - `portitor-issuer bundle build` signs a folder offline; the issuer can
   also serve a bundle folder on its public port.
-- The connector pins one bundle version (URL and version), verifies the
-  signature against the authority's DID document and every digest, and
-  keeps the verified bundle in a disk cache, so a restart works while the
-  authority's host is down. A new version needs a restart.
+- The authority is the source of truth; the connector keeps a read copy,
+  the same way it harvests datasets (ADR 0020), and **pulls** new
+  versions (maintainer, 2026-11-14). Pull, not push: the connector
+  already reaches the authority for its DID document, the authority
+  needs no list of connectors, and a connector that was down catches up
+  on its next check.
+- The bundles folder holds one folder per version and `latest.json`
+  (`{"version": "..."}`), the newest version. `bundle build` writes it
+  (unless `--not-latest`) and never points it at a version issued before
+  the one it names. It is not signed: the connector still checks the
+  signature of the version it names.
+- The connector follows `latest.json` by default
+  (`PORTITOR_BUNDLE_VERSION=latest`), at start and every
+  `PORTITOR_BUNDLE_REFRESH_SECONDS` (default 3600, 0 only at start), or
+  keeps one fixed version. It verifies the signature against the
+  authority's DID document and every digest, and keeps the verified
+  bundle in a disk cache, so a restart works while the authority's host
+  is down.
+- A new version is put in use without a restart. The rules are swapped
+  at once; checks going on finish with the old rules. Then the stored
+  datasets are checked again and the source is harvested again.
+- No rollback: the connector remembers the version in use (in the cache)
+  and never takes a version issued before it. A version that cannot be
+  taken (unreachable, refused, older) leaves the version in use, and the
+  run says why. Limit: `issued` is a date, so of two versions issued the
+  same day, the connector can be pointed back from the second to the
+  first.
+- Each check is a run in the harvest job log, with the kind `bundle`
+  (ADR 0020).
 - The engine ignores `sh:extends` and `sh:shape` with a warning when the
   bundle is loaded, and refuses any other term it does not implement.
 

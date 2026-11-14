@@ -47,13 +47,22 @@ versions may change behaviour and configuration.
   `docs/schemas/bundle-manifest.schema.json`. The issuer lists the bundle
   key as `<did>#bundle-key` (`PORTITOR_ISSUER_BUNDLE_KEY_FILE`) and serves
   built bundles read only at `GET /bundles/{version}/{path}`
-  (`PORTITOR_ISSUER_BUNDLE_DIR`).
-- The connector loads a pinned bundle (`PORTITOR_BUNDLE_URL` or
-  `PORTITOR_BUNDLE_DIR`, `PORTITOR_BUNDLE_VERSION`,
-  `PORTITOR_BUNDLE_AUTHORITY`), verifies it against the authority's DID
-  document and every digest, and keeps it in a disk cache
-  (`PORTITOR_BUNDLE_CACHE_DIR`) used only when the source cannot be
-  reached.
+  (`PORTITOR_ISSUER_BUNDLE_DIR`). `bundle build` also writes
+  `latest.json`, the newest version (unless `--not-latest`; never back to
+  an older `issued`), served at `GET /bundles/latest.json` with
+  `Cache-Control: no-cache`.
+- The connector pulls the authority's bundle (`PORTITOR_BUNDLE_URL` or
+  `PORTITOR_BUNDLE_DIR`, the bundles folder; `PORTITOR_BUNDLE_AUTHORITY`),
+  verifies it against the authority's DID document and every digest, and
+  keeps it in a disk cache (`PORTITOR_BUNDLE_CACHE_DIR`) used only when
+  the source cannot be reached. It follows the newest version
+  (`PORTITOR_BUNDLE_VERSION=latest`, the default; or one fixed version),
+  looked for every `PORTITOR_BUNDLE_REFRESH_SECONDS` (default 3600; `0`:
+  only at start). A new version is put in use without a restart, then
+  the stored datasets are checked again and the source harvested again.
+  It never goes back to a version issued before the one in use. Each
+  check is in the harvest job log with `"kind": "bundle"` (migration to
+  schema version 8).
 - With a bundle, each harvested dataset is checked against the SHACL
   shapes for its `dct:accessRights` value (read with the DSP context only;
   its `@id` must be an absolute IRI); a dataset with violations is
@@ -74,10 +83,11 @@ versions may change behaviour and configuration.
   and `examples/healthdcat-datasets.json` (full IRIs; two datasets that
   pass, `bed-occupancy` with 7 violations).
 - The demos (`scripts/demo.sh`, `scripts/demo-compose.sh`) run with the
-  demo bundle: the issuer builds and serves it, the provider pins it and
+  demo bundle: the issuer builds and serves it, the provider follows it and
   offers the HealthDCAT-AP datasets (the catalog shows `dct:conformsTo`,
   the harvest job the SHACL report of `bed-occupancy`); the restricted
   dataset is transferred under its `MembershipCredential` constraint.
+  The provider follows the issuer's `latest.json`.
   The EDC interop test runs with the bundle too: EDC reads a
   HealthDCAT-AP dataset with full-IRI metadata, negotiates and transfers
   it. `scripts/dcp-issuer-tck.sh` has a `BUNDLE_KEY=1` variant (the DID
@@ -133,13 +143,15 @@ versions may change behaviour and configuration.
 - The bundle is signed with its own bundle key, separate from the
   issuer's credential key; the issuer refuses to start if they are the
   same, and needs only the public key. The connector accepts only the
-  pinned version, signed (ES256 only) by the bundle key
+  configured version, signed (ES256 only) by the bundle key
   `<authority>#bundle-key` that the authority's `did:web` document lists
   under `assertionMethod`; a bundle signed with any other key of the
   authority, such as its credential key, is refused, and `bundle build`
   refuses any other `--kid`. Every file's SHA-256 must match; a
-  bundle that fails a check stops the start and is never replaced by the
-  cache. Limits: manifest 1 MiB, 64 MiB per file, 256 MiB in all, 120 s
+  bundle that fails a check is never replaced by the cache, and never
+  replaces the version in use. `latest.json` is not signed, so the
+  connector refuses a version issued before the one in use (no
+  rollback; two versions issued on the same day are not told apart). Limits: manifest 1 MiB, 64 MiB per file, 256 MiB in all, 120 s
   per download.
 - No JSON-LD context is fetched from the network: `portitor-shacl` reads
   contexts only from a map the caller fills (the bundle's and the DSP

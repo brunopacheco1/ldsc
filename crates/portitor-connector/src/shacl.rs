@@ -98,7 +98,8 @@ impl std::fmt::Display for RulesError {
 
 impl std::error::Error for RulesError {}
 
-/// The rules of one bundle, loaded once at start and shared.
+/// The rules of one bundle version, loaded when the version is taken
+/// and shared ([`crate::bundle_harvest::BundleCopy`] holds the one in use).
 #[derive(Debug, Clone)]
 pub struct BundleRules {
     version: String,
@@ -155,6 +156,12 @@ impl BundleRules {
         })
     }
 
+    /// The bundle version these rules come from.
+    #[must_use]
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+
     /// The harvest check, when the bundle has `datasets` shapes. A bundle
     /// with only `messages` shapes checks no dataset (and states no
     /// `dct:conformsTo`).
@@ -180,7 +187,7 @@ impl BundleRules {
         &self.context_notes
     }
 
-    /// Logs, once at start, what the rules are and the notes above.
+    /// Logs, when the rules are taken, what they are and the notes above.
     /// The engine's notes about the upstream HealthDCAT-AP and DCAT-AP
     /// shapes (`sh:extends`, `sh:shape`, a property without path) are
     /// expected and logged at info; any other note at warn.
