@@ -394,12 +394,13 @@ after which it is no longer presented.
 
 **Revoked credentials.** The component does not read status lists, so it
 keeps presenting a credential its issuer revoked (DCP v1.0.1, 5.4.2: a
-presentation "SHOULD only include valid" credentials). When the issuer
-revokes a credential and issues a new one, delete the revoked one with
-`DELETE /v1/credentials/{id}` once the new one is listed. Portitor
-verifiers leave a revoked credential out and admit you on the new one;
-other verifiers (EDC) may refuse every presentation that holds a revoked
-credential.
+presentation "SHOULD only include valid" credentials). After a reissue,
+delete the revoked credential from the identity with
+`DELETE /v1/credentials/{id}` once the new one is listed. Otherwise
+other participants refuse you: a presentation that holds a revoked
+credential is invalid (DCP v1.0.1, 5.4.3, step 8), so Portitor
+verifiers refuse it even with the new credential next to it, and EDC
+verifiers may too.
 
 **Offers.** An issuer may tell you that credentials are waiting (DCP
 6.6), for example before its key changes. `GET /v1/offers` lists the
@@ -456,13 +457,14 @@ DID, so usually not).
   credential service for its presentations, and accepts the caller only
   with a valid `MembershipCredential` from a DID in
   `PORTITOR_TRUSTED_ISSUERS` whose subject is the caller, not revoked or
-  suspended (the status list must be signed by the same issuer). A
-  credential that fails its checks (revoked, expired, bad signature,
-  status list not readable) is left out and logged (`credential left
-  out`, INFO), so a participant that still holds a revoked credential
-  next to its reissued one is admitted; a presentation that fails its
-  own checks, or holds a credential about someone else, refuses the
-  caller. Without a valid membership credential it
+  suspended (the status list must be signed by the same issuer). One
+  credential from a trusted issuer that fails its checks (revoked,
+  expired, bad signature, status list not readable, about someone else)
+  makes its presentation invalid and refuses the caller, even next to a
+  valid membership credential (DCP v1.0.1, 5.4.3, step 8); the log names
+  it (`credential refused`, INFO). So a participant must delete a revoked
+  credential once its reissued one arrives (section 4). Credentials from
+  other issuers are skipped. When refused it
   answers HTTP 401 with a DSP error that says only "unauthorized"; the
   reason is in the log. Each negotiation and transfer is bound to the DID
   that started it: another caller is told it does not exist. As

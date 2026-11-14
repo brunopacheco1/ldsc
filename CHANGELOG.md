@@ -164,15 +164,14 @@ versions may change behaviour and configuration.
   a `sendError`, and the request shows `sendError` (and `issuerPid` once
   delivered). The 0.6 migration adds both columns. DEPLOYING says to
   delete a revoked credential once its reissued one arrives (the
-  component does not read status lists).
+  component does not read status lists, and verifiers refuse a
+  presentation that holds it).
 - Connector, DCP verifier: a credential that fails its checks (revoked,
-  suspended, expired, bad signature, status list not readable) is left
-  out and logged (`credential left out`) instead of refusing the caller,
-  so a participant holding a revoked credential next to its reissued one
-  is still admitted. A presentation that fails its own checks, or holds a
-  credential about someone else, still refuses the caller, and so does
-  the lack of a valid `MembershipCredential` (the refusal names the
-  credentials left out).
+  suspended, expired, bad signature, status list not readable, about
+  someone else) makes its presentation invalid and the caller is refused,
+  as DCP v1.0.1 5.4.3 step 8 requires, also when a valid
+  `MembershipCredential` is next to it. The log names the credential and
+  the reason (`credential refused`).
 - Readability review, no behaviour change: clearer issuer names
   (`SignedCredential`, `IssuedWithDelivery`, `SignedRequest`), one
   `Directory` port and a typed `HttpError` in `portitor-runtime`, shared

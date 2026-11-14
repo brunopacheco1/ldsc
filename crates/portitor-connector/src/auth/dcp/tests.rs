@@ -727,9 +727,10 @@ async fn revoked_credentials_and_bad_status_lists_are_refused() {
 }
 
 #[tokio::test]
-async fn a_revoked_credential_next_to_a_valid_one_is_left_out() {
+async fn a_revoked_credential_next_to_a_valid_one_refuses_the_caller() {
     // the authority revoked the first membership credential (bit 5) and
-    // issued a new one (bit 6); the holder still presents both
+    // issued a new one (bit 6); the holder still presents both. DCP
+    // v1.0.1, 5.4.3, step 8: the presentation is invalid
     let ds = dataspace().await;
     let holder = ds.holder.did.as_str();
     let member_at = |index: &str| {
@@ -746,22 +747,35 @@ async fn a_revoked_credential_next_to_a_valid_one_is_left_out() {
         &ds.holder,
         &[member_at("5"), member_at("6"), revoked_sensitive],
     )]);
-    let caller = ds.verify(&ds.header()).await.unwrap();
-    // only the valid membership credential is kept
-    assert_eq!(caller.credentials.len(), 1);
-    assert!(caller.credentials[0].types.iter().any(|t| t == MEMBERSHIP));
-
-    // with only revoked membership credentials, the caller is refused,
-    // and told why
-    ds.answer(&[ds.presentation(&ds.holder, &[member_at("5")])]);
     let err = ds.refusal().await;
     assert!(
-        err.contains("no MembershipCredential from a trusted issuer")
+        err.contains("presentation is invalid")
             && err.contains("revoked or suspended (revocation)"),
         "{err}"
     );
+    // the same with only the revoked sensitive data credential next to
+    // the valid membership credential
+    let revoked_sensitive = Dataspace::credential(
+        &ds.issuer,
+        "SensitiveDataCredential",
+        holder,
+        &ds.status_entry("7"),
+    );
+    ds.answer(&[ds.presentation(&ds.holder, &[member_at("6"), revoked_sensitive])]);
+    let err = ds.refusal().await;
+    assert!(
+        err.contains("a SensitiveDataCredential credential"),
+        "{err}"
+    );
 
-    // a bad presentation still refuses the caller, valid credentials or
+    // the holder deletes the revoked credentials from its identity
+    // (`DELETE /v1/credentials/{id}`): admitted on the new one
+    ds.answer(&[ds.presentation(&ds.holder, &[member_at("6")])]);
+    let caller = ds.verify(&ds.header()).await.unwrap();
+    assert_eq!(caller.credentials.len(), 1);
+    assert!(caller.credentials[0].has_type(MEMBERSHIP));
+
+    // a bad presentation refuses the caller too, valid credentials or
     // not: signed by someone else, or holding a credential about another
     // participant
     let forged_holder = Party {
@@ -1060,8 +1074,8 @@ async fn more_credentials_are_asked_for_with_the_callers_access_token() {
     let claims = unverified_claims(query.strip_prefix("Bearer ").unwrap()).unwrap();
     assert_eq!(claims.token.as_deref(), Some("access-1"));
 
-    // a revoked credential in the second answer is left out; the valid
-    // ones are returned
+    // a revoked credential in the second answer makes its presentation
+    // invalid (DCP 5.4.3, step 8): no credentials, so constraints fail
     ds.publish_status_list(&ds.issuer, &[3]);
     let revoked = Dataspace::credential(
         &ds.issuer,
@@ -1070,9 +1084,8 @@ async fn more_credentials_are_asked_for_with_the_callers_access_token() {
         &ds.status_entry("3"),
     );
     ds.answer(&[ds.presentation(&ds.holder, &[member, revoked])]);
-    let left = ds.verifier.credentials(&caller, &extra).await.unwrap();
-    assert_eq!(left.len(), 1);
-    assert!(left[0].types.iter().any(|t| t == MEMBERSHIP));
+    let err = ds.verifier.credentials(&caller, &extra).await.unwrap_err();
+    assert!(err.contains("revoked"), "{err}");
 
     // a caller without an access token cannot be asked again
     let anonymous = Caller::new(holder);

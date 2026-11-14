@@ -904,7 +904,17 @@ async fn a_revoked_membership_stops_a_new_negotiation() {
     );
 
     // the issuer reissues (bit 6); the consumer still holds the revoked
-    // one too, which is left out: agreed again
-    dataspace.hold(vec![first, dataspace.membership(6)]);
+    // one too, so its presentation is invalid (DCP v1.0.1, 5.4.3, step
+    // 8): still refused
+    let second = dataspace.membership(6);
+    dataspace.hold(vec![first, second.clone()]);
+    assert_eq!(
+        negotiate_open(&consumer).await,
+        NegotiationState::Terminated
+    );
+
+    // the operator deletes the revoked credential from the consumer's
+    // identity (`DELETE /v1/credentials/{id}`): agreed again
+    dataspace.hold(vec![second]);
     assert_eq!(negotiate_open(&consumer).await, NegotiationState::Finalized);
 }

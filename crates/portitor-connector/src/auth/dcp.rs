@@ -21,16 +21,15 @@
 //!    `assertionMethod` key, valid now, not revoked or suspended).
 //! 5. Require one `MembershipCredential` from a trusted issuer.
 //!
-//! A presentation that fails its checks, or holds a credential about
-//! someone else (DCP 5.4.3, holder binding), refuses the caller. A
-//! credential that fails its own checks (signature, validity, status) is
-//! only left out, and logged: a holder may still hold a revoked
-//! credential next to the one that replaced it, and must not be locked
-//! out for that. The caller is refused when no valid `MembershipCredential`
-//! remains, and the refusal names the credentials left out. DCP v1.0.1
-//! section 5.4.3, step 8, calls a presentation with a failing credential
-//! invalid; Portitor follows it for the presentation's own checks and
-//! counts no failing credential, but keeps the valid ones next to it.
+//! DCP v1.0.1 section 5.4.3 ("Presentation Validation"), step 8: "If any
+//! of the steps fail, the Verifier MUST consider the Verifiable
+//! Presentation invalid". So one credential that fails its checks
+//! (signature, validity, revocation or suspension, holder binding) makes
+//! its presentation invalid, and the caller is refused, even when a valid
+//! `MembershipCredential` sits next to it. The failing credential is
+//! logged (`credential refused`, with its issuer, types and reason). A
+//! holder whose credential was revoked and reissued must delete the
+//! revoked one from its identity (DEPLOYING).
 //!
 //! The verified credentials go with the caller to the handler. When an
 //! offer or agreement has credential constraints (ADR 0019), the handler
@@ -124,15 +123,6 @@ impl std::fmt::Debug for DcpVerifier {
             .field("scopes", &self.scopes)
             .finish_non_exhaustive()
     }
-}
-
-/// What step 4 found in the caller's presentations.
-#[derive(Debug, Default)]
-struct CheckedCredentials {
-    /// The credentials from trusted issuers that passed every check.
-    verified: Vec<HeldCredential>,
-    /// Why each other credential from a trusted issuer was left out.
-    left_out: Vec<String>,
 }
 
 /// The caller's token, checked.
@@ -240,19 +230,18 @@ impl DcpVerifier {
         let checked = self.check_token(token).await?;
         let caller = checked.doc.id.clone();
         let presentations = self.query(&checked, &self.scopes).await?;
-        let checked_credentials = self
+        let credentials = self
             .check_presentations(&caller, &checked.doc, &presentations)
             .await?;
-        let is_member = checked_credentials
-            .verified
+        let is_member = credentials
             .iter()
             .any(|credential| credential.has_type(MEMBERSHIP));
         if !is_member {
-            return Err(no_membership(&checked_credentials.left_out));
+            return Err(format!("no {MEMBERSHIP} from a trusted issuer"));
         }
         Ok(Caller {
             id: caller,
-            credentials: checked_credentials.verified,
+            credentials,
             access_token: Some(checked.access_token),
         })
     }
@@ -272,10 +261,8 @@ impl DcpVerifier {
         let checked = CheckedToken { doc, access_token };
         let scopes = merge_scopes(&self.scopes, extra);
         let presentations = self.query(&checked, &scopes).await?;
-        let checked_credentials = self
-            .check_presentations(&caller.id, &checked.doc, &presentations)
-            .await?;
-        Ok(checked_credentials.verified)
+        self.check_presentations(&caller.id, &checked.doc, &presentations)
+            .await
     }
 
     /// Step 2: the caller's self-issued ID token.
@@ -339,18 +326,18 @@ impl DcpVerifier {
         presentation_jwts(answer)
     }
 
-    /// Step 4. Only credentials from trusted issuers are checked; the
-    /// others are skipped. A presentation that fails its checks refuses
-    /// the caller; a credential that fails its own is left out (module
-    /// doc).
+    /// Step 4. Only credentials from trusted issuers are checked (and
+    /// returned); the others are skipped. A presentation that fails its
+    /// checks, or holds a credential that fails its own, refuses the
+    /// caller (DCP 5.4.3, step 8; module doc).
     async fn check_presentations(
         &self,
         caller: &str,
         holder: &DidDocument,
         jwts: &[String],
-    ) -> Result<CheckedCredentials, String> {
+    ) -> Result<Vec<HeldCredential>, String> {
         let now = now_secs();
-        let mut checked = CheckedCredentials::default();
+        let mut verified = Vec::new();
         for jwt in jwts {
             let presentation =
                 Presentation::parse(jwt).map_err(|e| format!("presentation: {e}"))?;
@@ -372,8 +359,7 @@ impl DcpVerifier {
                     tracing::debug!(issuer = %credential.issuer, "credential from an untrusted issuer skipped");
                     continue;
                 }
-                // holder binding (DCP 5.4.3) and the fetch limit: the
-                // whole answer is refused, not only this credential
+                // holder binding (DCP 5.4.3) and the fetch limit
                 if !credential.is_only_about(caller) {
                     return Err(
                         "a credential is not about the caller (credentialSubject.id)".to_owned(),
@@ -384,25 +370,28 @@ impl DcpVerifier {
                         "a credential has more than {MAX_STATUS_ENTRIES} status entries"
                     ));
                 }
-                match self.check_credential(credential, now).await {
-                    Ok(()) => checked.verified.push(HeldCredential {
-                        types: credential.types.clone(),
-                        subjects: credential.subjects.clone(),
-                    }),
-                    Err(reason) => {
-                        tracing::info!(
-                            %caller,
-                            issuer = %credential.issuer,
-                            types = ?credential.types,
-                            %reason,
-                            "credential left out"
-                        );
-                        checked.left_out.push(reason);
-                    }
+                if let Err(reason) = self.check_credential(credential, now).await {
+                    // DCP 5.4.3, step 8: the whole presentation is
+                    // invalid; the log names the credential that failed
+                    tracing::info!(
+                        %caller,
+                        issuer = %credential.issuer,
+                        types = ?credential.types,
+                        %reason,
+                        "credential refused"
+                    );
+                    return Err(format!(
+                        "a {} credential fails its checks, so its presentation is invalid: {reason}",
+                        credential_types(credential)
+                    ));
                 }
+                verified.push(HeldCredential {
+                    types: credential.types.clone(),
+                    subjects: credential.subjects.clone(),
+                });
             }
         }
-        Ok(checked)
+        Ok(verified)
     }
 
     /// One credential about the caller (checked before): signed by its
@@ -482,16 +471,19 @@ impl CallerVerifier for DcpVerifier {
     }
 }
 
-/// The refusal when no valid membership credential remains, naming why
-/// the credentials from trusted issuers were left out, if any were.
-fn no_membership(left_out: &[String]) -> String {
-    if left_out.is_empty() {
-        format!("no {MEMBERSHIP} from a trusted issuer")
+/// A credential's types for a message, without the base type
+/// `VerifiableCredential` (every credential has it).
+fn credential_types(credential: &Credential) -> String {
+    let mut names = Vec::new();
+    for credential_type in &credential.types {
+        if credential_type != "VerifiableCredential" {
+            names.push(credential_type.as_str());
+        }
+    }
+    if names.is_empty() {
+        "VerifiableCredential".to_owned()
     } else {
-        format!(
-            "no {MEMBERSHIP} from a trusted issuer; left out: {}",
-            left_out.join("; ")
-        )
+        names.join("/")
     }
 }
 
