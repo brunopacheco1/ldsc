@@ -38,6 +38,7 @@ Today's crates:
 - `crates/portitor-runtime`: adapters shared by the binaries: outbound HTTP, did:web resolution with a cache, the management API key, SQLite files and migrations, logging and shutdown, the system clock.
 - `crates/portitor-connector`: the connector binary (HTTP adapter and routes), one image (ADR 0003).
 - `crates/portitor-identity`: the identity component binary (ADR 0015): DID document, STS, credential service (presentation, Storage and offer APIs), management API, SQLite store; its own image.
+- `crates/portitor-issuer`: the issuer component binary (ADR 0018), run once per dataspace by its authority: DID document, DCP issuer service (metadata, credential requests and status), delivery outbox, status lists, management API, SQLite store; its own image.
 - `docs/`: architecture, ADRs, roadmap, security assurance, releasing.
 - `site/`: the project website (added in 0.1).
 

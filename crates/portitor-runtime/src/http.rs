@@ -229,6 +229,30 @@ impl HttpSender {
         self.json(request, url).await
     }
 
+    /// POSTs `body` as JSON with the header `Authorization:
+    /// <authorization>`, and returns the answer's `Location` header, if
+    /// any. A DCP issuer answers a credential request with `201 Created`
+    /// and the `Location` of the request status (DCP v1.0.1, section 6.4).
+    ///
+    /// # Errors
+    ///
+    /// The URL is not allowed, the request failed, or the answer is not
+    /// HTTP 2xx.
+    pub async fn post_for_location(
+        &self,
+        url: &str,
+        body: &Value,
+        authorization: &str,
+    ) -> Result<Option<String>, String> {
+        let request = json_post(url, body, Some(authorization))?;
+        let (headers, _body) = self.call_with_headers(url, request, MAX_ANSWER).await?;
+        let location = headers
+            .get(hyper::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        Ok(location)
+    }
+
     /// GETs `url` asking for the media type `accept`, and returns the
     /// answer as text, read up to `max_bytes` (for example a status list
     /// credential as a JWT, `application/vc+jwt`).
@@ -264,6 +288,17 @@ impl HttpSender {
         request: hyper::Request<Full<Bytes>>,
         max_bytes: usize,
     ) -> Result<Bytes, String> {
+        let (_headers, body) = self.call_with_headers(url, request, max_bytes).await?;
+        Ok(body)
+    }
+
+    /// Like [`HttpSender::call`], and returns the answer's headers too.
+    async fn call_with_headers(
+        &self,
+        url: &str,
+        request: hyper::Request<Full<Bytes>>,
+        max_bytes: usize,
+    ) -> Result<(hyper::HeaderMap, Bytes), String> {
         // the text names callbacks, the first use of this rule; it now
         // covers every outbound URL, and tests look for this text
         if !outbound_url_allowed(url, self.allow_http) {
@@ -289,7 +324,7 @@ impl HttpSender {
         &self,
         request: hyper::Request<Full<Bytes>>,
         max_bytes: usize,
-    ) -> Result<Bytes, String> {
+    ) -> Result<(hyper::HeaderMap, Bytes), String> {
         use http_body_util::BodyExt as _;
         let response = self
             .client
@@ -301,12 +336,13 @@ impl HttpSender {
             return Err(format!("HTTP {status}"));
         }
         // read at most max_bytes: the counter-party controls the size
-        let body = http_body_util::Limited::new(response.into_body(), max_bytes)
+        let (parts, body) = response.into_parts();
+        let body = http_body_util::Limited::new(body, max_bytes)
             .collect()
             .await
             .map_err(|e| format!("answer not read: {e}"))?
             .to_bytes();
-        Ok(body)
+        Ok((parts.headers, body))
     }
 }
 
@@ -494,6 +530,40 @@ mod tests {
             .unwrap();
         assert_eq!(text, "a.b.c accept=application/vc+jwt");
         assert!(sender.get_text(&jwt, "text/plain", 3).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn http_sender_reads_the_location_of_a_created_resource() {
+        use axum::http::{HeaderMap, StatusCode, header};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = axum::Router::new()
+            .route(
+                "/credentials",
+                axum::routing::post(move |headers: HeaderMap| async move {
+                    let authorization = headers
+                        .get(header::AUTHORIZATION)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or_default()
+                        .to_owned();
+                    let location = format!("/requests/{authorization}");
+                    (StatusCode::CREATED, [(header::LOCATION, location)])
+                }),
+            )
+            .route("/plain", axum::routing::post(|| async { StatusCode::OK }));
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        let sender = HttpSender::new(true).unwrap();
+        let body = serde_json::json!({"type": "CredentialRequestMessage"});
+        let created = sender
+            .post_for_location(&format!("http://{addr}/credentials"), &body, "t0ken")
+            .await
+            .unwrap();
+        assert_eq!(created.as_deref(), Some("/requests/t0ken"));
+        let plain = sender
+            .post_for_location(&format!("http://{addr}/plain"), &body, "t0ken")
+            .await
+            .unwrap();
+        assert_eq!(plain, None);
     }
 
     /// A sender with only the required methods: the authorized variants

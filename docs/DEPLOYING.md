@@ -8,8 +8,14 @@ SPDX-License-Identifier: Apache-2.0
 
 A runbook for the team that deploys and runs Portitor. It covers
 `portitor-connector` and, from 0.5, `portitor-identity`, which runs next to
-it ([section 4](#4-run-the-identity-next-to-the-connector)).
-`portitor-issuer` will be added here when it ships (ADR 0003).
+it ([section 4](#4-run-the-identity-next-to-the-connector)). From 0.6 it
+also covers `portitor-issuer`, which only the dataspace authority runs
+([section 7](#7-run-the-issuer-dataspace-authority-only)).
+
+**Deployment order.** Once per dataspace, the authority deploys the
+issuer and registers each participant. Then each participant deploys its
+identity, asks the issuer for its membership credential, and deploys its
+connector ([ARCHITECTURE.md](ARCHITECTURE.md#deployment-order)).
 
 Portitor is a prototype (0.x). Read [Known limits](#known-limits) before you
 expose it to partners.
@@ -32,7 +38,8 @@ Check each item and keep the answers in your own runbook.
     gh attestation verify "oci://ghcr.io/brunopacheco1/$image:X.Y.Z" --repo brunopacheco1/portitor
   done
   ```
-  Deploy by digest (`ghcr.io/...@sha256:...`), not only by tag.
+  Deploy by digest (`ghcr.io/...@sha256:...`), not only by tag. The
+  dataspace authority checks `portitor-issuer` the same way.
 - [ ] **Participant id.** The DID your dataspace gave you
   (`PORTITOR_PARTICIPANT_ID`).
 - [ ] **Public URL.** The `https://` URL partners use to reach you
@@ -186,13 +193,14 @@ participant.
 - [ ] **Trusted issuers.** The DIDs whose credentials you accept
   (`PORTITOR_TRUSTED_ISSUERS`). Only these may deliver credentials
   (Storage API) or offers.
-- [ ] **Management API key.** As for the connector, if you record
-  credential requests or manage credentials.
+- [ ] **Management API key.** As for the connector, if you ask issuers
+  for credentials or manage credentials.
 - [ ] **Storage.** A persistent volume for `/data` (credentials, SQLite).
 - [ ] **Network.** Inbound from other participants, through your proxy:
   the DID document and the credential service. Inbound from your own
   connector only: the STS (`/sts/token`). Outbound: other participants'
-  DID documents (`https://`), and trusted issuers' metadata.
+  DID documents (`https://`), and trusted issuers' `IssuerService`
+  (metadata, credential requests, request status).
 
 ### Configuration
 
@@ -220,7 +228,7 @@ participant.
 | public | `POST <credential service>/presentations/query` | verifiers, with a self-issued ID token and an access token from your STS (DCP 5.4) |
 | public | `POST <credential service>/credentials`, `/offers` | trusted issuers (DCP 6.5, 6.6) |
 | public | `GET /health` | probes |
-| management | `POST /v1/credential-requests`, `GET /v1/credentials`, `DELETE /v1/credentials/{id}`, `GET /v1/offers`, `GET /v1/openapi.json` | operators ([OpenAPI](api/identity-management-openapi.json)) |
+| management | `POST`, `GET /v1/credential-requests`, `GET /v1/credential-requests/{holderPid}`, `GET /v1/credentials`, `DELETE /v1/credentials/{id}`, `GET /v1/offers`, `POST /v1/offers/request`, `GET /v1/openapi.json` | operators ([OpenAPI](api/identity-management-openapi.json)) |
 
 The public endpoints are described in
 [api/identity-openapi.json](api/identity-openapi.json).
@@ -286,8 +294,62 @@ curl -sf https://identity.example.com/.well-known/did.json
 
 ### Getting a credential
 
-Until the issuer arrives (0.6), an issuer delivers credentials for a
-request recorded through the management API:
+The participant asks its issuer (for example the dataspace authority's
+`portitor-issuer`) for credentials through the management API. The
+issuer must be in `PORTITOR_TRUSTED_ISSUERS`, or nothing is sent.
+
+1. Find the ids of the credentials you want in the issuer's metadata
+   (DCP 6.7). The issuer's DID document names its `IssuerService` base
+   URL; the metadata is at `<IssuerService>/metadata`:
+
+   ```sh
+   curl -s https://authority.example.com/issuer/metadata
+   ```
+
+2. Ask for them:
+
+   ```sh
+   curl -X POST localhost:8091/v1/credential-requests \
+     -H "Authorization: Bearer $(cat /srv/portitor/identity-management-key)" \
+     -H 'Content-Type: application/json' \
+     -d '{"issuerDid": "did:web:authority.example.com", "credentialIds": ["membership-vc11"]}'
+   ```
+
+   The component resolves the issuer's DID, checks the ids against its
+   metadata, records the request (`holderPid`) and sends a
+   `CredentialRequestMessage` to `<IssuerService>/credentials` (DCP 6.4),
+   with a self-issued ID token that carries an access token. The answer
+   (`201`) gives the `holderPid` and the `statusUrl` where the issuer
+   reports the request. If the issuer cannot be reached or refuses (`502`),
+   nothing is kept: ask again.
+
+3. Follow it: `GET /v1/credential-requests/{holderPid}` shows the local
+   state (`REQUESTED`, then `ISSUED` or `REJECTED`) and the issuer's
+   status, read from the `statusUrl` (DCP 6.8). `GET
+   /v1/credential-requests` lists all requests.
+
+The issuer then sends its `CredentialMessage` with that `holderPid` to
+`<credential service>/credentials`. The component checks the issuer's
+token, that the issuer is trusted and matches the request, that the token
+carries back the access token sent with the request (it is valid 30
+days, so a later delivery is refused and you ask again), and each
+credential's signature, dates, type and subject (your DID). The issuer's
+answer (`ISSUED` or `REJECTED`) closes the request: a second delivery for
+the same `holderPid` is refused, so a renewed credential needs a new
+request. Credentials are stored as received (JWT); `GET
+/v1/credentials` lists them and `DELETE /v1/credentials/{id}` removes one,
+after which it is no longer presented.
+
+**Offers.** An issuer may tell you that credentials are waiting (DCP
+6.6), for example before its key changes. `GET /v1/offers` lists the
+offers; nothing is asked for by itself. To ask for what an issuer
+offered: `POST /v1/offers/request` with `{"issuerDid": "..."}` (and
+`credentialIds` to ask for only some).
+
+**Issuers asked out of band.** For an issuer that is asked some other
+way (the DCP TCK, a test tool), leave `credentialIds` out: the request is
+only recorded, so the Storage API accepts that issuer's delivery for the
+`holderPid` you give, without an access token:
 
 ```sh
 curl -X POST localhost:8091/v1/credential-requests \
@@ -295,16 +357,6 @@ curl -X POST localhost:8091/v1/credential-requests \
   -H 'Content-Type: application/json' \
   -d '{"issuerDid": "did:web:issuer.example", "holderPid": "membership-2026"}'
 ```
-
-The issuer then sends its `CredentialMessage` with that `holderPid` to
-`<credential service>/credentials`. The component checks the issuer's
-token, that the issuer is trusted and matches the request, and each
-credential's signature, dates, type and subject (your DID). The issuer's
-answer (`ISSUED` or `REJECTED`) closes the request: a second delivery for
-the same `holderPid` is refused, so a renewed credential needs a new
-request. Credentials are stored as received (JWT); `GET
-/v1/credentials` lists them and `DELETE /v1/credentials/{id}` removes one,
-after which it is no longer presented.
 
 ### Logs and operation
 
@@ -316,6 +368,9 @@ after which it is no longer presented.
 | `request refused` (INFO) | A caller's token was refused; `reason` says why (expired, replayed, wrong audience, untrusted issuer, ...). The caller only gets HTTP 401 |
 | `presentation sent` (INFO) | A verifier got a presentation; `credentials` is how many it held |
 | `issuance message refused` (INFO) | A `CredentialMessage` or offer was refused (HTTP 400); `reason` says why |
+| `credential request sent` (INFO) | The issuer took a credential request (`holderPid`) |
+| `credential request not sent` (INFO) | The issuer could not be reached or refused a request; `reason` says why. Nothing was kept |
+| `the issuer gave no usable Location for the request` (WARN) | The issuer took the request but gave no status URL on its own host; the delivery is still accepted, only the issuer's status cannot be shown |
 | `identity store failed` (ERROR) | The SQLite file could not be read or written |
 
 Backup, restore, upgrade and rollback work as for the connector, with
@@ -454,6 +509,84 @@ upgrade:
 
 The database needs no migration for this; a rollback to 0.4 works as
 above.
+
+## 7. Run the issuer (dataspace authority only)
+
+The issuer issues and revokes the dataspace's credentials with the
+Decentralized Claims Protocol v1.0.1, section 6 (ADR 0018): participants'
+identities ask it for credentials, it delivers them to their Storage API,
+and verifiers read its status lists. **One issuer per dataspace, run by
+the dataspace authority.** Participants do not run it; they only trust its
+DID.
+
+### Before the first deployment
+
+- [ ] **Host.** Never on a participant's host, next to a connector or an
+  identity: the issuer key admits anyone to the dataspace. Give it its
+  own host or cluster and network zone, reached only through your HTTPS
+  proxy.
+- [ ] **DID.** A `did:web` DID for the issuer, for example
+  `did:web:issuer.example.com`, whose document this component serves.
+  Every participant lists it in `PORTITOR_TRUSTED_ISSUERS` (connector and
+  identity).
+- [ ] **Key.** One P-256 private key, unencrypted PKCS#8 PEM, as for the
+  identity: `openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out issuer-key.pem`.
+  Mount it read-only. It signs every credential and status list of the
+  dataspace: it is the dataspace's root of trust.
+- [ ] **Key backup.** Keep an encrypted copy offline, apart from the
+  database backups, with access for at least two people. Without the key
+  the issuer can neither issue nor revoke, so a lost key means a new key
+  and new credentials for every participant. A leaked key lets anyone
+  issue credentials in the dataspace's name: replace it at once.
+- [ ] **Credential definitions.** A JSON file listing what the issuer can
+  issue (ADR 0018, "Credential definitions"); the issuer checks it at
+  start and refuses to start if it is wrong.
+- [ ] **Management API key.** As for the connector. It registers
+  participants and revokes credentials, so guard it like the issuer key.
+- [ ] **Storage.** A persistent volume for `/data`: participants,
+  requests, issued credentials, status lists and the outbox. Losing it
+  loses the revocation state; back it up.
+- [ ] **Network.** Inbound, through your proxy: the DID document, the
+  issuer service and the status lists. Management port: internal only.
+  Outbound: participants' DID documents and Storage APIs (`https://`).
+
+### Configuration
+
+<!-- Completed with the issuer's code (release 0.6): every variable, its
+default and its production value, as for the identity. -->
+
+| Variable | Production value |
+|---|---|
+| `PORTITOR_ISSUER_KEY_FILE` | **required**: path of the mounted PEM key |
+| `PORTITOR_ISSUER_CREDENTIALS_FILE` | **required**: path of the mounted credential definitions file |
+| `PORTITOR_DB_FILE` | leave the image default, `/data/portitor-issuer.db` |
+| `PORTITOR_MANAGEMENT_API_KEY_FILE` | path of the mounted key file |
+| `PORTITOR_MANAGEMENT_BIND` | `0.0.0.0:8071` in a container, published only on an internal interface |
+
+### Ports
+
+| Port | Serves | Reached by | Expose |
+|---|---|---|---|
+| 8070 | DID document, issuer metadata, credential requests and their status, status lists | participants' identities, verifiers | through your HTTPS reverse proxy |
+| 8071 | management API (participants, offers, revocation) | the authority's operators only | **never publicly** |
+
+The public endpoints are described in
+[api/issuer-openapi.json](api/issuer-openapi.json).
+
+### Order
+
+1. Create the key, the credential definitions and the management key;
+   start the issuer and check that its DID document resolves.
+2. Register each participant (its DID and claims) through the management
+   API. A request from a DID that is not registered is rejected.
+3. Give participants the issuer's DID; each adds it to
+   `PORTITOR_TRUSTED_ISSUERS` and asks for its credentials (or you send
+   it an offer).
+4. When a participant leaves, revoke its credentials. Revocation cannot
+   be undone.
+
+Backup, restore, upgrade and rollback work as for the connector, with
+`/data/portitor-issuer.db*`. Keep the key backup separate from them.
 
 ## Known limits
 

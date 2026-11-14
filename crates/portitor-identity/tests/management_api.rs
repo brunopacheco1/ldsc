@@ -33,6 +33,9 @@ async fn every_call_needs_the_key_except_the_description() {
         ("GET", "/v1/credentials"),
         ("DELETE", "/v1/credentials/c-1"),
         ("GET", "/v1/offers"),
+        ("GET", "/v1/credential-requests"),
+        ("GET", "/v1/credential-requests/h-1"),
+        ("POST", "/v1/offers/request"),
     ] {
         let request = Request::builder()
             .method(method)
@@ -153,9 +156,11 @@ fn published_description_is_current() {
     );
     for path in [
         "/v1/credential-requests",
+        "/v1/credential-requests/{holderPid}",
         "/v1/credentials",
         "/v1/credentials/{id}",
         "/v1/offers",
+        "/v1/offers/request",
     ] {
         assert!(spec["paths"][path].is_object(), "{path}");
     }

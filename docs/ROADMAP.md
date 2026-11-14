@@ -77,7 +77,8 @@ OpenSSF:
   Reaching **passing** moved to 0.2.
 - OpenSSF Baseline **level 1** (version 2026-08-28) is the target for all
   of 0.x ([ADR 0012](adr/0012-openssf-baseline.md)). The written
-  self-assessment moved to 0.9 (maintainer, 2026-11-12).
+  self-assessment moved to the hardening release, now 0.10 (maintainer,
+  2026-11-12; renumbered 2026-11-14).
 
 Exit: a "hello" binary ships as a signed image through the full pipeline,
 all checks green, Scorecard published.
@@ -173,7 +174,7 @@ TCK v1.2.1 are the targets (latest releases, checked 2026-11-13).
   Service (the DCP TCK and EDC need one), presentation API, storage API
   and credential offers (holder side), credentials in SQLite. Profile
   both DCP profiles, `vc11-sl2021/jwt` (what the DCP TCK uses) and
-  `vc20-bssl/jwt` (what Gaia-X needs in 0.7). Its own signed image.
+  `vc20-bssl/jwt` (what Gaia-X needs, now in 0.8). Its own signed image.
 - The connector authenticates every DSP request with DCP
   ([ADR 0016](adr/0016-dsp-caller-authentication.md)): the caller's DID
   is proven, it must hold a `MembershipCredential` from a trusted issuer,

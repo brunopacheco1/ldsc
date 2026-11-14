@@ -22,6 +22,34 @@ versions may change behaviour and configuration.
   against the official schemas.
 - `portitor-issuer`: new crate for the issuer component (work in
   progress).
+- Release pipeline for a third image, `ghcr.io/brunopacheco1/portitor-issuer`
+  (ADR 0018): a `portitor-issuer` target in the `Dockerfile` (ports 8070
+  and 8071, `/data/portitor-issuer.db`), built, signed, attested and
+  released with an SBOM like the other two; CI builds the image on every
+  pull request; the website publishes `docs/api/issuer-openapi.json`.
+- C4 diagrams: the system context and containers show the issuer, run by
+  the dataspace authority, one per dataspace; a new component diagram
+  `c3-issuer-components.drawio.svg` shows its planned parts.
+- `docs/DEPLOYING.md`: an issuer section (who runs it, order, key backup,
+  never on a participant's host); `docs/ARCHITECTURE.md` and the website:
+  deployment order issuer, then identity, then connector.
+- `portitor-identity` asks issuers for credentials (holder side of DCP
+  issuance, ADR 0018): `POST /v1/credential-requests` with
+  `credentialIds` finds the issuer's `IssuerService` in its DID document,
+  checks the ids against its metadata and sends a
+  `CredentialRequestMessage` (DCP 6.4) with a self-issued ID token that
+  carries an access token; the issuer's `Location` is kept. `GET
+  /v1/credential-requests` lists requests, `GET
+  /v1/credential-requests/{holderPid}` shows one with its status at the
+  issuer (DCP 6.8), and `POST /v1/offers/request` asks for what an
+  issuer offered (DCP 6.6). Only trusted issuers are asked; offers are
+  never answered by themselves. Without `credentialIds` the request is
+  only recorded, as before.
+- `portitor-runtime`: `HttpSender::post_for_location` reads the
+  `Location` of a `201 Created`.
+- Spike report `docs/spikes/0.6-shacl-engine.md` on the SHACL engine for
+  ADR 0005 (rudof, an own SHACL Core subset, or a JVM sidecar), and its
+  result in ADR 0005, which stays proposed.
 
 - C4 model diagrams (system context, containers, components of both
   images, and the provider negotiation as code) in draw.io format, shown
@@ -33,6 +61,19 @@ versions may change behaviour and configuration.
   image and only files and types that exist; every OpenAPI file has the
   workspace version.
 - A documentation review step for every release (`docs/RELEASING.md`).
+
+### Changed
+
+- Living documents (ARCHITECTURE, SECURITY-ASSURANCE, the website's
+  roadmap) follow the new release numbers: schema and vocabulary registry
+  0.7, Gaia-X 0.8, operations 0.9, hardening 0.10 (with the OpenSSF
+  Baseline self-assessment and cargo-vet).
+- `portitor-identity`: a delivery (`CredentialMessage`) for a request the
+  component sent to the issuer must carry back, in the issuer's ID token,
+  the access token sent with the request (DCP 6.1); any access token
+  present is checked. Requests only recorded need none, as before. The
+  database gains columns for the request's credential ids, status URL,
+  access token id and creation time (a forward-only migration).
 
 ### Fixed
 

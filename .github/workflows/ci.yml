@@ -52,7 +52,8 @@ jobs:
       - name: Build static binaries
         run: |
           start=$(date +%s)
-          cargo build --release --locked --target x86_64-unknown-linux-musl -p portitor-connector -p portitor-identity
+          cargo build --release --locked --target x86_64-unknown-linux-musl -p portitor-connector -p portitor-identity \
+            -p portitor-issuer
           echo "release build seconds (with cache): $(( $(date +%s) - start ))" >> "$GITHUB_STEP_SUMMARY"
       - name: Build the demo authority (test-issuer example, test-only)
         run: cargo build --locked -p portitor-identity --example test-issuer
@@ -65,10 +66,12 @@ jobs:
       - name: Build images
         run: |
           mkdir -p dist/amd64
-          cp target/x86_64-unknown-linux-musl/release/portitor-{connector,identity} dist/amd64/
+          cp target/x86_64-unknown-linux-musl/release/portitor-{connector,identity,issuer} dist/amd64/
           docker build --target portitor-connector -t portitor-connector:ci .
           docker build --target portitor-identity -t portitor-identity:ci .
+          docker build --target portitor-issuer -t portitor-issuer:ci .
           docker image inspect portitor-identity:ci --format 'identity image bytes: {{.Size}}' >> "$GITHUB_STEP_SUMMARY"
+          docker image inspect portitor-issuer:ci --format 'issuer image bytes: {{.Size}}' >> "$GITHUB_STEP_SUMMARY"
       - name: Connector image (CA bundle, refuses to start without DCP)
         run: |
           # https callbacks need the CA bundle in the image
@@ -108,6 +111,12 @@ jobs:
           # the non-root user created the SQLite file in /data
           docker cp smoke-identity:/data/portitor-identity.db - > /dev/null
           docker rm -f smoke-identity
+      - name: Issuer image refuses to start without its settings
+        run: |
+          if docker run --rm portitor-issuer:ci > issuer-smoke.log 2>&1; then
+            echo "::error::the issuer started without its settings"; exit 1
+          fi
+          cat issuer-smoke.log
       - name: The same in Docker Compose
         env:
           TEST_ISSUER: target/debug/examples/test-issuer
@@ -118,6 +127,7 @@ jobs:
           path: |
             target/x86_64-unknown-linux-musl/release/portitor-connector
             target/x86_64-unknown-linux-musl/release/portitor-identity
+            target/x86_64-unknown-linux-musl/release/portitor-issuer
           retention-days: 7
 
   reuse:

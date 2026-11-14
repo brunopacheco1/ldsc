@@ -15,7 +15,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use portitor_dcp::credential::Profile;
 use portitor_dcp::message::CredentialObject;
-use rusqlite::{Connection, OptionalExtension as _, Row, params};
+use rusqlite::{Connection, Row, params};
 
 /// A store operation failed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -68,7 +68,9 @@ pub enum RequestStatus {
 }
 
 impl RequestStatus {
-    fn text(self) -> &'static str {
+    /// How the status is written: `REQUESTED`, `ISSUED` or `REJECTED`.
+    #[must_use]
+    pub fn text(self) -> &'static str {
         match self {
             Self::Requested => "REQUESTED",
             Self::Issued => "ISSUED",
@@ -88,6 +90,11 @@ impl RequestStatus {
 
 /// A credential request the participant made, so the Storage API knows
 /// which `CredentialMessage` to accept (DCP 6.5: `holderPid`).
+///
+/// A request is either sent to the issuer by this component (DCP 6.4,
+/// with `credential_ids`, a status URL and an access token), or only
+/// recorded, for an issuer that is asked out of band (the DCP TCK, the
+/// test credential tool).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CredentialRequest {
     /// The holder's id of the request.
@@ -96,6 +103,35 @@ pub struct CredentialRequest {
     pub issuer: String,
     /// Where it stands.
     pub status: RequestStatus,
+    /// The ids (in the issuer's metadata) of the credentials asked for;
+    /// empty for a request that was only recorded.
+    pub credential_ids: Vec<String>,
+    /// Where the issuer serves the request's status (the `Location` of
+    /// its `201 Created`, DCP 6.4 and 6.8), once known.
+    pub status_url: Option<String>,
+    /// The `jti` of the access token sent to the issuer in the `token`
+    /// claim (DCP 6.1); its delivery must carry this token back. None for
+    /// a request that was only recorded.
+    pub access_token_id: Option<String>,
+    /// When the request was made, seconds since 1970 (0 for requests
+    /// recorded before 0.6).
+    pub created_at: u64,
+}
+
+impl CredentialRequest {
+    /// A request for `issuer`, still open, with nothing sent yet.
+    #[must_use]
+    pub fn recorded(holder_pid: String, issuer: String, created_at: u64) -> Self {
+        Self {
+            holder_pid,
+            issuer,
+            status: RequestStatus::Requested,
+            credential_ids: Vec::new(),
+            status_url: None,
+            access_token_id: None,
+            created_at,
+        }
+    }
 }
 
 /// One credential an issuer offered (DCP 6.6).
@@ -123,6 +159,26 @@ pub trait IdentityStore: Send + Sync {
     /// # Errors
     /// The store fails.
     fn request(&self, holder_pid: &str) -> Result<Option<CredentialRequest>, StoreError>;
+
+    /// Every request, newest first.
+    ///
+    /// # Errors
+    /// The store fails.
+    fn requests(&self) -> Result<Vec<CredentialRequest>, StoreError>;
+
+    /// Keeps where the issuer serves the status of request `holder_pid`.
+    ///
+    /// # Errors
+    /// The store fails.
+    fn set_status_url(&self, holder_pid: &str, status_url: &str) -> Result<(), StoreError>;
+
+    /// Removes request `holder_pid` if it is still open, so a late
+    /// delivery for it is refused; used when the issuer could not be
+    /// asked. Returns false if there was no open request.
+    ///
+    /// # Errors
+    /// The store fails.
+    fn withdraw_request(&self, holder_pid: &str) -> Result<bool, StoreError>;
 
     /// Records an issuer's answer to a request that is still
     /// [`RequestStatus::Requested`], with the credentials it delivered, all
@@ -196,7 +252,18 @@ const MIGRATIONS: &[&str] = &[
         received_at   INTEGER NOT NULL,
         PRIMARY KEY (issuer, credential_id)
     )",
+    // 0.6: requests sent to the issuer by this component (DCP 6.4): what
+    // was asked, where the status is, the access token sent (ADR 0018)
+    "ALTER TABLE credential_request ADD COLUMN credential_ids TEXT NOT NULL DEFAULT '[]';
+    ALTER TABLE credential_request ADD COLUMN status_url TEXT;
+    ALTER TABLE credential_request ADD COLUMN access_token_id TEXT;
+    ALTER TABLE credential_request ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0",
 ];
+
+/// The columns of a credential request, in the order of the `INSERT` in
+/// [`SqliteStore::add_request`]; read by name in [`request_from`].
+const REQUEST_COLUMNS: &str =
+    "holder_pid, issuer_did, status, credential_ids, status_url, access_token_id, created_at";
 
 /// Adapter: the store in a `SQLite` file.
 #[derive(Debug)]
@@ -230,35 +297,68 @@ impl SqliteStore {
 
 impl IdentityStore for SqliteStore {
     fn add_request(&self, request: &CredentialRequest) -> Result<bool, StoreError> {
+        let credential_ids = serde_json::to_string(&request.credential_ids)
+            .map_err(|e| StoreError(e.to_string()))?;
+        let created_at = i64::try_from(request.created_at).unwrap_or(i64::MAX);
         let added = self.conn().execute(
-            "INSERT INTO credential_request (holder_pid, issuer_did, status) VALUES (?1, ?2, ?3)
-                 ON CONFLICT (holder_pid) DO NOTHING",
-            params![request.holder_pid, request.issuer, request.status.text()],
+            &format!(
+                "INSERT INTO credential_request ({REQUEST_COLUMNS})
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT (holder_pid) DO NOTHING"
+            ),
+            params![
+                request.holder_pid,
+                request.issuer,
+                request.status.text(),
+                credential_ids,
+                request.status_url,
+                request.access_token_id,
+                created_at
+            ],
         )?;
         Ok(added == 1)
     }
 
     fn request(&self, holder_pid: &str) -> Result<Option<CredentialRequest>, StoreError> {
-        let found = self
-            .conn()
-            .query_row(
-                "SELECT issuer_did, status FROM credential_request WHERE holder_pid = ?1",
-                [holder_pid],
-                |row| {
-                    let issuer: String = row.get("issuer_did")?;
-                    let status: String = row.get("status")?;
-                    Ok((issuer, status))
-                },
-            )
-            .optional()?;
-        let Some((issuer, status)) = found else {
-            return Ok(None);
-        };
-        Ok(Some(CredentialRequest {
-            holder_pid: holder_pid.to_owned(),
-            issuer,
-            status: RequestStatus::from_text(&status)?,
-        }))
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {REQUEST_COLUMNS} FROM credential_request WHERE holder_pid = ?1"
+        ))?;
+        let mut rows = stmt.query([holder_pid])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(request_from(row)?)),
+            None => Ok(None),
+        }
+    }
+
+    fn requests(&self) -> Result<Vec<CredentialRequest>, StoreError> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {REQUEST_COLUMNS} FROM credential_request
+                 ORDER BY created_at DESC, holder_pid"
+        ))?;
+        let mut rows = stmt.query([])?;
+        let mut found = Vec::new();
+        while let Some(row) = rows.next()? {
+            found.push(request_from(row)?);
+        }
+        Ok(found)
+    }
+
+    fn set_status_url(&self, holder_pid: &str, status_url: &str) -> Result<(), StoreError> {
+        self.conn().execute(
+            "UPDATE credential_request SET status_url = ?2 WHERE holder_pid = ?1",
+            params![holder_pid, status_url],
+        )?;
+        Ok(())
+    }
+
+    fn withdraw_request(&self, holder_pid: &str) -> Result<bool, StoreError> {
+        let removed = self.conn().execute(
+            "DELETE FROM credential_request WHERE holder_pid = ?1 AND status = ?2",
+            params![holder_pid, RequestStatus::Requested.text()],
+        )?;
+        Ok(removed == 1)
     }
 
     fn deliver(
@@ -380,6 +480,24 @@ impl IdentityStore for SqliteStore {
     }
 }
 
+/// A credential request from a row with the [`REQUEST_COLUMNS`], read by
+/// column name.
+fn request_from(row: &Row<'_>) -> Result<CredentialRequest, StoreError> {
+    let status: String = row.get("status")?;
+    let credential_ids: String = row.get("credential_ids")?;
+    let created_at: i64 = row.get("created_at")?;
+    Ok(CredentialRequest {
+        holder_pid: row.get("holder_pid")?,
+        issuer: row.get("issuer_did")?,
+        status: RequestStatus::from_text(&status)?,
+        credential_ids: serde_json::from_str(&credential_ids)
+            .map_err(|e| StoreError(e.to_string()))?,
+        status_url: row.get("status_url")?,
+        access_token_id: row.get("access_token_id")?,
+        created_at: u64::try_from(created_at).unwrap_or_default(),
+    })
+}
+
 /// A stored credential from a row with the [`CREDENTIAL_COLUMNS`], read
 /// by column name.
 fn credential_from(row: &Row<'_>) -> Result<StoredCredential, StoreError> {
@@ -403,11 +521,7 @@ mod tests {
     use super::*;
 
     fn request(pid: &str) -> CredentialRequest {
-        CredentialRequest {
-            holder_pid: pid.to_owned(),
-            issuer: "did:web:issuer.example".to_owned(),
-            status: RequestStatus::Requested,
-        }
+        CredentialRequest::recorded(pid.to_owned(), "did:web:issuer.example".to_owned(), 1)
     }
 
     fn credential(id: &str, issuer: &str) -> StoredCredential {
@@ -487,6 +601,38 @@ mod tests {
 
         assert!(store.delete_credential("c-1").unwrap());
         assert!(!store.delete_credential("c-1").unwrap());
+
+        // a request sent to the issuer keeps what was asked, the access
+        // token's id and, once known, the status URL
+        let sent = CredentialRequest {
+            credential_ids: vec!["membership".to_owned()],
+            access_token_id: Some("jti-1".to_owned()),
+            created_at: 5,
+            ..request("h-4")
+        };
+        assert!(store.add_request(&sent).unwrap());
+        store
+            .set_status_url("h-4", "https://issuer.example/requests/i-4")
+            .unwrap();
+        let read = store.request("h-4").unwrap().unwrap();
+        assert_eq!(
+            read,
+            CredentialRequest {
+                status_url: Some("https://issuer.example/requests/i-4".to_owned()),
+                ..sent
+            }
+        );
+        let listed: Vec<String> = store
+            .requests()
+            .unwrap()
+            .into_iter()
+            .map(|r| r.holder_pid)
+            .collect();
+        assert_eq!(listed, ["h-4", "h-1", "h-3"], "newest first");
+        // only an open request can be withdrawn
+        assert!(!store.withdraw_request("h-1").unwrap());
+        assert!(store.withdraw_request("h-4").unwrap());
+        assert_eq!(store.request("h-4").unwrap(), None);
 
         let offered: CredentialObject =
             serde_json::from_value(serde_json::json!({"id": "o-1", "credentialType": "A"}))
