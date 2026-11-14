@@ -91,8 +91,9 @@ SPDX-License-Identifier = "CC-BY-4.0"
 
 [[annotations]]
 # DSP 2025-1 JSON-LD contexts, copied unchanged from the Eclipse Dataspace Protocol, tag 2025-1
-# (artifacts/src/main/resources/context/dspace.jsonld and odrl.jsonld)
-path = "crates/portitor-shacl/tests/data/dsp-2025-1/*.jsonld"
+# (artifacts/src/main/resources/context/dspace.jsonld and odrl.jsonld); the connector's
+# embedded copies are the same files at tag 2025-1-err2 (commit d7d810b276f5f5710ff7a53bff630e2845cc0105)
+path = ["crates/portitor-shacl/tests/data/dsp-2025-1/*.jsonld", "crates/portitor-connector/contexts/*.jsonld"]
 precedence = "override"
 SPDX-FileCopyrightText = "Eclipse Dataspace Protocol contributors (https://github.com/eclipse-dataspace-protocol-base/DataspaceProtocol)"
 SPDX-License-Identifier = "Apache-2.0"

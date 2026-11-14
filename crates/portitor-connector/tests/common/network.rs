@@ -22,8 +22,12 @@ use tower::ServiceExt as _;
 pub struct Network(Mutex<Vec<(String, Router)>>);
 
 impl Network {
+    /// Puts `router` on the network at `public_url`, in place of the one
+    /// there before, if any (a restarted connector).
     pub fn join(&self, public_url: &str, router: Router) {
-        self.0.lock().unwrap().push((public_url.to_owned(), router));
+        let mut hosts = self.0.lock().unwrap();
+        hosts.retain(|(base, _)| base != public_url);
+        hosts.push((public_url.to_owned(), router));
     }
 
     async fn call(

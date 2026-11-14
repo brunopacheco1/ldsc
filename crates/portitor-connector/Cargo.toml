@@ -20,6 +20,8 @@ portitor-dcp = { path = "../portitor-dcp" }
 portitor-dsp = { path = "../portitor-dsp" }
 portitor-dps = { path = "../portitor-dps" }
 portitor-runtime = { path = "../portitor-runtime" }
+# the SHACL engine for the bundle's rules (ADR 0005)
+portitor-shacl = { path = "../portitor-shacl" }
 http-body-util.workspace = true
 hyper.workspace = true
 ring.workspace = true
