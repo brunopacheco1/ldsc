@@ -14,18 +14,19 @@ runs [`.github/workflows/release.yml`](../.github/workflows/release.yml), which:
 2. tests the workspace and builds static musl binaries on native amd64 and
    arm64 runners;
 3. builds one multi-arch image per component and pushes it to
-   `ghcr.io/brunopacheco1/<component>:X.Y.Z`. From 0.5 there are two:
+   `ghcr.io/brunopacheco1/<component>:X.Y.Z`. From 0.6 there are three:
 
    | Image | Ports | State |
    |---|---|---|
    | `ghcr.io/brunopacheco1/portitor-connector` | 8080 DSP, 8081 management | `/data/portitor.db` |
    | `ghcr.io/brunopacheco1/portitor-identity` | 8090 DID document, STS, credential service; 8091 management | `/data/portitor-identity.db` |
+   | `ghcr.io/brunopacheco1/portitor-issuer` | 8070 DID document, DCP issuer service, status lists; 8071 management | `/data/portitor-issuer.db` |
 
-   `portitor-issuer` joins in 0.6 ([ADR 0003](adr/0003-component-split.md));
+   ([ADR 0003](adr/0003-component-split.md), [ADR 0018](adr/0018-issuer-component.md));
 4. signs each image with cosign (keyless, the workflow's identity);
 5. attaches build provenance (SLSA v1) and a CycloneDX SBOM to each image
    as GitHub attestations;
-6. creates a GitHub release with the changelog section, both image
+6. creates a GitHub release with the changelog section, the image
    digests, the binaries, one SBOM and one provenance bundle per component
    (`<component>-X.Y.Z.cdx.json`, `<component>-X.Y.Z.intoto.jsonl`) and
    `THIRD-PARTY-NOTICES.txt` (all components).
@@ -51,7 +52,8 @@ notices script runs the same build as a dry run: nothing is pushed or signed.
    use the workflow's OIDC token. Images are pushed with the workflow's
    `GITHUB_TOKEN`.
 3. After the first release of each image, make its package public:
-   **Packages → portitor-connector** (and, from 0.5, **portitor-identity**)
+   **Packages → portitor-connector** (and, from 0.5, **portitor-identity**;
+   from 0.6, **portitor-issuer**)
    **→ Package settings → Change visibility → Public**, and link it to this
    repository if GitHub did not. A new package starts private, so pulling
    it fails until this is done.
@@ -74,8 +76,9 @@ pull request, or record why it stays.
   (settings, ports, images, flows).
 - The OpenAPI files in `docs/api/`: the generated management descriptions
   are current (their tests fail otherwise); the hand-written
-  `openapi.json` (DSP) and `identity-openapi.json` (DID document, STS,
-  DCP credential service) list every route (their tests check that each
+  `openapi.json` (DSP), `identity-openapi.json` (DID document, STS,
+  DCP credential service) and `issuer-openapi.json` (DID document, DCP
+  issuer service, status lists) list every route (their tests check that each
   listed route is served) and describe what changed.
 - The website (`site/index.html`, published with the API pages by
   `pages.yml`) shows the release's features and the roadmap state.
@@ -87,8 +90,8 @@ pull request, or record why it stays.
 1. In a pull request, set `version` in `Cargo.toml` (`[workspace.package]`)
    to `X.Y.Z`, rename `## [Unreleased]` in `CHANGELOG.md` to
    `## [X.Y.Z] - YYYY-MM-DD`, add a fresh empty `## [Unreleased]` above it,
-   set `info.version` in `docs/api/openapi.json` and
-   `docs/api/identity-openapi.json`, regenerate
+   set `info.version` in `docs/api/openapi.json`,
+   `docs/api/identity-openapi.json` and `docs/api/issuer-openapi.json`, regenerate
    `docs/api/management-openapi.json`
    and `docs/api/identity-management-openapi.json`
    (`PORTITOR_UPDATE_OPENAPI=1 cargo test -p portitor-connector --test management_api`
@@ -108,7 +111,7 @@ pull request, or record why it stays.
 Check every image of the release the same way:
 
 ```sh
-for image in portitor-connector portitor-identity; do
+for image in portitor-connector portitor-identity portitor-issuer; do
   # signature: signed by this repository's release workflow, from a tag
   cosign verify "ghcr.io/brunopacheco1/$image:X.Y.Z" \
     --certificate-identity-regexp '^https://github.com/brunopacheco1/portitor/\.github/workflows/release\.yml@refs/tags/v' \

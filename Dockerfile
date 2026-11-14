@@ -6,12 +6,13 @@
 # target named after its component:
 #   docker build --target portitor-connector -t portitor-connector .
 #   docker build --target portitor-identity -t portitor-identity .
+#   docker build --target portitor-issuer -t portitor-issuer .
 # Without --target, Docker builds the last one, portitor-connector.
 #
 # The binaries are built beforehand as static musl executables and copied to
 # dist/<arch>/ (amd64 or arm64), for example:
-#   cargo build --release --target x86_64-unknown-linux-musl -p portitor-connector -p portitor-identity
-#   mkdir -p dist/amd64 && cp target/x86_64-unknown-linux-musl/release/portitor-{connector,identity} dist/amd64/
+#   cargo build --release --target x86_64-unknown-linux-musl -p portitor-connector -p portitor-identity -p portitor-issuer
+#   mkdir -p dist/amd64 && cp target/x86_64-unknown-linux-musl/release/portitor-{connector,identity,issuer} dist/amd64/
 # An image holds only its binary and the CA certificate bundle: no shell, no
 # package manager, no libc. With nothing to run inside the image, buildx
 # builds every platform without emulation.
@@ -58,6 +59,20 @@ ENV PORTITOR_DB_FILE=/data/portitor-identity.db
 # unless PORTITOR_MANAGEMENT_BIND says otherwise.
 EXPOSE 8090 8091
 ENTRYPOINT ["/portitor-identity"]
+
+# Issuer: issues and revokes credentials for a dataspace authority (DCP, ADR 0018).
+# One per dataspace, run by the authority; never on a participant's host.
+FROM base AS portitor-issuer
+ARG TARGETARCH
+LABEL org.opencontainers.image.title="portitor-issuer" \
+      org.opencontainers.image.description="Portitor issuer: issues and revokes credentials for a dataspace authority (DCP 1.0)"
+COPY dist/${TARGETARCH}/portitor-issuer /portitor-issuer
+ENV PORTITOR_DB_FILE=/data/portitor-issuer.db
+# 8070: DID document, issuer metadata, credential requests and status, status
+# lists. 8071: management API, only when PORTITOR_MANAGEMENT_API_KEY_FILE is
+# set; it listens on 127.0.0.1 unless PORTITOR_MANAGEMENT_BIND says otherwise.
+EXPOSE 8070 8071
+ENTRYPOINT ["/portitor-issuer"]
 
 # Connector: DSP control plane and the built-in data plane.
 FROM base AS portitor-connector

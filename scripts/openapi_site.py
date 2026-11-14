@@ -75,8 +75,9 @@ def page(spec):
         with the official DSP JSON Schemas next to it. Open it in any OpenAPI viewer.</p>
         <p>The other HTTP interfaces, also OpenAPI:
         <a href="management-openapi.json">connector management API</a>,
-        <a href="identity-openapi.json">identity (DID document, STS, DCP credential service)</a> and
-        <a href="identity-management-openapi.json">identity management API</a>.</p>
+        <a href="identity-openapi.json">identity (DID document, STS, DCP credential service)</a>,
+        <a href="identity-management-openapi.json">identity management API</a> and
+        <a href="issuer-openapi.json">issuer (DID document, DCP issuer service, status lists)</a>.</p>
         <table>
           <thead><tr><th>Method</th><th>Path</th><th>What it does</th><th>Responses</th></tr></thead>
           <tbody>

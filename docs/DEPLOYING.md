@@ -8,8 +8,14 @@ SPDX-License-Identifier: Apache-2.0
 
 A runbook for the team that deploys and runs Portitor. It covers
 `portitor-connector` and, from 0.5, `portitor-identity`, which runs next to
-it ([section 4](#4-run-the-identity-next-to-the-connector)).
-`portitor-issuer` will be added here when it ships (ADR 0003).
+it ([section 4](#4-run-the-identity-next-to-the-connector)). From 0.6 it
+also covers `portitor-issuer`, which only the dataspace authority runs
+([section 7](#7-run-the-issuer-dataspace-authority-only)).
+
+**Deployment order.** Once per dataspace, the authority deploys the
+issuer and registers each participant. Then each participant deploys its
+identity, asks the issuer for its membership credential, and deploys its
+connector ([ARCHITECTURE.md](ARCHITECTURE.md#deployment-order)).
 
 Portitor is a prototype (0.x). Read [Known limits](#known-limits) before you
 expose it to partners.
@@ -32,7 +38,8 @@ Check each item and keep the answers in your own runbook.
     gh attestation verify "oci://ghcr.io/brunopacheco1/$image:X.Y.Z" --repo brunopacheco1/portitor
   done
   ```
-  Deploy by digest (`ghcr.io/...@sha256:...`), not only by tag.
+  Deploy by digest (`ghcr.io/...@sha256:...`), not only by tag. The
+  dataspace authority checks `portitor-issuer` the same way.
 - [ ] **Participant id.** The DID your dataspace gave you
   (`PORTITOR_PARTICIPANT_ID`).
 - [ ] **Public URL.** The `https://` URL partners use to reach you
@@ -454,6 +461,84 @@ upgrade:
 
 The database needs no migration for this; a rollback to 0.4 works as
 above.
+
+## 7. Run the issuer (dataspace authority only)
+
+The issuer issues and revokes the dataspace's credentials with the
+Decentralized Claims Protocol v1.0.1, section 6 (ADR 0018): participants'
+identities ask it for credentials, it delivers them to their Storage API,
+and verifiers read its status lists. **One issuer per dataspace, run by
+the dataspace authority.** Participants do not run it; they only trust its
+DID.
+
+### Before the first deployment
+
+- [ ] **Host.** Never on a participant's host, next to a connector or an
+  identity: the issuer key admits anyone to the dataspace. Give it its
+  own host or cluster and network zone, reached only through your HTTPS
+  proxy.
+- [ ] **DID.** A `did:web` DID for the issuer, for example
+  `did:web:issuer.example.com`, whose document this component serves.
+  Every participant lists it in `PORTITOR_TRUSTED_ISSUERS` (connector and
+  identity).
+- [ ] **Key.** One P-256 private key, unencrypted PKCS#8 PEM, as for the
+  identity: `openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out issuer-key.pem`.
+  Mount it read-only. It signs every credential and status list of the
+  dataspace: it is the dataspace's root of trust.
+- [ ] **Key backup.** Keep an encrypted copy offline, apart from the
+  database backups, with access for at least two people. Without the key
+  the issuer can neither issue nor revoke, so a lost key means a new key
+  and new credentials for every participant. A leaked key lets anyone
+  issue credentials in the dataspace's name: replace it at once.
+- [ ] **Credential definitions.** A JSON file listing what the issuer can
+  issue (ADR 0018, "Credential definitions"); the issuer checks it at
+  start and refuses to start if it is wrong.
+- [ ] **Management API key.** As for the connector. It registers
+  participants and revokes credentials, so guard it like the issuer key.
+- [ ] **Storage.** A persistent volume for `/data`: participants,
+  requests, issued credentials, status lists and the outbox. Losing it
+  loses the revocation state; back it up.
+- [ ] **Network.** Inbound, through your proxy: the DID document, the
+  issuer service and the status lists. Management port: internal only.
+  Outbound: participants' DID documents and Storage APIs (`https://`).
+
+### Configuration
+
+<!-- Completed with the issuer's code (release 0.6): every variable, its
+default and its production value, as for the identity. -->
+
+| Variable | Production value |
+|---|---|
+| `PORTITOR_ISSUER_KEY_FILE` | **required**: path of the mounted PEM key |
+| `PORTITOR_ISSUER_CREDENTIALS_FILE` | **required**: path of the mounted credential definitions file |
+| `PORTITOR_DB_FILE` | leave the image default, `/data/portitor-issuer.db` |
+| `PORTITOR_MANAGEMENT_API_KEY_FILE` | path of the mounted key file |
+| `PORTITOR_MANAGEMENT_BIND` | `0.0.0.0:8071` in a container, published only on an internal interface |
+
+### Ports
+
+| Port | Serves | Reached by | Expose |
+|---|---|---|---|
+| 8070 | DID document, issuer metadata, credential requests and their status, status lists | participants' identities, verifiers | through your HTTPS reverse proxy |
+| 8071 | management API (participants, offers, revocation) | the authority's operators only | **never publicly** |
+
+The public endpoints are described in
+[api/issuer-openapi.json](api/issuer-openapi.json).
+
+### Order
+
+1. Create the key, the credential definitions and the management key;
+   start the issuer and check that its DID document resolves.
+2. Register each participant (its DID and claims) through the management
+   API. A request from a DID that is not registered is rejected.
+3. Give participants the issuer's DID; each adds it to
+   `PORTITOR_TRUSTED_ISSUERS` and asks for its credentials (or you send
+   it an offer).
+4. When a participant leaves, revoke its credentials. Revocation cannot
+   be undone.
+
+Backup, restore, upgrade and rollback work as for the connector, with
+`/data/portitor-issuer.db*`. Keep the key backup separate from them.
 
 ## Known limits
 
