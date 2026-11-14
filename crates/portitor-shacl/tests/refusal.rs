@@ -118,6 +118,43 @@ fn malformed_turtle_is_refused() {
 }
 
 #[test]
+fn patterns_that_rust_reads_differently_are_refused() {
+    // XPath: a class minus a class (consonants); Rust would read a union
+    let error =
+        invalid("ex:S sh:targetClass ex:C ; sh:path ex:p ; sh:pattern \"^[a-z-[aeiou]]+$\" .");
+    assert!(error.contains("class subtraction"), "{error}");
+    // XPath: '#' is a '#'; Rust with x would start a comment
+    let error = invalid(
+        "ex:S sh:targetClass ex:C ; sh:path ex:p ; sh:pattern \"^a#b$\" ; sh:flags \"x\" .",
+    );
+    assert!(error.contains("'#'"), "{error}");
+    // XPath with x keeps white space inside a class; Rust drops it
+    let error = invalid(
+        "ex:S sh:targetClass ex:C ; sh:path ex:p ; sh:pattern \"^[a b]$\" ; sh:flags \"x\" .",
+    );
+    assert!(error.contains("white space"), "{error}");
+    // read the same way: accepted
+    for (pattern, flags) in [
+        ("^a#b$", ""),
+        ("^[]a]$", ""),
+        ("^[^]a]$", ""),
+        ("^[a\\\\[]$", ""),
+        ("^a b c$", "x"),
+        ("^[a-z]+-[0-9]$", ""),
+        ("[a-z-[aeiou]]", "q"),
+    ] {
+        let flags = if flags.is_empty() {
+            String::new()
+        } else {
+            format!(" ; sh:flags \"{flags}\"")
+        };
+        let shapes =
+            format!("ex:S sh:targetClass ex:C ; sh:path ex:p ; sh:pattern \"{pattern}\"{flags} .");
+        assert!(load(&shapes).is_ok(), "{pattern} should be accepted");
+    }
+}
+
+#[test]
 fn malformed_shapes_are_refused() {
     assert!(invalid("ex:S sh:targetClass ex:C ; sh:severity ex:Mine .").contains("sh:severity"));
     assert!(invalid("ex:S sh:targetClass ex:C ; sh:minCount 1 .").contains("needs a sh:path"));

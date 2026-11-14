@@ -684,26 +684,33 @@ fn count_value(term: &Term) -> Result<u64, String> {
 /// the flags of `XPath` `fn:matches`: `s`, `m`, `i`, `x`, `q`). The pattern
 /// must also be valid for Rust's `regex` crate, whose syntax is close to
 /// the `XPath` one for common patterns; one that does not compile is
-/// refused rather than read differently.
+/// refused rather than read differently. So are the patterns that would
+/// compile with another meaning ([`read_differently`]).
 fn compile_pattern(pattern: &str, flags: Option<&str>) -> Result<Constraint, String> {
     let mut quote = false;
-    let mut builder_flags = (false, false, false, false);
+    let mut case_insensitive = false;
+    let mut multi_line = false;
+    let mut dot_all = false;
+    let mut extended = false;
     for flag in flags.unwrap_or_default().chars() {
         match flag {
-            'i' => builder_flags.0 = true,
-            'm' => builder_flags.1 = true,
-            's' => builder_flags.2 = true,
-            'x' => builder_flags.3 = true,
+            'i' => case_insensitive = true,
+            'm' => multi_line = true,
+            's' => dot_all = true,
+            'x' => extended = true,
             'q' => quote = true,
             other => return Err(format!("sh:flags has the unknown flag {other:?}")),
         }
     }
     let text = if quote {
+        // `q`: every character stands for itself
         regex::escape(pattern)
     } else {
+        if let Some(reason) = read_differently(pattern, extended) {
+            return Err(format!("sh:pattern {pattern:?} is not supported: {reason}"));
+        }
         pattern.to_owned()
     };
-    let (case_insensitive, multi_line, dot_all, extended) = builder_flags;
     let regex = RegexBuilder::new(&text)
         .case_insensitive(case_insensitive)
         .multi_line(multi_line)
@@ -716,6 +723,58 @@ fn compile_pattern(pattern: &str, flags: Option<&str>) -> Result<Constraint, Str
         regex,
         source: pattern.to_owned(),
     })
+}
+
+/// Why a pattern would compile in Rust's `regex` with another meaning
+/// than in `XPath` (XML Schema regular expressions, with the `XPath`
+/// additions), or `None` when it would not:
+/// - a `[` inside a character class: `XPath` reads `[a-z-[aeiou]]` as
+///   a class minus another class (consonants), Rust as a union of
+///   classes (all letters); any other `[` inside a class is not
+///   `XPath`;
+/// - with the `x` flag, a `#`: Rust starts a comment there, `XPath`
+///   matches a `#`;
+/// - with the `x` flag, white space inside a character class: `XPath`
+///   keeps it, Rust drops it.
+fn read_differently(pattern: &str, extended: bool) -> Option<&'static str> {
+    let mut in_class = false;
+    // the characters since the class opened, to see a leading `]` or `^`
+    let mut class_length = 0;
+    let mut chars = pattern.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            // an escape: the next character is not special
+            chars.next();
+            class_length += 1;
+            continue;
+        }
+        if extended && c == '#' {
+            return Some("with the x flag, '#' would start a comment");
+        }
+        if !in_class {
+            if c == '[' {
+                in_class = true;
+                class_length = 0;
+            }
+            continue;
+        }
+        match c {
+            '[' => {
+                return Some("class subtraction or a '[' inside a character class");
+            }
+            // Rust reads a `]` first in a class (after an optional `^`)
+            // as a `]`, not as the end
+            ']' if class_length == 0 => {}
+            '^' if class_length == 0 => continue,
+            ']' => in_class = false,
+            ' ' | '\t' | '\n' | '\r' if extended => {
+                return Some("with the x flag, white space inside a character class");
+            }
+            _ => {}
+        }
+        class_length += 1;
+    }
+    None
 }
 
 /// The IRI of a named node, or the label of a blank node.

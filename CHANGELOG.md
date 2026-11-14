@@ -136,6 +136,10 @@ versions may change behaviour and configuration.
   now takes milliseconds), and one validation makes at most 1,000,000
   checks (`MAX_CHECKS`): past that, the report has a Violation
   (`urn:portitor:shacl:WorkLimit`), never a pass.
+- `portitor-shacl` refuses a `sh:pattern` that Rust's `regex` would read
+  differently from `XPath`: a `[` inside a character class (`XPath` class
+  subtraction such as `[a-z-[aeiou]]`), and with the `x` flag a `#` or
+  white space inside a class.
 
 ### Documentation
 
