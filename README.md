@@ -84,7 +84,7 @@ Configuration (environment variables):
 | `PORTITOR_STS_ALLOW_HTTP` | unset | `true` allows a plain-HTTP `PORTITOR_STS_URL` (the STS on an internal network), and nothing else |
 | `PORTITOR_STS_CLIENT_ID` | `PORTITOR_PARTICIPANT_ID` | Client id at the STS |
 | `PORTITOR_STS_CLIENT_SECRET_FILE` | none (**required**) | File with the STS client secret |
-| `PORTITOR_TRUSTED_ISSUERS` | none (**required**) | Comma-separated DIDs trusted to issue `MembershipCredential` |
+| `PORTITOR_TRUSTED_ISSUERS` | none (**required**) | Comma-separated DIDs trusted to issue credentials: the `MembershipCredential` and those of credential constraints |
 | `PORTITOR_DCP_SCOPES` | `org.eclipse.dspace.dcp.vc.type:MembershipCredential` | Comma-separated scopes asked from callers' credential services, and granted to the counter-party in our tokens |
 | `PORTITOR_POLICY_CREDENTIALS` | none (`MembershipCredential` only) | Comma-separated credential types that offers may constrain, each `Type` (scope `org.eclipse.dspace.dcp.vc.type:<Type>:read`) or `Type=<scope>` ([ADR 0019](docs/adr/0019-credential-constraints.md)) |
 
@@ -215,7 +215,9 @@ the host in the callback address; certificate checks cannot be turned off.
 
 Known gaps in this version:
 - Callers are admitted by one credential type, `MembershipCredential` from
-  a trusted issuer (ADR 0016); no per-dataset credential policies yet.
+  a trusted issuer (ADR 0016). Offers may also ask for credential claims
+  (ADR 0019), compared as text only, but the catalog still shows every
+  offer to every member.
 - The callback address is chosen by the consumer. Only `https://` is
   allowed by default, but internal addresses are not blocked yet; put the
   connector where it cannot reach services it should not call.
@@ -256,6 +258,10 @@ A connector does not run alone: it needs its participant's identity
 component for DCP (`PORTITOR_STS_URL`, `PORTITOR_STS_CLIENT_SECRET_FILE`,
 `PORTITOR_TRUSTED_ISSUERS`), and refuses to start without it.
 [examples/compose/compose.yaml](examples/compose/compose.yaml) shows both
-wired together; [docs/DEPLOYING.md](docs/DEPLOYING.md) is the runbook.
+wired together; [docs/DEPLOYING.md](docs/DEPLOYING.md) is the runbook. The
+identity component and the issuer (`portitor-issuer`, run once per
+dataspace by its authority) have their own settings and APIs: see
+DEPLOYING sections 4 and 7, and their OpenAPI files in
+[docs/api/](docs/api/).
 
 Licensed under [Apache-2.0](LICENSE) ([ADR 0010](docs/adr/0010-licence.md)).

@@ -25,7 +25,7 @@ project checks every change. All commands run from the repository root.
 | Fuzzing | see [below](#fuzzing) | every PR (short), weekly (long) |
 | Two participants authenticate with DCP, agree a contract and transfer a file | `scripts/demo.sh`, see [below](#two-connectors) | every PR (`CI`) |
 | The same in Docker Compose | `scripts/demo-compose.sh` | every PR (`CI`) |
-| Images build and start | `docker build --target portitor-connector` / `--target portitor-identity`; the connector refuses to start without its DCP settings, the identity serves its DID document | every PR (`CI`) |
+| Images build and start | `docker build --target portitor-connector` / `--target portitor-identity` / `--target portitor-issuer`; the connector and the issuer refuse to start without their settings, the identity serves its DID document | every PR (`CI`) |
 | Static analysis | CodeQL, OpenSSF Scorecard, ORT | every PR or on `main` |
 
 You need: Rust (the version in `.github/workflows/ci.yml`; at least the
@@ -137,9 +137,11 @@ curl -LO https://repo1.maven.org/maven2/org/eclipse/dataspacetck/dsp/dsp-tck/1.0
 curl -L https://repo1.maven.org/maven2/org/eclipse/dataspacetck/dsp/dsp-tck/1.0.2/dsp-tck-1.0.2-all.jar.sha1; echo
 sha1sum dsp-tck-1.0.2-all.jar
 
-# 2. Start Portitor with the TCK datasets
+# 2. Start Portitor with the TCK datasets; the tck build takes the TCK's
+#    fixed header instead of DCP (PORTITOR_TCK_AUTHORIZATION)
 cargo build -p portitor-connector --features tck
 PORTITOR_BIND=127.0.0.1:8080 PORTITOR_PUBLIC_URL=http://127.0.0.1:8080 \
+PORTITOR_PARTICIPANT_ID='did:web:localhost%3A8080' PORTITOR_TCK_AUTHORIZATION='Bearer dsp-tck-only' \
 PORTITOR_DATASETS_FILE=tck/datasets.json PORTITOR_ALLOW_HTTP_CALLBACKS=true \
 PORTITOR_DB_FILE=/tmp/portitor-tck.db target/debug/portitor-connector &
 
@@ -201,6 +203,30 @@ done
 DATASPACETCK_STS_CLIENT_SECRET=$(cat /tmp/id-sts.secret) \
   java -jar dcp-tck-1.2.1-all.jar -config tck/dcp-tck.properties > dcp-tck.log
 python3 scripts/dcp_tck_check.py dcp-tck.log
+```
+
+### The verifier tests
+
+The same TCK checks the connector as a verifier (package
+`verification.presentation.verifier`, 22 tests): it plays the prover and
+the issuer, serves their DIDs itself, and starts each test with a catalog
+request carrying the prover's ID token; it expects 2xx when the caller
+should be admitted and 4xx otherwise. The connector's own identity is a
+`portitor-identity`: its STS signs the connector's presentation queries,
+which the TCK checks against that identity's DID document. The run uses
+`tck/dcp-verifier-tck.properties` and the normal connector build:
+
+```sh
+# the TCK jar as above; the identity component of step 2 on port 8090
+# (management API not needed), then the connector
+cargo build -p portitor-connector
+PORTITOR_PARTICIPANT_ID='did:web:localhost%3A8090' PORTITOR_TRUSTED_ISSUERS='did:web:127.0.0.1%3A8083:issuer' \
+PORTITOR_ALLOW_HTTP_CALLBACKS=true PORTITOR_BIND=127.0.0.1:8080 PORTITOR_PUBLIC_URL=http://127.0.0.1:8080 \
+PORTITOR_DATASETS_FILE=tck/datasets.json PORTITOR_DB_FILE=/tmp/portitor-verifier-tck.db \
+PORTITOR_STS_URL=http://localhost:8090/sts/token PORTITOR_STS_CLIENT_SECRET_FILE=/tmp/id-sts.secret \
+  target/debug/portitor-connector &
+java -jar dcp-tck-1.2.1-all.jar -config tck/dcp-verifier-tck.properties > dcp-verifier-tck.log
+python3 scripts/dcp_tck_check.py dcp-verifier-tck.log 22
 ```
 
 ### The issuer tests

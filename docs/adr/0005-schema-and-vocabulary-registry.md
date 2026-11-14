@@ -8,8 +8,8 @@ SPDX-License-Identifier: Apache-2.0
 
 - Status: **Proposed**
 - Date: 2026-11-12
-- Build: release 0.6, together with the authority image (decided by the
-  maintainer, 2026-11-12)
+- Build: release 0.7 (planned for 0.6 with the authority image on
+  2026-11-12; moved to 0.7 by the maintainer, 2026-11-14)
 
 ## Context
 

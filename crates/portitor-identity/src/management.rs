@@ -405,6 +405,9 @@ async fn list_credentials(State(identity): State<Arc<Identity>>) -> Response {
 }
 
 /// Delete a credential: it is no longer presented.
+///
+/// Delete a revoked credential once its reissued one is listed: verifiers
+/// refuse a presentation that holds it (DCP v1.0.1, 5.4.3, step 8).
 #[utoipa::path(
     delete,
     path = "/v1/credentials/{id}",

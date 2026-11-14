@@ -178,6 +178,12 @@ versions may change behaviour and configuration.
   `merge_scopes` and `HeldCredential::has_type`, shorter functions in the
   issuer store, the connector and the identity component, and more
   patterns explained in `docs/RUST-IDIOMS.md`.
+- Documentation review for 0.6: the C4 diagrams show the identity's
+  issuer client (`IssuerClient`) and the issuer's real modules; the
+  OpenAPI files, README, TESTING (DSP TCK settings, the DCP verifier
+  run), SECURITY-ASSURANCE, ADR 0005 (built in 0.7) and the website
+  match the release; the website also publishes the issuer's management
+  API description.
 
 ### Removed
 

@@ -96,9 +96,8 @@ domain crates ([ADR 0004](adr/0004-hexagonal-architecture.md)).
 
 ![C3 Components of portitor-identity](diagrams/c3-identity-components.drawio.svg)
 
-The issuer's components are drawn as planned in
-[ADR 0018](adr/0018-issuer-component.md); the boxes name what each part
-does, and the files they live in are added once the code exists.
+The issuer's components ([ADR 0018](adr/0018-issuer-component.md)),
+with the files they live in:
 
 ![C3 Components of portitor-issuer](diagrams/c3-issuer-components.drawio.svg)
 
@@ -209,7 +208,8 @@ adapters in `auth/dcp.rs` and `auth/sts.rs`:
   presentation and credential (both profiles), fetches and verifies each
   status list credential (signed by the credential's issuer, fail closed),
   and requires a `MembershipCredential` from a trusted issuer about the
-  caller. The verified DID and credentials go to the handler as `Caller`;
+  caller. One credential that fails its checks makes its presentation
+  invalid and refuses the caller (DCP v1.0.1, 5.4.3, step 8). The verified DID and credentials go to the handler as `Caller`;
   a refusal is HTTP 401 with a DSP error and no detail. When an offer or
   agreement has credential constraints (ADR 0019), the provider's handler
   derives their scopes (`portitor_dsp::policy::credential_scopes`) and

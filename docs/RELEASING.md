@@ -92,10 +92,12 @@ pull request, or record why it stays.
    `## [X.Y.Z] - YYYY-MM-DD`, add a fresh empty `## [Unreleased]` above it,
    set `info.version` in `docs/api/openapi.json`,
    `docs/api/identity-openapi.json` and `docs/api/issuer-openapi.json`, regenerate
-   `docs/api/management-openapi.json`
-   and `docs/api/identity-management-openapi.json`
+   `docs/api/management-openapi.json`,
+   `docs/api/identity-management-openapi.json`
    (`PORTITOR_UPDATE_OPENAPI=1 cargo test -p portitor-connector --test management_api`
-   and the same with `-p portitor-identity`),
+   and the same with `-p portitor-identity`) and
+   `docs/api/issuer-management-openapi.json`
+   (`cargo test -p portitor-issuer --test issuer -- --ignored write_management_description`),
    and merge.
 2. Tag the merge commit with your personal key and push the tag:
    ```sh

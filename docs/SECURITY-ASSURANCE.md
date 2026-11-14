@@ -41,9 +41,9 @@ dataspace participants over HTTPS.
 - Multi-instance safety: negotiations are kept in one SQLite file per
   process (ADR 0006); several replicas need the PostgreSQL adapter
   *(planned)*.
-- Credential rules per dataset *(planned, 0.6, ADR 0019)*: until then
-  every DSP caller with a trusted membership credential (DCP, ADR 0016)
-  is treated alike.
+- Offers hidden by credentials: the catalog shows every offer to every
+  caller with a trusted membership credential (DCP, ADR 0016); credential
+  constraints (ADR 0019) are checked at negotiation and transfer only.
 - Protection against server-side request forgery through the
   consumer-chosen `callbackAddress` beyond the `https://`-only rule:
   internal addresses are not blocked yet.
@@ -55,8 +55,9 @@ dataspace participants over HTTPS.
 
 | Asset | Threat | Countered by |
 |---|---|---|
-| Datasets and transfers | A party that is not authorised reads data or starts a transfer | DCP verification of every request (ADR 0016); ODRL policy checks (ADR 0009); credential constraints *(planned, 0.6)* |
+| Datasets and transfers | A party that is not authorised reads data or starts a transfer | DCP verification of every request (ADR 0016); ODRL policy checks (ADR 0009); credential constraints, checked at negotiation and again at each transfer request (ADR 0019) |
 | Participant identity | Forged or replayed self-issued tokens | Algorithm allow-list, key relationship check, audience check, expiry with bounded leeway, `jti` replay cache |
+| Credentials | A revoked, forged or someone else's credential admits a party | Only trusted issuers' credentials count, signed with an `assertionMethod` key; status lists fetched and checked, fail closed; a presentation with any failing credential is refused (DCP v1.0.1, 5.4.3); the issuer issues only to registered participants (ADR 0018) |
 | Private keys | Keys leak from the internet-facing connector | Keys live only in `portitor-identity` and `portitor-issuer`, not in the connector (ADR 0003) |
 | Internal services | A consumer gives a `callbackAddress` that points at an internal service, so the connector calls it (SSRF) | Only `https://` URLs with a host, unless the operator allows `http://`; the response body is never read; a 10 s timeout; blocking internal addresses *(planned)* |
 | Negotiation state | A consumer drives a negotiation out of order, or two messages race | The DSP state machine as a pure function in the domain; every change is a compare-and-update on a version number; a message that races our acknowledgement is accepted only as proof of delivery of our saved pending message (ADR 0007) |
@@ -98,8 +99,10 @@ dataspace participants over HTTPS.
 
 ## Evidence
 
-- **Tests:** unit tests per crate; DSP JSON Schema tests; the DSP TCK
-  (metadata and catalog groups) in CI.
+- **Tests:** unit tests per crate; DSP and DCP JSON Schema tests; in CI,
+  the DSP TCK (metadata, catalog, negotiation and transfer groups), the
+  DCP TCK (credential service, verifier and issuer tests) and the EDC
+  interoperability test.
 - **Static analysis:** Clippy pedantic with warnings as errors; CodeQL and
   SonarQube Cloud quality gate on every pull request.
 - **Supply chain:** pinned workflow actions, least-privilege workflow

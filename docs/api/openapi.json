@@ -7,7 +7,7 @@
       "name": "Apache-2.0",
       "identifier": "Apache-2.0"
     },
-    "description": "HTTP interface of portitor-connector. The DSP endpoints follow the DSP 2025-1 HTTPS bindings; the message schemas are the official DSP 2025-1 JSON Schemas (copied unchanged in crates/portitor-dsp/tests/schemas). DSP itself publishes no OpenAPI file; this one is written by hand and a test checks that every path in it is served. As consumer, the connector sends callbackAddress = public URL + /dsp/2025-1/callback, so providers call the callback paths below. No authentication until 0.5 (DCP). Every DSP endpoint except /.well-known/dspace-version needs a DCP self-issued ID token (ADR 0016); without a valid one the answer is 401 with the endpoint's DSP error, reason \"unauthorized\"."
+    "description": "HTTP interface of portitor-connector. The DSP endpoints follow the DSP 2025-1 HTTPS bindings; the message schemas are the official DSP 2025-1 JSON Schemas (copied unchanged in crates/portitor-dsp/tests/schemas). DSP itself publishes no OpenAPI file; this one is written by hand and a test checks that every path in it is served. As consumer, the connector sends callbackAddress = public URL + /dsp/2025-1/callback, so providers call the callback paths below. Every DSP endpoint except /.well-known/dspace-version needs a DCP self-issued ID token (ADR 0016), and the caller's credential service must present a valid MembershipCredential from a trusted issuer, in presentations whose every credential passes its checks (DCP v1.0.1, 5.4.3); otherwise the answer is 401 with the endpoint's DSP error, reason \"unauthorized\". /health and the data plane (/data, its own tokens) are open."
   },
   "servers": [
     {
@@ -141,7 +141,7 @@
           "Contract negotiation (provider)"
         ],
         "summary": "Start a negotiation",
-        "description": "The consumer sends a request for an offer from the catalog. The provider answers with its acknowledgement, then sends its next message (offer, agreement or termination) to the consumer's callbackAddress.",
+        "description": "The consumer sends a request for an offer from the catalog. The provider answers with its acknowledgement, then sends its next message (offer, agreement or termination) to the consumer's callbackAddress. An offer with credential constraints (ADR 0019) is agreed only if the consumer's credential service presents the credentials they name with matching claims; the provider asks it for their scopes with the access token the consumer sent.",
         "operationId": "negotiationRequest",
         "requestBody": {
           "required": true,
@@ -521,7 +521,7 @@
           "Transfer process (provider)"
         ],
         "summary": "Request a transfer",
-        "description": "The consumer asks for a dataset under a finalized agreement it holds, in a format the dataset offers (ADR 0013). Only pull transfers (format HttpData-PULL) are supported. The provider answers with its acknowledgement, then sends a TransferStartMessage with the data address (or a termination) to the consumer's callbackAddress.",
+        "description": "The consumer asks for a dataset under a finalized agreement it holds, in a format the dataset offers (ADR 0013). Only pull transfers (format HttpData-PULL) are supported. The provider answers with its acknowledgement, then sends a TransferStartMessage with the data address (or a termination) to the consumer's callbackAddress. An agreement with credential constraints (ADR 0019) is checked again with fresh credentials, so a revoked credential ends the transfer.",
         "operationId": "transferRequest",
         "requestBody": {
           "required": true,

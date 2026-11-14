@@ -214,7 +214,7 @@ TCK v1.2.1 are the targets (latest releases, checked 2026-11-13).
   up a Simpl-Open sandbox (maintainer, 2026-11-13). Upstream reports
   (DCP TCK, EDC IdentityHub, DCP schemas) are still to be filed.
 
-## 0.6 DCP: issuance and credential-based policies
+## 0.6 DCP: issuance and credential-based policies (released 2026-11-14 as v0.6.0)
 
 Plan approved by the maintainer on 2026-11-14. The schema and vocabulary
 registry moved to 0.7, so each release has one main risk (maintainer,
@@ -247,6 +247,19 @@ registry moved to 0.7, so each release has one main risk (maintainer,
   the claim and is terminated for one without it; a revoked credential
   blocks a new negotiation; EDC IdentityHub gets its membership credential
   from `portitor-issuer` and the EDC interop test stays green.
+- Result (2026-11-14): met. The DCP TCK v1.2.1 passes all 41 issuer
+  tests against `portitor-issuer` (a new CI job), all 54 credential
+  service tests and all 22 verifier tests, run locally. The DSP TCK passes
+  its 65 required tests with the connector of this release, run locally.
+  `scripts/demo.sh` and the Compose demo pass locally: a negotiation under
+  a `DataProcessorCredential` constraint is agreed, one for a missing role
+  claim is terminated, and once the issuer revokes the credential a new
+  transfer is refused. The EDC interop test (EDC v1.0.0-RC7) passes
+  locally, with the IdentityHub asking `portitor-issuer` for its
+  credential. Verifiers follow DCP 5.4.3, step 8: a presentation that
+  holds a revoked credential is refused, so after a reissue the holder
+  deletes the revoked one (DEPLOYING). The SHACL spike is done; the
+  maintainer chose an own SHACL Core subset for 0.7 (ADR 0005).
 
 ## 0.7 Schema and vocabulary registry
 

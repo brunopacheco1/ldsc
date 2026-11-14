@@ -76,8 +76,9 @@ def page(spec):
         <p>The other HTTP interfaces, also OpenAPI:
         <a href="management-openapi.json">connector management API</a>,
         <a href="identity-openapi.json">identity (DID document, STS, DCP credential service)</a>,
-        <a href="identity-management-openapi.json">identity management API</a> and
-        <a href="issuer-openapi.json">issuer (DID document, DCP issuer service, status lists)</a>.</p>
+        <a href="identity-management-openapi.json">identity management API</a>,
+        <a href="issuer-openapi.json">issuer (DID document, DCP issuer service, status lists)</a> and
+        <a href="issuer-management-openapi.json">issuer management API</a>.</p>
         <table>
           <thead><tr><th>Method</th><th>Path</th><th>What it does</th><th>Responses</th></tr></thead>
           <tbody>
