@@ -26,13 +26,21 @@ versions may change behaviour and configuration.
   credential requests (`POST /credentials`, `201 Created` with
   `Location`) and their status (`GET /requests/{issuerPid}`), DCP 6.4,
   6.7 and 6.8, and the status lists (`GET /status-lists/vc11`, `/vc20`).
-  Only participants the authority registered get credentials; an unknown
-  credential id ends `REJECTED`; a repeated `holderPid` of the same
-  holder is refused (409). Issued credentials go to the holder's Storage
-  API in one `CredentialMessage`, through an outbox with retries, with a
-  self-issued ID token that carries back the holder's access token. One
-  Bitstring Status List credential per profile (131,072 entries,
-  `revocation`), signed again on each revocation. Credential types come
+  Only participants the authority registered may call; anyone else gets
+  401 before its DID is resolved, and nothing is stored (ADR 0018,
+  amended during the 0.6 review). An unknown credential id ends
+  `REJECTED`, and so does a request beyond
+  `PORTITOR_ISSUER_MAX_ACTIVE_PER_HOLDER` (default 10 active credentials
+  per holder and definition); a repeated `holderPid` of the same holder
+  is refused (409). Issued credentials go to the holder's Storage API in
+  one `CredentialMessage`, through an outbox, with a self-issued ID
+  token that carries back the holder's access token; no answer, 401,
+  408, 429 and 5xx are retried for about 8 hours, any other 4xx ends the
+  delivery `FAILED` at once. A request whose decision failed is decided
+  again within a minute. One Bitstring Status List credential per
+  profile (131,072 entries, `revocation`), each credential at a random
+  free position, signed again on each revocation (one signing at a time;
+  revoking again signs again). Credential types come
   from `PORTITOR_ISSUER_CREDENTIALS_FILE`, checked at start. Management
   API (8071, API key): participants, offers, issued credentials,
   revocation (`docs/api/issuer-management-openapi.json`); the public port
@@ -42,7 +50,11 @@ versions may change behaviour and configuration.
   from the `test-issuer` example, which stays until the demos use the
   issuer).
 - `portitor-runtime`: `caller` checks a DCP caller's self-issued token at
-  the HTTP edge, shared by the identity component and the issuer.
+  the HTTP edge, shared by the identity component and the issuer; so are
+  the component's own DID document (`did_document`), the base path of a
+  service URL (`settings::base_path`), and `http::answered_status`, the
+  HTTP status of a failed call. `portitor-dcp`: `RequestStatus::as_str`
+  and `from_name`.
 - DCP TCK v1.2.1 issuer tests (41) in the `TCK` workflow against
   `portitor-issuer` (`scripts/dcp-issuer-tck.sh`).
 - Release pipeline for a third image, `ghcr.io/brunopacheco1/portitor-issuer`

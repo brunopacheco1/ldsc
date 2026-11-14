@@ -203,14 +203,19 @@ their status (with every token check of DCP 4.3), and what is delivered
 to the holder (one `CredentialMessage` per request, signed credentials,
 the holder's access token sent back). The TCK plays the holder
 (`did:web:127.0.0.1%3A8083:holder`) and receives the deliveries itself,
-so its DID is registered as a participant before the run. The issuer
+so its DID is registered as a participant before the run (the issuer
+answers 401 to any other DID, which the TCK's "other holder" and
+"unresolvable subject" tests accept as the 4xx they expect). The TCK
+holder gets about twenty requests issued, so the script raises
+`PORTITOR_ISSUER_MAX_ACTIVE_PER_HOLDER` to 100. The issuer
 refuses a repeated `holderPid`, so `tck/dcp-issuer-tck.properties` gives
 each test that must be accepted its own. `tck/issuer-credentials.json`
 defines two `vc11-sl2021/jwt` credentials, as the TCK's test 6.4.1
 expects. One script does it all, locally and in CI:
 
 ```sh
-# the TCK jar as above; uses ports 8070, 8071 and 8083, and writes
+# the TCK jar as above; uses ports 8070, 8071 and 8083 (ISSUER_PORT,
+# MANAGEMENT_PORT and TCK_PORT change them), and writes
 # dcp-issuer-tck.log and issuer.log in the current directory
 scripts/dcp-issuer-tck.sh dcp-tck-1.2.1-all.jar
 ```
