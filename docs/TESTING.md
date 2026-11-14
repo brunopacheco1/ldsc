@@ -70,7 +70,14 @@ Where the tests are:
   with an offer that needs a credential claim (ADR 0019) and fake DCP
   ports that stand for the credential services: a holder without the
   claim is terminated, one with it gets an agreement and a transfer, and
-  once its credential is revoked a new transfer does not start. The
+  once its credential is revoked a new transfer does not start; a
+  credential service that does not answer ends the negotiation, and an
+  offer from the provider with a credential constraint is not accepted.
+  Its last test gives the provider the real DCP verifier, against a
+  consumer identity and an issuer served on a local port: once the
+  issuer sets the membership credential's bit in its status list, a new
+  negotiation is refused, and a reissued credential held next to the
+  revoked one is admitted again. The
   SQLite store is tested on an in-memory database and on a real file.
 - `tests/dsp_catalog.rs` also checks that every path in
   [docs/api/openapi.json](api/openapi.json) is served.
