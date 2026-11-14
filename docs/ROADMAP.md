@@ -269,7 +269,10 @@ Plan approved by the maintainer on 2026-11-14.
   the authority builds and signs a bundle of SHACL shapes, vocabularies
   and JSON-LD contexts with `portitor-issuer bundle build`, signed with a
   separate bundle key under its `did:web`; the issuer can serve it. The
-  connector pins a version, verifies it and caches it on disk.
+  connector pulls the newest version (or a fixed one), verifies it,
+  caches it on disk and puts a new version in use without a restart.
+  How schemas are collected and stored stays open: see
+  [Technical debt](#technical-debt).
   HealthDCAT-AP release 8 is the baseline.
 - Our own SHACL Core engine, `portitor-shacl` (maintainer, 2026-11-14):
   shapes that use anything it does not implement are refused.
@@ -386,4 +389,25 @@ Plan approved by the maintainer on 2026-11-14.
   participants' DSP catalogs, check them with the same bundle and offer
   search (SPARQL), with its own ADR.
 - Check other participants' catalogs against the bundle (warnings only,
-  ADR 0005); live bundle reload; bundle expiry and bundle key rotation.
+  ADR 0005); bundle expiry and bundle key rotation.
+
+## Technical debt
+
+Known open questions, kept here until they are investigated and
+decided. Each names what is in place now.
+
+- **How schemas and vocabularies are collected and stored**
+  (maintainer, 2026-11-14: to be investigated further). In 0.7 the
+  authority publishes a signed bundle in a format Portitor defines
+  (`manifest.json`, `manifest.jws`, `latest.json`; [ADR 0005](adr/0005-schema-and-vocabulary-registry.md)),
+  and the connector pulls it into a disk cache (`portitor-bundle`).
+  Only its version fields come from a standard (W3C DCAT 3
+  `dcat:version` and `dcterms:issued`). No data space specification we
+  follow defines how an authority publishes schemas: Simpl-Open has its
+  own schema-manager API (versions numbered by the authority, pulled by
+  a sync adapter, not signed), and its versioning requirements are still
+  Proposed. Portitor must not invent a new standard, so the format may
+  change when this is decided. To investigate: how Simpl-Open, Gaia-X
+  and HealthData@EU authorities publish schemas, whether a DCAT catalogue
+  of schema distributions can replace `latest.json`, and where the
+  connector should keep them.

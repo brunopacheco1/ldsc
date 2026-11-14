@@ -10,7 +10,7 @@
 //! ODRL rule checks DSP messages in both directions.
 //!
 //! The bundles are built in process with `portitor_dcp::bundle` (digests
-//! only): loading a signed bundle is tested in `bundle_source.rs`.
+//! only): loading a signed bundle is tested in `tests/bundle_source.rs`.
 #![allow(clippy::unwrap_used, missing_docs)]
 
 use std::collections::BTreeMap;
@@ -126,7 +126,7 @@ fn bundle_of(version: &str, files: Vec<File>) -> VerifiedBundle {
     }
     let manifest = Manifest {
         version: version.to_owned(),
-        issued: "2026-11-14".to_owned(),
+        issued: "2026-11-14T00:00:00Z".to_owned(),
         authority: "did:web:authority.example".to_owned(),
         profile: PROFILE.to_owned(),
         files: entries,

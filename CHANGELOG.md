@@ -63,6 +63,12 @@ versions may change behaviour and configuration.
   It never goes back to a version issued before the one in use. Each
   check is in the harvest job log with `"kind": "bundle"` (migration to
   schema version 8).
+- New crate `portitor-bundle`: the bundle source (`BundleSource`,
+  `UrlSource`, `FolderSource`) and read copy (`BundleStore`,
+  `CacheFolder`), so other services can reuse them. The manifest's
+  `issued` is a UTC date and time (`YYYY-MM-DDThh:mm:ssZ`, DCAT 3
+  `dcterms:issued`). How schemas are collected and stored is recorded as
+  technical debt in `docs/ROADMAP.md`.
 - With a bundle, each harvested dataset is checked against the SHACL
   shapes for its `dct:accessRights` value (read with the DSP context only;
   its `@id` must be an absolute IRI); a dataset with violations is
@@ -151,8 +157,8 @@ versions may change behaviour and configuration.
   bundle that fails a check is never replaced by the cache, and never
   replaces the version in use. `latest.json` is not signed, so the
   connector refuses a version issued before the one in use (no
-  rollback, by the manifest's `issued`, the DCAT 3 `dcterms:issued`: a
-  date or a UTC date and time; `bundle build` writes the time by
+  rollback, by the manifest's `issued`, the DCAT 3 `dcterms:issued`, a
+  UTC date and time; `bundle build` writes the time of the build by
   default). Limits: manifest 1 MiB, 64 MiB per file, 256 MiB in all, 120 s
   per download.
 - No JSON-LD context is fetched from the network: `portitor-shacl` reads

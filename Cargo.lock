@@ -846,6 +846,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
+name = "portitor-bundle"
+version = "0.7.0"
+dependencies = [
+ "http-body-util",
+ "hyper",
+ "portitor-dcp",
+ "portitor-runtime",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "portitor-connector"
 version = "0.7.0"
 dependencies = [
@@ -854,6 +867,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "jsonschema",
+ "portitor-bundle",
  "portitor-dcp",
  "portitor-dps",
  "portitor-dsp",

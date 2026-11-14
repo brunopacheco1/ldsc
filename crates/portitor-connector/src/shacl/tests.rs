@@ -86,7 +86,7 @@ fn bundle_of(files: Vec<File>) -> VerifiedBundle {
     }
     let manifest = Manifest {
         version: "2026.11.0".to_owned(),
-        issued: "2026-11-14".to_owned(),
+        issued: "2026-11-14T00:00:00Z".to_owned(),
         authority: "did:web:authority.example".to_owned(),
         profile: PROFILE.to_owned(),
         files: entries,

@@ -263,10 +263,8 @@ messages against them. A dataset that passes is served with
   is `failed` with the reason. At start, with `latest`, the version in
   use before is read back from the cache if the newest cannot be taken.
   The order comes from the manifest's `issued` (`dcterms:issued` in
-  W3C DCAT 3): a date, or a UTC date and time. `bundle build` writes the
-  time unless you give `--issued`; a date alone comes before any time of
-  that day, and two versions issued as the same date cannot be told
-  apart, so give the time if you publish more than one a day.
+  W3C DCAT 3), a UTC date and time to the second; `bundle build` writes
+  the time of the build unless you give `--issued`.
 - The catalog's `@context` is always the DSP 2025-1 context alone, with
   or without a bundle. The connector never fetches a JSON-LD context from
   the network: it has its own copy of the DSP 2025-1 contexts, and a
@@ -971,8 +969,8 @@ catalog.
    It refuses RDF/XML, paths that leave the folder, files over 64 MiB, and
    a version folder that exists already: a published version never
    changes. It checks its own result as a connector will, and prints the
-   public key as a JWK. `--issued` is a date or a UTC date and time;
-   without it, the time of the build is used. It also points `latest.json` at the new version,
+   public key as a JWK. `--issued` is a UTC date and time
+   (`YYYY-MM-DDThh:mm:ssZ`); without it, the time of the build is used. It also points `latest.json` at the new version,
    unless that file names a version issued later, or you pass
    `--not-latest` (to publish a version that connectors do not take
    yet).

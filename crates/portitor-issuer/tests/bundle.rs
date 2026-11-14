@@ -73,7 +73,7 @@ fn options(input: &Path, output: &Path) -> Options {
         authority: AUTHORITY.to_owned(),
         kid: format!("{AUTHORITY}#bundle-key"),
         key: "unused.pem".into(),
-        issued: Some("2026-11-14".to_owned()),
+        issued: Some("2026-11-14T00:00:00Z".to_owned()),
         not_latest: false,
     }
 }
@@ -93,7 +93,7 @@ fn build_writes_a_signed_bundle() {
         version: "2026.11.0",
     };
     let manifest = bundle::verify(&manifest_bytes, &jws, &key.public_jwk(), expected).unwrap();
-    assert_eq!(manifest.issued, "2026-11-14");
+    assert_eq!(manifest.issued, "2026-11-14T00:00:00Z");
     assert_eq!(manifest.files[1].media_type, MediaType::NTriples);
     assert_eq!(manifest.files[2].media_type, MediaType::JsonLd);
     let mut files = BTreeMap::new();
@@ -131,7 +131,7 @@ fn latest_json_names_the_newest_version() {
     // a later issue date moves it on
     let later = Options {
         version: "2026.12.0".to_owned(),
-        issued: Some("2026-12-01".to_owned()),
+        issued: Some("2026-12-01T00:00:00Z".to_owned()),
         ..options(&input, &output)
     };
     assert_eq!(build(&later, &key).unwrap().latest, LatestUpdate::Updated);
@@ -139,7 +139,7 @@ fn latest_json_names_the_newest_version() {
     // a fix of an older line, issued earlier, never moves it back
     let older = Options {
         version: "2026.11.1".to_owned(),
-        issued: Some("2026-11-20".to_owned()),
+        issued: Some("2026-11-20T00:00:00Z".to_owned()),
         ..options(&input, &output)
     };
     assert_eq!(
@@ -150,7 +150,7 @@ fn latest_json_names_the_newest_version() {
     // --not-latest leaves it, even for a newer one
     let held_back = Options {
         version: "2027.01.0".to_owned(),
-        issued: Some("2027-01-05".to_owned()),
+        issued: Some("2027-01-05T00:00:00Z".to_owned()),
         not_latest: true,
         ..options(&input, &output)
     };
@@ -163,7 +163,7 @@ fn latest_json_names_the_newest_version() {
     std::fs::write(output.join(bundle::LATEST_FILE), "{").unwrap();
     let next = Options {
         version: "2027.02.0".to_owned(),
-        issued: Some("2027-02-01".to_owned()),
+        issued: Some("2027-02-01T00:00:00Z".to_owned()),
         ..options(&input, &output)
     };
     assert_eq!(build(&next, &key).unwrap().latest, LatestUpdate::Updated);

@@ -13,11 +13,11 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use portitor_connector::bundle_harvest::{BundleHarvester, BundleListener, Started};
-use portitor_connector::bundle_source::{
+use portitor_bundle::source::{
     BundleConfig, BundleLocation, BundleSource, BundleSourceError, VersionChoice, source_for,
 };
-use portitor_connector::bundle_store::{CacheFolder, IN_USE_FILE, KEY_FILE};
+use portitor_bundle::store::{CacheFolder, IN_USE_FILE, KEY_FILE};
+use portitor_connector::bundle_harvest::{BundleHarvester, BundleListener, Started};
 use portitor_connector::harvest::{JobKind, JobOutcome, JobRecord, Trigger};
 use portitor_dcp::SigningKey;
 use portitor_dcp::bundle::BundleError;
@@ -67,7 +67,7 @@ impl Authority {
         let bundle_key = SigningKey::generate().unwrap();
         let bundles = scratch();
         build(
-            &build_options(&did, &bundles, VERSION, "2026-11-14"),
+            &build_options(&did, &bundles, VERSION, "2026-11-14T00:00:00Z"),
             &bundle_key,
         )
         .unwrap();
@@ -211,7 +211,7 @@ async fn the_connector_takes_the_bundle_the_issuer_serves() {
     let fetched = source(&settings).fetch(VERSION).await.unwrap();
     let bundle = &fetched.bundle;
     assert_eq!(bundle.version(), VERSION);
-    assert_eq!(bundle.issued(), "2026-11-14");
+    assert_eq!(bundle.issued(), "2026-11-14T00:00:00Z");
     assert_eq!(bundle.profile(), "https://healthdcat-ap.example/release-8");
     let shapes = bundle.datasets_files_for(PUBLIC);
     assert_eq!(shapes[0].bytes, SHAPES.as_bytes());
@@ -257,7 +257,7 @@ async fn a_newer_version_is_taken_without_a_restart() {
     assert_eq!(job.outcome, JobOutcome::Unchanged, "{}", job.summary);
     assert_eq!(*heard.rules_changed.lock().unwrap(), 0);
     // the authority publishes a newer version
-    authority.publish("2026.12.0", "2026-12-01");
+    authority.publish("2026.12.0", "2026-12-01T00:00:00Z");
     let copy = harvester.copy();
     let job = harvester.run(Trigger::Interval, &listener).await;
     assert_eq!(job.outcome, JobOutcome::Succeeded, "{}", job.summary);
@@ -296,7 +296,7 @@ async fn an_older_version_is_never_taken() {
     let cache = scratch();
     let started = start(&authority.settings(&cache)).await.unwrap();
     // a version issued before the one in use, named by latest.json
-    authority.publish("2026.10.0", "2026-10-01");
+    authority.publish("2026.10.0", "2026-10-01T00:00:00Z");
     authority.point_latest_at("2026.10.0");
     let (job, changed) = started.harvester.check(Trigger::Interval).await;
     assert_eq!(job.outcome, JobOutcome::Failed);
@@ -351,7 +351,7 @@ async fn versions_of_the_same_day_are_ordered_by_their_time() {
 async fn a_new_version_that_fails_a_check_leaves_the_rules_in_use() {
     let authority = Authority::start(true).await;
     let started = start(&authority.settings(&scratch())).await.unwrap();
-    authority.publish("2026.12.0", "2026-12-01");
+    authority.publish("2026.12.0", "2026-12-01T00:00:00Z");
     std::fs::write(authority.bundles.join("2026.12.0/dct.jsonld"), "{}").unwrap();
     let (job, changed) = started.harvester.check(Trigger::Interval).await;
     assert_eq!(job.outcome, JobOutcome::Failed);
@@ -374,7 +374,7 @@ async fn a_fixed_version_never_changes() {
     settings.refresh_seconds = 60;
     assert_eq!(settings.refresh_every(), None);
     let started = start(&settings).await.unwrap();
-    authority.publish("2026.12.0", "2026-12-01");
+    authority.publish("2026.12.0", "2026-12-01T00:00:00Z");
     let (job, changed) = started.harvester.check(Trigger::Interval).await;
     assert_eq!(job.outcome, JobOutcome::Unchanged);
     assert!(!changed);

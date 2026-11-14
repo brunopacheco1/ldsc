@@ -21,7 +21,7 @@ fn validator() -> jsonschema::Validator {
 fn full_example() -> Value {
     json!({
       "version": "2026.11.0",
-      "issued": "2026-11-14",
+      "issued": "2026-11-14T00:00:00Z",
       "authority": "did:web:authority.example",
       "profile": "https://healthdcat-ap.example/releases/release-8",
       "files": [
@@ -72,7 +72,7 @@ fn full_example() -> Value {
 fn minimal_example() -> Value {
     json!({
       "version": "1",
-      "issued": "2026-01-01",
+      "issued": "2026-01-01T00:00:00Z",
       "authority": "did:web:authority.example:dataspace",
       "profile": "http://profile.example/p",
       "files": [{

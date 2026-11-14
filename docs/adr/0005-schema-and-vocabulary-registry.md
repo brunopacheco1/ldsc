@@ -147,7 +147,7 @@ SHACL 1.2 draft).
   `manifest.jws`.
 - `manifest.json` (JSON Schema in `docs/schemas/bundle-manifest.schema.json`)
   holds: the bundle version (`dcat:version`), when it was issued
-  (`dcterms:issued`: an `xsd:date`, or an `xsd:dateTime` in UTC), the
+  (`dcterms:issued`, an `xsd:dateTime` in UTC to the second), the
   authority's DID, the profile
   IRI used as `dct:conformsTo`, and one entry per file with its path,
   SHA-256, media type (`text/turtle`, `application/n-triples` or
@@ -212,9 +212,9 @@ SHACL 1.2 draft).
   run says why. The order is that of `issued`, the field W3C DCAT 3
   uses for a version's release date (section 11.2, "Version
   information"); we do not define our own version order (maintainer,
-  2026-11-14: no new standards). `bundle build` writes the date and time
-  by default; a date alone comes before any time of that day, so two
-  versions issued as the same date cannot be told apart.
+  2026-11-14: no new standards). It is a date and time (maintainer,
+  2026-11-14), so versions issued on the same day keep their order;
+  `bundle build` writes the time of the build by default.
 - Compared with Simpl-Open (checked 2026-11-14): its Governance
   Authority's schema-manager numbers versions itself and marks them
   published or revoked; a provider's schema-sync-adapter pulls them over
@@ -223,6 +223,12 @@ SHACL 1.2 draft).
   numbers") are still Proposed requirements.
 - Each check is a run in the harvest job log, with the kind `bundle`
   (ADR 0020).
+- Technical debt (maintainer, 2026-11-14): how schemas are collected and
+  stored is to be investigated further, so that Portitor follows an
+  existing standard rather than its own; see "Technical debt" in
+  `docs/ROADMAP.md`. The bundle source and store are in their own crate,
+  `portitor-bundle`, so they can be reused by other services or
+  replaced as a whole.
 - The engine ignores `sh:extends` and `sh:shape` with a warning when the
   bundle is loaded, and refuses any other term it does not implement.
 

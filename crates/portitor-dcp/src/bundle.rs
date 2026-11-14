@@ -171,21 +171,17 @@ pub enum BundleError {
     UnlistedFile(String),
 }
 
-/// Whether `issued` has one of the two forms a manifest may use, both
-/// allowed for `dcterms:issued` by W3C DCAT 3: an `xsd:date`
-/// (`YYYY-MM-DD`) or an `xsd:dateTime` in UTC without fractions
-/// (`YYYY-MM-DDThh:mm:ssZ`). With these two forms, comparing the text
-/// compares the times, and a date alone comes before any time of that
-/// day; two versions issued as the same date cannot be told apart, so
-/// authorities that publish more than one version a day give the time.
+/// Whether `issued` has the one form a manifest may use: an
+/// `xsd:dateTime` in UTC, to the second, without fractions
+/// (`YYYY-MM-DDThh:mm:ssZ`), one of the forms W3C DCAT 3 allows for
+/// `dcterms:issued`. With one fixed form, comparing the text compares
+/// the times, so versions issued on the same day keep their order.
 #[must_use]
 pub fn issued_is_valid(issued: &str) -> bool {
-    let form = match issued.len() {
-        10 => true,
-        20 => issued.as_bytes()[10] == b'T' && issued.ends_with('Z'),
-        _ => false,
-    };
-    form && portitor_time::parse(issued).is_some()
+    issued.len() == 20
+        && issued.as_bytes()[10] == b'T'
+        && issued.ends_with('Z')
+        && portitor_time::parse(issued).is_some()
 }
 
 /// `manifest.json`: what a bundle holds.
@@ -196,8 +192,8 @@ pub struct Manifest {
     /// bundle's folder, so only letters, digits, `.`, `_` and `-`.
     pub version: String,
     /// When it was issued (`dcterms:issued` in W3C DCAT 3): an
-    /// `xsd:date` (`YYYY-MM-DD`) or an `xsd:dateTime` in UTC
-    /// (`YYYY-MM-DDThh:mm:ssZ`). See [`issued_is_valid`].
+    /// `xsd:dateTime` in UTC (`YYYY-MM-DDThh:mm:ssZ`). See
+    /// [`issued_is_valid`].
     pub issued: String,
     /// The authority's `did:web` DID.
     pub authority: String,
@@ -306,7 +302,7 @@ impl Manifest {
         check_version(&self.version)?;
         if !issued_is_valid(&self.issued) {
             return Err(manifest_error(
-                "issued is not a date (YYYY-MM-DD) or a UTC date and time (YYYY-MM-DDThh:mm:ssZ)",
+                "issued is not a UTC date and time (YYYY-MM-DDThh:mm:ssZ)",
             ));
         }
         crate::did_web_url(&self.authority)
@@ -729,7 +725,7 @@ impl VerifiedBundle {
         &self.manifest.version
     }
 
-    /// When it was issued (`YYYY-MM-DD` or `YYYY-MM-DDThh:mm:ssZ`). A
+    /// When it was issued (`YYYY-MM-DDThh:mm:ssZ`). A
     /// connector that follows the newest version never takes one issued
     /// before the one it uses; see [`issued_is_valid`] for the order.
     #[must_use]
@@ -841,7 +837,7 @@ mod tests {
     fn manifest() -> Manifest {
         Manifest {
             version: "2026.11.0".to_owned(),
-            issued: "2026-11-14".to_owned(),
+            issued: "2026-11-14T00:00:00Z".to_owned(),
             authority: AUTHORITY.to_owned(),
             profile: "https://healthdcat-ap.example/release-8".to_owned(),
             files: vec![
@@ -1228,6 +1224,7 @@ mod tests {
             |m| m["issued"] = "2026-11-14T10:00Z".into(),
             |m| m["issued"] = "2026-11-14T10:00:00.5Z".into(),
             |m| m["issued"] = "2026-11-14Z".into(),
+            |m| m["issued"] = "2026-11-14".into(),
             |m| m["authority"] = "did:key:z6Mk".into(),
             |m| m["profile"] = "not an iri".into(),
             |m| {
@@ -1242,7 +1239,7 @@ mod tests {
             assert!(Manifest::parse(&bytes).is_err(), "mutation {index}");
         }
         // a repeated key
-        let repeated = br#"{"version":"1","version":"2","issued":"2026-11-14","authority":"did:web:a.example","profile":"https://p.example","files":[]}"#;
+        let repeated = br#"{"version":"1","version":"2","issued":"2026-11-14T00:00:00Z","authority":"did:web:a.example","profile":"https://p.example","files":[]}"#;
         assert!(Manifest::parse(repeated).is_err());
     }
 
@@ -1255,28 +1252,28 @@ mod tests {
     }
 
     #[test]
-    fn issued_is_a_date_or_a_utc_date_and_time_in_order() {
-        for good in ["2026-11-14", "2026-11-14T00:00:00Z", "2026-11-14T23:59:59Z"] {
+    fn issued_is_a_utc_date_and_time_in_order() {
+        for good in ["2026-11-14T00:00:00Z", "2026-11-14T23:59:59Z"] {
             assert!(issued_is_valid(good), "{good}");
         }
         for bad in [
             "",
+            "2026-11-14",
             "2026-11-14T10:00:00",
             "2026-11-14T10:00Z",
             "2026-11-14T10:00:00+01:00",
             "2026-11-14T10:00:00.5Z",
             "2026-11-14T25:00:00Z",
-            "2026-02-30",
+            "2026-02-30T00:00:00Z",
         ] {
             assert!(!issued_is_valid(bad), "{bad}");
         }
-        // the text order is the time order, a date first on its day
+        // the text order is the time order
         let order = [
             "2026-11-13T23:59:59Z",
-            "2026-11-14",
             "2026-11-14T00:00:00Z",
             "2026-11-14T09:30:00Z",
-            "2026-11-15",
+            "2026-11-15T00:00:00Z",
         ];
         assert!(order.windows(2).all(|pair| pair[0] < pair[1]));
     }

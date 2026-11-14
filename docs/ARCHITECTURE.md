@@ -204,14 +204,17 @@ image keeps its state in its own SQLite file under `/data`.
    | 8070 DID document, DCP issuer    |  (DCP issuance) and it delivers them
    |      service, status lists,      |  to their Storage API; verifiers
    |      bundles                     |  read its DID document and status
-   | 8071 management API              |  lists; connectors download the
-   | /data/portitor-issuer.db         |  bundle version they pin
+   | 8071 management API              |  lists; connectors pull the
+   | /data/portitor-issuer.db         |  newest bundle version
    +----------------------------------+
 
  crates (-> means "uses"):
 
    portitor-connector --> portitor-dsp, portitor-dps, portitor-dcp,
-                          portitor-shacl, portitor-runtime
+                          portitor-shacl, portitor-bundle, portitor-runtime
+   portitor-bundle    --> portitor-dcp, portitor-runtime
+                                                (adapters: the authority's
+                                                 bundle, fetched and kept)
    portitor-identity  --> portitor-dcp, portitor-runtime
    portitor-issuer    --> portitor-dcp, portitor-runtime
    portitor-runtime   --> portitor-dcp, portitor-time
@@ -241,6 +244,12 @@ image keeps its state in its own SQLite file under `/data`.
   (`portitor-issuer bundle build`, ADR 0005).
 - `portitor-runtime`: library of adapters the binaries share, so they are
   not copied.
+- `portitor-bundle` (0.7): adapter library for the authority's signed
+  bundle on a participant's side: `BundleSource` (download or folder,
+  verified) and `BundleStore` (the read copy on disk and the version in
+  use). Its own crate so any service can reuse it (maintainer,
+  2026-11-14); how schemas are collected and stored is technical debt
+  (`ROADMAP.md`).
 - `portitor-dsp`, `portitor-dps`, `portitor-dcp`, `portitor-time`: domain
   crates (ADR 0004); CI checks they have no I/O dependency.
 - `portitor-shacl` (0.7): our own SHACL Core subset (ADR 0005), a domain
@@ -311,12 +320,12 @@ Four ports carry the 0.7 work, each with its adapters
   in memory that the DSP code (`CatalogDatasets`) and the data plane
   (`UpstreamSources`) read; it is replaced as a whole after a run that
   changed it.
-- `BundleSource` (`bundle_source.rs`): the authority's bundles. It names
+- `BundleSource` (`portitor-bundle`, `source.rs`): the authority's bundles. It names
   the newest version (`latest.json`) and gives one version, verified.
   `UrlSource` downloads over HTTPS; `FolderSource` reads a local folder.
   Both check the signature against the authority's `did:web` document
   and every digest.
-- `BundleStore` (`bundle_store.rs`): the read copy of the bundle on
+- `BundleStore` (`portitor-bundle`, `store.rs`): the read copy of the bundle on
   disk and the version in use. `CacheFolder` keeps one version folder
   and `.in-use.json`.
 - `BundleHarvester` (`bundle_harvest.rs`) takes the configured version

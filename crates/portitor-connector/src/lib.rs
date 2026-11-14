@@ -20,9 +20,10 @@
 //! - [`harvest`]: datasets come from a source (the datasets file) into a
 //!   read copy, checked entry by entry; every run is a stored job
 //!   (ADR 0020).
-//! - [`bundle_source`], [`shacl`]: the authority's signed bundle (ADR
-//!   0005) and its rules: the SHACL check of each harvested dataset, and
-//!   the SHACL guard on DSP messages.
+//! - [`bundle_harvest`], [`shacl`]: the authority's signed bundle (ADR
+//!   0005; source and read copy in `portitor-bundle`), new versions pulled
+//!   without a restart, and its rules: the SHACL check of each harvested
+//!   dataset, and the SHACL guard on DSP messages.
 //! - [`store`]: everything kept in the `SQLite` file.
 //! - [`management`]: the management API for your own systems.
 //! - [`auth`]: who calls a DSP endpoint, and our tokens on the DSP
@@ -64,11 +65,10 @@ pub mod negotiation;
 mod outbox;
 pub mod ports;
 // the signed schema and vocabulary bundle (ADR 0005): where it comes
-// from (its settings are read by `bundle_source::BundleConfig`, not by
-// `Config`), the read copy, and the harvester that pulls new versions
+// from and its read copy are in `portitor-bundle` (its settings are read
+// by `portitor_bundle::source::BundleConfig`, not by `Config`); here, the
+// harvester that pulls new versions
 pub mod bundle_harvest;
-pub mod bundle_source;
-pub mod bundle_store;
 // the bundle's rules: SHACL dataset check, message guard
 pub mod shacl;
 pub mod store;

@@ -7,10 +7,10 @@
 use std::process::ExitCode;
 use std::sync::Arc;
 
+use portitor_bundle::source::{BundleConfig, source_for};
+use portitor_bundle::store::CacheFolder;
 use portitor_connector::auth::{AuthSettings, CallerVerifier, Prover, dcp_adapters};
 use portitor_connector::bundle_harvest::BundleHarvester;
-use portitor_connector::bundle_source::{BundleConfig, source_for};
-use portitor_connector::bundle_store::CacheFolder;
 use portitor_runtime::directory::{Directory, WebDirectory};
 use portitor_runtime::serve::{
     MAX_CONCURRENT_REQUESTS, REQUEST_TIMEOUT, bind_management, init_logging, serve, with_limits,

@@ -5,7 +5,7 @@
 //! The connector's read copy of the authority's bundles (ADR 0005):
 //! [`BundleStore`] is the port, [`CacheFolder`] the adapter, a folder on
 //! disk (`PORTITOR_BUNDLE_CACHE_DIR`). It is to bundles what the
-//! [`crate::harvest::DatasetStore`] is to datasets.
+//! the connector's `DatasetStore` is to datasets.
 //!
 //! The folder holds one sub-folder per version kept (its files,
 //! `manifest.json`, `manifest.jws` and the key that verified it,
@@ -21,7 +21,7 @@ use portitor_dcp::bundle::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::bundle_source::{
+use crate::source::{
     BundleKey, BundleSourceError, Fetched, Signed, read_limited, read_listed_files, read_signed,
 };
 

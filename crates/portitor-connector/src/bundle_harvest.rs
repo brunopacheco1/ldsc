@@ -32,14 +32,14 @@ use portitor_dcp::bundle::sha256_hex;
 use portitor_dsp::Dataset;
 use portitor_dsp::guard::{Direction, MessageGuard, Rejection};
 
-use crate::bundle_source::{BundleConfig, BundleSource, BundleSourceError, VersionChoice};
-use crate::bundle_store::{BundleStore, InUse};
 use crate::harvest::{
     CheckKind, CheckedDataset, Counts, DatasetCheck, DatasetHarvester, EntryFailure, JobKind,
     JobOutcome, JobRecord, Trigger,
 };
 use crate::shacl::BundleRules;
 use crate::system::now_secs;
+use portitor_bundle::source::{BundleConfig, BundleSource, BundleSourceError, VersionChoice};
+use portitor_bundle::store::{BundleStore, InUse};
 
 /// The rules of the bundle version in use, swapped when a new version is
 /// taken. The harvest checks datasets with it ([`DatasetCheck`]) and the

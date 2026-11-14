@@ -21,11 +21,11 @@ use axum::extract::{Path as UrlPath, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use portitor_connector::bundle_harvest::{BundleHarvester, Started};
-use portitor_connector::bundle_source::{
+use portitor_bundle::source::{
     BundleConfig, BundleLocation, BundleSource, BundleSourceError, VersionChoice, source_for,
 };
-use portitor_connector::bundle_store::CacheFolder;
+use portitor_bundle::store::CacheFolder;
+use portitor_connector::bundle_harvest::{BundleHarvester, Started};
 use portitor_connector::harvest::JobOutcome;
 use portitor_dcp::SigningKey;
 use portitor_dcp::bundle::{BundleError, MAX_FILE_BYTES};

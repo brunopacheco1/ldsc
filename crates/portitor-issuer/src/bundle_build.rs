@@ -53,7 +53,7 @@ pub const INPUT_FILE: &str = "bundle.json";
 /// The usage text of `portitor-issuer bundle build`.
 pub const USAGE: &str = "usage: portitor-issuer bundle build --in <folder> --out <folder> \
 --version <version> --profile <iri> --authority <did> --kid <did-url> --key <pem file> \
-[--issued <date or UTC date and time>] [--not-latest]";
+[--issued <YYYY-MM-DDThh:mm:ssZ>] [--not-latest]";
 
 /// The flag that keeps `latest.json` as it is.
 const NOT_LATEST: &str = "--not-latest";
@@ -116,10 +116,9 @@ pub struct Options {
     pub kid: String,
     /// `--key`: the bundle key, PKCS#8 PEM.
     pub key: PathBuf,
-    /// `--issued` (optional): when the version is issued, `YYYY-MM-DD` or
-    /// `YYYY-MM-DDThh:mm:ssZ` (`dcterms:issued`, W3C DCAT 3); now (UTC,
-    /// to the second) when left out, so two versions built the same day
-    /// keep their order.
+    /// `--issued` (optional): when the version is issued, in UTC
+    /// (`YYYY-MM-DDThh:mm:ssZ`, `dcterms:issued` in W3C DCAT 3); now when
+    /// left out.
     pub issued: Option<String>,
     /// `--not-latest`: leave `latest.json` as it is (for example to build
     /// a version that connectors following the newest one should not get
@@ -435,7 +434,7 @@ fn media_type_from_extension(path: &str) -> Result<MediaType, String> {
 }
 
 /// Writes the bundle to `<output>/<version>/`, which must not exist yet.
-/// (The connector's bundle cache, `bundle_source.rs`, writes its copy the
+/// (The participant's bundle cache, `portitor-bundle` `store.rs`, writes its copy the
 /// same way, but replaces an older copy instead of refusing.)
 /// Everything is written to `<output>/.<version>.partial/` first and the
 /// folder renamed at the end, so a failed build never leaves a version

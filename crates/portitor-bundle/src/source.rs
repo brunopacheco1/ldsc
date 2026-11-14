@@ -5,8 +5,8 @@
 //! Where the connector gets the dataspace's shapes, vocabularies and
 //! JSON-LD contexts: the authority's signed bundles (ADR 0005, "Bundle
 //! format"). The authority is the source of truth; the connector keeps a
-//! read copy ([`crate::bundle_store`]) and pulls new versions
-//! ([`crate::bundle_harvest`]), the same way it harvests datasets.
+//! read copy ([`crate::store`]) and pulls new versions (in the connector,
+//! `bundle_harvest.rs`), the same way it harvests datasets.
 //!
 //! [`BundleSource`] is the port. It names the newest version (from
 //! `latest.json`) and gives one version as a [`Fetched`] bundle, whose
@@ -56,7 +56,7 @@ use portitor_runtime::directory::Directory;
 use portitor_runtime::http::{HttpsClient, https_client, outbound_url_allowed};
 use serde::{Deserialize, Serialize};
 
-use crate::MAX_SETTING_SECONDS;
+use crate::MAX_REFRESH_SECONDS;
 
 /// How long one download (`latest.json`, the manifest, its signature, or
 /// one file) may take, from sending the request until the whole answer
@@ -256,10 +256,10 @@ impl BundleConfig {
         let refresh_seconds = match text("PORTITOR_BUNDLE_REFRESH_SECONDS") {
             None => DEFAULT_REFRESH_SECONDS,
             Some(value) => match value.parse::<u64>() {
-                Ok(seconds) if seconds <= MAX_SETTING_SECONDS => seconds,
+                Ok(seconds) if seconds <= MAX_REFRESH_SECONDS => seconds,
                 _ => {
                     return config_error(format!(
-                        "PORTITOR_BUNDLE_REFRESH_SECONDS must be 0 to {MAX_SETTING_SECONDS}, not {value:?}"
+                        "PORTITOR_BUNDLE_REFRESH_SECONDS must be 0 to {MAX_REFRESH_SECONDS}, not {value:?}"
                     ));
                 }
             },

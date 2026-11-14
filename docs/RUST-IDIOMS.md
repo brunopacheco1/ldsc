@@ -534,7 +534,7 @@ match tokio::time::timeout(DOWNLOAD_TIMEOUT, exchange).await { /* ... */ }
 An `async { ... }` block is a task written in place, not started yet. Kept
 in a variable, it runs only when awaited, here inside `timeout`, which
 stops it when the time is up (`UrlSource::get` in
-`portitor-connector/src/bundle_source.rs`).
+`portitor-bundle/src/source.rs`).
 
 ```rust
 pub fn schedule(self: &Arc<Self>, every: Duration) -> Option<JoinHandle<()>> {
@@ -737,7 +737,7 @@ API needs (here the STS error list, `portitor-identity/src/sts.rs`).
   byte order mark if there is one (`portitor-issuer/src/bundle_build.rs`).
 - `x as u64` converts a number. Portitor uses `as` only where nothing can
   be lost, such as a `usize` length into a `u64` (`max_bytes as u64` in
-  `bundle_source.rs`). Where a value may not fit, it writes
+  `portitor-bundle/src/source.rs`). Where a value may not fit, it writes
   `u64::try_from(x)`, which gives an error instead of a wrong number,
   and says what to do then (`.unwrap_or(u64::MAX)`, or an error).
 - `const fn` is a function that may also run while the program is

@@ -16,6 +16,8 @@ publish = false
 axum.workspace = true
 # base64url of the data plane's access tokens
 base64.workspace = true
+# the authority's signed bundle: source and read copy (ADR 0005)
+portitor-bundle = { path = "../portitor-bundle" }
 portitor-dcp = { path = "../portitor-dcp" }
 portitor-dsp = { path = "../portitor-dsp" }
 portitor-dps = { path = "../portitor-dps" }
