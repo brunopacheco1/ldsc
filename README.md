@@ -35,7 +35,7 @@ Website: <https://brunopacheco1.github.io/portitor/> (objectives, minimum functi
 
 `portitor-connector` serves HTTP on `PORTITOR_BIND` (default `0.0.0.0:8080`).
 The DSP endpoints follow the HTTPS bindings of
-[DSP 2025-1](https://eclipse-dataspace-protocol-base.github.io/DataspaceProtocol/2025-1-err1/).
+[DSP 2025-1](https://eclipse-dataspace-protocol-base.github.io/DataspaceProtocol/2025-1-err2/).
 
 | Method and path | What it does |
 |---|---|
