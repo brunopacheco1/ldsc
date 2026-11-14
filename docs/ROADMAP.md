@@ -282,8 +282,9 @@ Plan approved by the maintainer on 2026-11-14.
   its errors and a summary, readable at `GET /v1/harvest-jobs`. Policies
   live with the datasets; no API writes datasets or policies.
 - The SHACL `MessageGuard` adapter checks DSP messages in and out.
-- The catalog `@context` accepts extra prefixes (for example
-  HealthDCAT-AP's); datasets that passed carry `dct:conformsTo`.
+- Datasets that passed carry `dct:conformsTo`. The catalog `@context`
+  stays the DSP context alone; metadata terms outside it are full IRIs
+  (maintainer, 2026-11-14).
 - Reviews before the release: engineering and testing, readability
   (`docs/RUST-IDIOMS.md`), documentation (C4 diagrams, OpenAPI, website,
   DEPLOYING).

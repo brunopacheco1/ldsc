@@ -16,6 +16,10 @@
 # the current directory. Needs cargo, java (21), curl, openssl and python3.
 # TCK_PORT moves the TCK from port 8083 to another, ISSUER_PORT and
 # MANAGEMENT_PORT the issuer from 8070 and 8071 (a shared machine).
+# BUNDLE_KEY=1 runs the issuer as a bundle authority: it serves the
+# HealthDCAT-AP demo bundle (scripts/demo-bundle.sh, signed with a new
+# bundle key) and lists the bundle key in its DID document
+# (<did>#bundle-key, ADR 0005); the TCK must pass all the same.
 
 set -euo pipefail
 
@@ -38,24 +42,37 @@ trap stop EXIT
 
 (cd "$ROOT" && cargo build --quiet --locked -p portitor-issuer)
 ISSUER_BIN=${CARGO_TARGET_DIR:-$ROOT/target}/debug/portitor-issuer
+BUNDLE_SETTINGS=()
+if [ "${BUNDLE_KEY:-}" = 1 ]; then
+  AUTHORITY="did:web:localhost%3A$ISSUER_PORT" "$ROOT/scripts/demo-bundle.sh" "$WORK/bundle" "$ISSUER_BIN" > /dev/null
+  BUNDLE_SETTINGS=(PORTITOR_ISSUER_BUNDLE_KEY_FILE="$WORK/bundle/bundle-key.jwk"
+    PORTITOR_ISSUER_BUNDLE_DIR="$WORK/bundle/bundles")
+fi
 
 openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$WORK/issuer.pem" 2>/dev/null
 openssl rand -hex 32 > "$WORK/api.key"
 
-PORTITOR_PARTICIPANT_ID="did:web:localhost%3A$ISSUER_PORT" \
-PORTITOR_BIND="127.0.0.1:$ISSUER_PORT" \
-PORTITOR_ISSUER_SERVICE_URL="http://localhost:$ISSUER_PORT/issuer" \
-PORTITOR_ISSUER_KEY_FILE="$WORK/issuer.pem" \
-PORTITOR_ISSUER_CREDENTIALS_FILE="$ROOT/tck/issuer-credentials.json" \
-PORTITOR_DB_FILE="$WORK/issuer.db" \
-PORTITOR_MANAGEMENT_BIND="127.0.0.1:$MANAGEMENT_PORT" \
-PORTITOR_MANAGEMENT_API_KEY_FILE="$WORK/api.key" \
-PORTITOR_ALLOW_HTTP_CALLBACKS=true \
-PORTITOR_ISSUER_MAX_ACTIVE_PER_HOLDER=100 \
-  "$ISSUER_BIN" > issuer.log 2>&1 &
+env PORTITOR_PARTICIPANT_ID="did:web:localhost%3A$ISSUER_PORT" \
+  PORTITOR_BIND="127.0.0.1:$ISSUER_PORT" \
+  PORTITOR_ISSUER_SERVICE_URL="http://localhost:$ISSUER_PORT/issuer" \
+  PORTITOR_ISSUER_KEY_FILE="$WORK/issuer.pem" \
+  PORTITOR_ISSUER_CREDENTIALS_FILE="$ROOT/tck/issuer-credentials.json" \
+  PORTITOR_DB_FILE="$WORK/issuer.db" \
+  PORTITOR_MANAGEMENT_BIND="127.0.0.1:$MANAGEMENT_PORT" \
+  PORTITOR_MANAGEMENT_API_KEY_FILE="$WORK/api.key" \
+  PORTITOR_ALLOW_HTTP_CALLBACKS=true \
+  PORTITOR_ISSUER_MAX_ACTIVE_PER_HOLDER=100 \
+  "${BUNDLE_SETTINGS[@]}" "$ISSUER_BIN" > issuer.log 2>&1 &
 ISSUER_PID=$!
 for _ in $(seq 100); do curl -sf "http://127.0.0.1:$ISSUER_PORT/health" > /dev/null && break; sleep 0.1; done
 curl -sf "http://127.0.0.1:$ISSUER_PORT/health" > /dev/null || { cat issuer.log; exit 1; }
+if [ "${BUNDLE_KEY:-}" = 1 ]; then
+  # the DID document lists the bundle key, and the bundle is served
+  curl -sf "http://127.0.0.1:$ISSUER_PORT/.well-known/did.json" | grep -q '#bundle-key' ||
+    { echo "the DID document does not list the bundle key"; exit 1; }
+  curl -sf "http://127.0.0.1:$ISSUER_PORT/bundles/r8-demo-1/manifest.json" > /dev/null ||
+    { echo "the bundle is not served"; exit 1; }
+fi
 
 # the TCK is the holder: register its DID, with a claim for the credentials.
 # It makes some twenty requests, each for both definitions, so the limit of

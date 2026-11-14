@@ -6,7 +6,10 @@
 # (portitor-connector + portitor-identity) and an EDC participant (control
 # plane, data plane, IdentityHub with its STS) in one data space whose
 # MembershipCredentials come from its portitor-issuer; each participant
-# asks for its own through its identity's API. Test-only: plain HTTP
+# asks for its own through its identity's API. The authority also serves
+# the HealthDCAT-AP demo bundle (scripts/demo-bundle.sh), which the Portitor
+# connector pins: its dataset (config/portitor-datasets.json) is checked
+# against it and offered with HealthDCAT-AP metadata. Test-only: plain HTTP
 # between the containers, a Vault in dev mode, keys made for each run.
 # scripts/edc-interop.sh runs it and checks the results; it writes the
 # run/ directory first (keys, secrets, the Identity API's JWKS).
@@ -33,10 +36,14 @@ services:
       PORTITOR_MANAGEMENT_BIND: 0.0.0.0:8071
       PORTITOR_MANAGEMENT_API_KEY_FILE: /config/issuer-management.key
       PORTITOR_ALLOW_HTTP_CALLBACKS: "true"
+      # the demo bundle, written by scripts/edc-interop.sh
+      PORTITOR_ISSUER_BUNDLE_KEY_FILE: /config/bundle/bundle-key.jwk
+      PORTITOR_ISSUER_BUNDLE_DIR: /config/bundle/bundles
     volumes:
       - ./run/issuer/issuer-key.pem:/config/issuer-key.pem:ro
       - ./run/issuer/management.key:/config/issuer-management.key:ro
       - ./config/issuer-credentials.json:/config/issuer-credentials.json:ro
+      - ./run/issuer/bundle:/config/bundle:ro
       - issuer-data:/data
     ports:
       - 127.0.0.1:18371:8071 # management API, for scripts/edc-interop.sh
@@ -133,6 +140,10 @@ services:
       PORTITOR_TRUSTED_ISSUERS: did:web:issuer%3A8070
       # the same scope as the EDC control plane's (config/edc-controlplane.properties)
       PORTITOR_DCP_SCOPES: org.eclipse.dspace.dcp.vc.type:MembershipCredential:read
+      # the data space's HealthDCAT-AP bundle, from the issuer
+      PORTITOR_BUNDLE_URL: http://issuer:8070/bundles/r8-demo-1/
+      PORTITOR_BUNDLE_VERSION: r8-demo-1
+      PORTITOR_BUNDLE_AUTHORITY: did:web:issuer%3A8070
     volumes:
       - ./config/portitor-datasets.json:/config/datasets.json:ro
       - ./run/portitor/connector-management.key:/config/connector-management.key:ro
@@ -141,7 +152,10 @@ services:
     ports:
       - 127.0.0.1:18080:8080 # DSP
       - 127.0.0.1:18081:8081 # management API
-    depends_on: [portitor-identity, data]
+    depends_on: [portitor-identity, data, issuer]
+    # the bundle and the DID documents are read at start; until the issuer
+    # and the identity answer, the start fails and is tried again
+    restart: on-failure
 
   # `docker compose run --rm fetch <url>`: fetches inside the network, where
   # the data planes' addresses resolve

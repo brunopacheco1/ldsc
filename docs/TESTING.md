@@ -114,8 +114,25 @@ Where the tests are:
   samples (Turtle and DSP JSON-LD), and compares with the EU ITB
   validator's results on the 0.6 spike samples. Run one with
   `cargo test -p portitor-shacl --test healthdcat`.
-- **SHACL in the connector** (dataset check and message guard): see the
-  tests of the SHACL adapters. <!-- verify with D -->
+- **SHACL in the connector** (dataset check and message guard):
+  `src/shacl/tests.rs` builds small bundles in process: a dataset that
+  passes states the profile, a violation rejects it with the report,
+  each access level has its own shapes, a dataset without access rights,
+  with unknown ones or with a relative `@id` is rejected, entries are
+  read with the DSP context only (a bundle context file does not change
+  that), a context file for a DSP URL is not used, and the guard checks
+  messages against the message shapes and refuses unknown context URLs.
+  `tests/shacl_checks.rs` runs them through HTTP with the HealthDCAT-AP
+  release 8 shapes (full-IRI datasets): valid datasets served with
+  `dct:conformsTo` under the plain DSP `@context`, invalid ones in the
+  harvest job with their SHACL report, an inbound message that breaks the
+  message shapes answered 400, an outbound one not sent, and a new bundle
+  version that hides a failing dataset while its transfers keep working.
+  `src/outbox.rs` checks that a message the rules refuse is logged as a
+  rule breach, not as an unreachable counter-party. Run them with
+  `cargo test -p portitor-connector --lib shacl`,
+  `cargo test -p portitor-connector --test shacl_checks` and
+  `cargo test -p portitor-connector --lib outbox`.
 - `tests/dsp_catalog.rs` also checks that every path in
   [docs/api/openapi.json](api/openapi.json) is served.
 - `tests/management_api.rs` tests the management API and checks that
@@ -207,6 +224,16 @@ PORTITOR_DB_FILE=/tmp/portitor-tck.db target/debug/portitor-connector &
 java -jar dsp-tck-1.0.2-all.jar -config tck/dsp-tck.properties > tck.log
 python3 scripts/tck_check.py tck.log
 ```
+
+The TCK runs without a bundle. Its datasets (`tck/datasets.json`) have
+relative ids and no HealthDCAT-AP metadata, so a bundle with dataset
+shapes would reject every one of them and the catalog tests could not
+run; that is the expected behaviour, not a conformance result. A bundle
+with message shapes only would need an authority (an issuer with a DID
+document and a bundle key) in the TCK job, and would show only that the
+guard lets valid TCK messages through; the guard itself is tested in
+`tests/shacl_checks.rs`, and the demos and the EDC interop test run DSP
+flows with a bundle on.
 
 To add a TCK group: add its datasets to `tck/datasets.json`, its
 properties to `tck/dsp-tck.properties`, scripted behaviour (if any) to
@@ -310,7 +337,12 @@ expects. One script does it all, locally and in CI:
 # MANAGEMENT_PORT and TCK_PORT change them), and writes
 # dcp-issuer-tck.log and issuer.log in the current directory
 scripts/dcp-issuer-tck.sh dcp-tck-1.2.1-all.jar
+# the same issuer as a bundle authority: it serves the demo bundle and its
+# DID document also lists <did>#bundle-key; all 41 tests must pass too
+BUNDLE_KEY=1 scripts/dcp-issuer-tck.sh dcp-tck-1.2.1-all.jar
 ```
+
+CI runs both.
 
 ## EDC interop test
 
@@ -331,7 +363,11 @@ space's `portitor-issuer`. It checks, in this order:
 3. Portitor consumer, EDC provider: negotiation, pull transfer, and the
    data fetched equals the published file;
 4. EDC consumer, Portitor provider: catalog, negotiation, pull transfer
-   (EDC's data plane fetches from Portitor's), the same check;
+   (EDC's data plane fetches from Portitor's), the same check. The
+   issuer serves the HealthDCAT-AP demo bundle and the Portitor connector
+   pins it, so its dataset (`config/portitor-datasets.json`) is checked
+   against the shapes and EDC reads it with `dct:conformsTo` and the
+   HealthDCAT-AP metadata as full IRIs;
 5. revocation both ways: once the issuer revokes one participant's
    credential (`POST /v1/credentials/{id}/revoke`), the other refuses it
    with 401.
@@ -428,7 +464,7 @@ context. Build and sign it with a new demo bundle key:
 
 ```sh
 scripts/demo-bundle.sh target/demo-bundle
-# AUTHORITY, AUTHORITY_URL and VERSION change the defaults, which match
+# AUTHORITY and VERSION change the defaults, which match
 # the issuer of scripts/demo.sh (did:web:127.0.0.1%3A18060)
 ```
 
@@ -438,9 +474,11 @@ It writes `target/demo-bundle/bundles/<version>/` for
 A connector then needs `PORTITOR_BUNDLE_URL=<issuer>/bundles/<version>/`,
 `PORTITOR_BUNDLE_VERSION` and `PORTITOR_BUNDLE_AUTHORITY`.
 `examples/healthdcat-datasets.json` has a public and a restricted dataset
-that pass the shapes and one, `bed-occupancy`, that does not: its
-`shacl` error shows in `GET /v1/harvest-jobs`. The demos do not use the
-bundle yet.
+that pass the shapes and one, `bed-occupancy`, that does not (7
+violations): its `shacl` error shows in `GET /v1/harvest-jobs`. Terms
+outside the DSP context are written as full IRIs, since the catalog
+serves the DSP context only. Both demos ([Two connectors](#two-connectors))
+and the EDC interop test run with this bundle.
 
 To make the reduced code lists again, convert the sources that
 `scripts/reduce_code_lists.py` lists to N-Triples, then run it (its
@@ -525,18 +563,29 @@ through its own management API (`POST /v1/credential-requests`); the
 script waits until the request is `ISSUED`, since the issuer decides and
 delivers in the background. The provider gets a `MembershipCredential`,
 the consumer also a `DataProcessorCredential`. Then the checks
-(`scripts/demo-steps.sh`): a catalog request without a token is refused
-(401), one with a token from the consumer's STS is answered; the
-`air-quality` offer copied from the catalog negotiates to `FINALIZED`, the
-same offer id without its constraint is `TERMINATED`. The
-`member-directory` offer for members (the `memberOf` claim of the demo
+(`scripts/demo-steps.sh`). The issuer is also the bundle authority: the
+script builds and signs the HealthDCAT-AP demo bundle
+(`scripts/demo-bundle.sh`), the issuer serves it and lists the bundle key,
+and the provider pins it (`PORTITOR_BUNDLE_URL`, `_VERSION`,
+`_AUTHORITY`) and offers `examples/healthdcat-datasets.json`. A catalog
+request without a token is refused (401), one with a token from the
+consumer's STS is answered: under the plain DSP `@context`, the two
+valid datasets carry `dct:conformsTo` with the release 8 profile and
+their metadata as full IRIs, and `bed-occupancy` is missing; the
+provider's `GET /v1/harvest-jobs/{id}` shows it rejected by the `shacl`
+check with its SHACL report. The `hospital-admissions` offer copied from
+the catalog negotiates to `FINALIZED`, the same offer id without its
+constraint is `TERMINATED`. The restricted `cancer-registry-extract`
+offer for members (the `memberOf` claim of the demo
 `MembershipCredential`, ADR 0019) is `FINALIZED`; its offer for auditors,
-a `role` claim the demo credential does not have, is `TERMINATED`. It requests a
-transfer under the agreement, fetches the file with the token, checks it
-equals `examples/data/air-quality.csv`, completes the transfer and checks
-that the token is refused afterwards. Last, a second credential type
-(ADR 0019): the `processing-records` offer checks the consumer's
-`DataProcessorCredential` (both connectors set
+a `role` claim the demo credential does not have, is `TERMINATED`. It
+requests a transfer under the first agreement, fetches the file with the
+token, checks it equals `examples/data/hospital-admissions.csv`,
+completes the transfer and checks that the token is refused afterwards;
+then it transfers the restricted dataset under the members' agreement.
+Last, a second credential type (ADR 0019): the `hospital-admissions`
+offer for EU processors checks the consumer's `DataProcessorCredential`
+(both connectors set
 `PORTITOR_POLICY_CREDENTIALS=DataProcessorCredential`); it negotiates to
 `FINALIZED` and a transfer starts; the issuer revokes that credential
 (`POST /v1/credentials/{id}/revoke`), and a new transfer request under
@@ -557,9 +606,13 @@ copy `memberOf` and `role` into the `MembershipCredential`, and
 runs the same checks against the services in
 `examples/compose/compose.yaml`, with the released images or the ones
 you name; it writes the keys and secrets into `examples/compose/run/`
-first, and `KEEP=1` leaves everything running (the issuer's management
-API is then on `127.0.0.1:18071`, with the key in
-`examples/compose/run/issuer/management.key`). CI runs both on every pull request, with the binaries
+first, and builds the demo bundle with the issuer image into
+`examples/compose/run/issuer/bundle/`. `KEEP=1` leaves everything
+running (the issuer's management API is then on `127.0.0.1:18071`, with
+the key in `examples/compose/run/issuer/management.key`; the provider's,
+with the harvest jobs, on `127.0.0.1:18081`, key in
+`examples/compose/run/provider/management.key`). The images must be 0.7
+or later: older ones have no bundle support. CI runs both on every pull request, with the binaries
 and images it has just built.
 
 By hand, a provider and a consumer with their identities: start the
@@ -577,7 +630,7 @@ for the request) and read it with `GET 127.0.0.1:18091/v1/negotiations/<consumer
 Within a second its state is `FINALIZED` and it holds the agreement.
 Then request a transfer under that agreement with
 `POST 127.0.0.1:18091/v1/transfers` and `{"agreementId": "<agreement @id>"}`;
-the `air-quality` dataset has a data source, so it gets `STARTED` and a
+the HealthDCAT-AP datasets have a data source, so it gets `STARTED` and a
 `dataAddress` to fetch from (on `127.0.0.1:18080`).
 
 ## Debugging in VS Code

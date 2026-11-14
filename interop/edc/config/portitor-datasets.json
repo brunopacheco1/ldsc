@@ -1,9 +1,61 @@
 [
   {
-    "@id": "portitor-interop",
+    "@id": "https://portitor.example/datasets/portitor-interop",
     "@type": "Dataset",
     "portitor:source": "http://data/portitor-provider.csv",
-    "dct:title": "Portitor interop test data",
+    "dct:identifier": "portitor-interop",
+    "dct:title": {
+      "@value": "Portitor interop test data",
+      "@language": "en"
+    },
+    "dct:description": {
+      "@value": "Test data for the EDC interop test, with HealthDCAT-AP release 8 metadata.",
+      "@language": "en"
+    },
+    "dct:accessRights": {
+      "@id": "http://publications.europa.eu/resource/authority/access-right/PUBLIC",
+      "@type": "dct:RightsStatement"
+    },
+    "http://data.europa.eu/r5r/applicableLegislation": {
+      "@id": "http://data.europa.eu/eli/reg/2025/327/oj",
+      "@type": "http://data.europa.eu/eli/ontology#LegalResource"
+    },
+    "dcat:theme": {
+      "@id": "http://publications.europa.eu/resource/authority/data-theme/HEAL"
+    },
+    "http://healthdataportal.eu/ns/health#healthCategory": {
+      "@id": "https://hdeu-dcat.data.health.europa.eu/resource/authority/healthcategories/HRAD"
+    },
+    "http://healthdataportal.eu/ns/health#hasStructuredData": false,
+    "http://healthdataportal.eu/ns/health#minTypicalAge": {
+      "@value": "0",
+      "@type": "xsd:nonNegativeInteger"
+    },
+    "http://healthdataportal.eu/ns/health#hdab": {
+      "@id": "https://hdab.example/",
+      "@type": "http://xmlns.com/foaf/0.1/Agent",
+      "http://xmlns.com/foaf/0.1/name": "Example health data access body",
+      "http://data.europa.eu/m8g/contactPoint": {
+        "@id": "https://hdab.example/contact",
+        "@type": "http://data.europa.eu/m8g/ContactPoint",
+        "http://data.europa.eu/m8g/email": "access@hdab.example"
+      }
+    },
+    "dct:publisher": {
+      "@id": "https://provider.example/",
+      "@type": "http://xmlns.com/foaf/0.1/Agent",
+      "http://xmlns.com/foaf/0.1/name": "Example Hospital",
+      "dct:type": {
+        "@id": "https://hdeu-dcat.data.health.europa.eu/resource/authority/publisher-type/healthcare-providers"
+      },
+      "http://data.europa.eu/m8g/contactPoint": {
+        "@id": "https://provider.example/contact",
+        "@type": "http://data.europa.eu/m8g/ContactPoint",
+        "http://data.europa.eu/m8g/contactPage": {
+          "@id": "https://provider.example/contact"
+        }
+      }
+    },
     "hasPolicy": [
       {
         "@id": "portitor-interop:offer:use",
@@ -17,8 +69,15 @@
     ],
     "distribution": [
       {
+        "@id": "https://portitor.example/datasets/portitor-interop/csv",
         "@type": "Distribution",
-        "format": "HttpData-PULL"
+        "format": "HttpData-PULL",
+        "http://data.europa.eu/r5r/applicableLegislation": {
+          "@id": "http://data.europa.eu/eli/reg/2025/327/oj"
+        },
+        "dcat:accessURL": {
+          "@id": "https://portitor.example/datasets/portitor-interop"
+        }
       }
     ]
   }

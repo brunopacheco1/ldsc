@@ -223,7 +223,6 @@ image keeps its state in its own SQLite file under `/data`.
    portitor-shacl     --> oxrdf, oxttl, oxjsonld (Oxigraph's RDF crates)
                                                 (domain crates: no I/O)
 ```
-<!-- verify with D: portitor-connector depends on portitor-shacl once the SHACL adapters are in -->
 
 - `portitor-connector`: binary; DSP control plane, built-in data plane,
   management API, SQLite store. Authenticates every DSP request with DCP
@@ -302,9 +301,10 @@ Four ports carry the 0.7 work, each with its adapters
   provider's datasets. `FileSource` reads `PORTITOR_DATASETS_FILE` again
   at each run; later sources (a DCAT-AP endpoint, CKAN) are new adapters.
 - `DatasetCheck` (`harvest/check.rs`): checks one entry. `DspCheck` holds
-  the DSP catalog and ODRL rules; `BothChecks` runs it and then the SHACL
-  check for the entry's `dct:accessRights` level.
-  <!-- verify with D -->
+  the DSP catalog and ODRL rules; `BothChecks` runs it and then, with a
+  bundle that has dataset shapes, `ShaclDatasetCheck` (`shacl.rs`): the
+  entry, read with the DSP context only (as the catalog serves it), is
+  validated against the shapes for its `dct:accessRights` value.
 - `HarvestStore` (`harvest.rs`): the read copy, the jobs and their
   errors, in the connector's SQLite file (`store/harvest.rs`). A run
   commits in one transaction. `ReadCopy` (`harvest/copy.rs`) is the copy
@@ -317,9 +317,14 @@ Four ports carry the 0.7 work, each with its adapters
   the authority's `did:web` document and every digest.
 
 DSP messages are checked through the `MessageGuard` port of
-`portitor-dsp` (`guard.rs`). With a bundle, a SHACL adapter checks
-messages in and out against the bundle's `messages` shapes; without one,
-`AllowAll` lets every message through. <!-- verify with D -->
+`portitor-dsp` (`guard.rs`). With a bundle that has `messages` shapes,
+`ShaclGuard` (`shacl.rs`) checks negotiation and transfer messages in
+(before they are processed; a refusal is answered 400) and out (before
+they are sent; a refused message is not sent and its process ends);
+otherwise `AllowAll` lets every message through. Catalog requests are not
+checked. The catalog's `@context` is always the DSP 2025-1 context alone,
+with or without a bundle; the bundle's `context` files only serve to
+read messages whose `@context` names their URL.
 
 State: the source of truth for datasets lives outside the connector. The
 read copy is rebuilt from the source by the next run, and the bundle
