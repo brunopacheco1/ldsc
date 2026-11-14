@@ -146,7 +146,9 @@ SHACL 1.2 draft).
 - A bundle is a folder: the files, `manifest.json` and
   `manifest.jws`.
 - `manifest.json` (JSON Schema in `docs/schemas/bundle-manifest.schema.json`)
-  holds: the bundle version, issue date, the authority's DID, the profile
+  holds: the bundle version (`dcat:version`), when it was issued
+  (`dcterms:issued`: an `xsd:date`, or an `xsd:dateTime` in UTC), the
+  authority's DID, the profile
   IRI used as `dct:conformsTo`, and one entry per file with its path,
   SHA-256, media type (`text/turtle`, `application/n-triples` or
   `application/ld+json`) and role:
@@ -207,9 +209,18 @@ SHACL 1.2 draft).
 - No rollback: the connector remembers the version in use (in the cache)
   and never takes a version issued before it. A version that cannot be
   taken (unreachable, refused, older) leaves the version in use, and the
-  run says why. Limit: `issued` is a date, so of two versions issued the
-  same day, the connector can be pointed back from the second to the
-  first.
+  run says why. The order is that of `issued`, the field W3C DCAT 3
+  uses for a version's release date (section 11.2, "Version
+  information"); we do not define our own version order (maintainer,
+  2026-11-14: no new standards). `bundle build` writes the date and time
+  by default; a date alone comes before any time of that day, so two
+  versions issued as the same date cannot be told apart.
+- Compared with Simpl-Open (checked 2026-11-14): its Governance
+  Authority's schema-manager numbers versions itself and marks them
+  published or revoked; a provider's schema-sync-adapter pulls them over
+  REST, is also told by webhook, and syncs again every 900 s. Schemas
+  are not signed there. Its version rules ("no gaps, no duplicate
+  numbers") are still Proposed requirements.
 - Each check is a run in the harvest job log, with the kind `bundle`
   (ADR 0020).
 - The engine ignores `sh:extends` and `sh:shape` with a warning when the

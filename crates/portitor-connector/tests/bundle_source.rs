@@ -319,6 +319,34 @@ async fn an_older_version_is_never_taken() {
     authority.stop().await;
 }
 
+/// Versions issued on the same day are ordered by their time
+/// (`dcterms:issued` as an `xsd:dateTime`): the later one is taken, and
+/// the connector is never moved back to the earlier one.
+#[tokio::test]
+async fn versions_of_the_same_day_are_ordered_by_their_time() {
+    let authority = Authority::start(true).await;
+    let started = start(&authority.settings(&scratch())).await.unwrap();
+    authority.publish("2026.11.1", "2026-11-14T09:00:00Z");
+    authority.publish("2026.11.2", "2026-11-14T15:30:00Z");
+    let (job, changed) = started.harvester.check(Trigger::Interval).await;
+    assert_eq!(job.outcome, JobOutcome::Succeeded, "{}", job.summary);
+    assert!(changed);
+    assert_eq!(started.harvester.in_use().version, "2026.11.2");
+    assert_eq!(started.harvester.in_use().issued, "2026-11-14T15:30:00Z");
+    // pointed back at the morning version: refused
+    authority.point_latest_at("2026.11.1");
+    let (job, changed) = started.harvester.check(Trigger::Interval).await;
+    assert_eq!(job.outcome, JobOutcome::Failed);
+    assert!(
+        job.summary.contains("never replaced by an older one"),
+        "{}",
+        job.summary
+    );
+    assert!(!changed);
+    assert_eq!(started.harvester.in_use().version, "2026.11.2");
+    authority.stop().await;
+}
+
 #[tokio::test]
 async fn a_new_version_that_fails_a_check_leaves_the_rules_in_use() {
     let authority = Authority::start(true).await;

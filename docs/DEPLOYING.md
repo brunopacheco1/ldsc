@@ -262,8 +262,11 @@ messages against them. A dataset that passes is served with
   (unreachable, refused, older) leaves the version in use and the run
   is `failed` with the reason. At start, with `latest`, the version in
   use before is read back from the cache if the newest cannot be taken.
-  Limit: `issued` is a date, so of two versions issued on the same day
-  the second can be replaced by the first.
+  The order comes from the manifest's `issued` (`dcterms:issued` in
+  W3C DCAT 3): a date, or a UTC date and time. `bundle build` writes the
+  time unless you give `--issued`; a date alone comes before any time of
+  that day, and two versions issued as the same date cannot be told
+  apart, so give the time if you publish more than one a day.
 - The catalog's `@context` is always the DSP 2025-1 context alone, with
   or without a bundle. The connector never fetches a JSON-LD context from
   the network: it has its own copy of the DSP 2025-1 contexts, and a
@@ -963,12 +966,13 @@ catalog.
    portitor-issuer bundle build --in ./bundle-src --out ./bundles --version 2026-11 \
      --profile https://data.health.europa.eu/healthdcat-ap/releases/release-8/ \
      --authority did:web:issuer.example.com --kid 'did:web:issuer.example.com#bundle-key' \
-     --key bundle-key.pem [--issued 2026-11-14]
+     --key bundle-key.pem [--issued 2026-11-14T09:00:00Z]
    ```
    It refuses RDF/XML, paths that leave the folder, files over 64 MiB, and
    a version folder that exists already: a published version never
    changes. It checks its own result as a connector will, and prints the
-   public key as a JWK. It also points `latest.json` at the new version,
+   public key as a JWK. `--issued` is a date or a UTC date and time;
+   without it, the time of the build is used. It also points `latest.json` at the new version,
    unless that file names a version issued later, or you pass
    `--not-latest` (to publish a version that connectors do not take
    yet).

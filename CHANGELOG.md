@@ -151,7 +151,9 @@ versions may change behaviour and configuration.
   bundle that fails a check is never replaced by the cache, and never
   replaces the version in use. `latest.json` is not signed, so the
   connector refuses a version issued before the one in use (no
-  rollback; two versions issued on the same day are not told apart). Limits: manifest 1 MiB, 64 MiB per file, 256 MiB in all, 120 s
+  rollback, by the manifest's `issued`, the DCAT 3 `dcterms:issued`: a
+  date or a UTC date and time; `bundle build` writes the time by
+  default). Limits: manifest 1 MiB, 64 MiB per file, 256 MiB in all, 120 s
   per download.
 - No JSON-LD context is fetched from the network: `portitor-shacl` reads
   contexts only from a map the caller fills (the bundle's and the DSP

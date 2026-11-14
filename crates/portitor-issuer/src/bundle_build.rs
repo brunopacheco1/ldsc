@@ -53,7 +53,7 @@ pub const INPUT_FILE: &str = "bundle.json";
 /// The usage text of `portitor-issuer bundle build`.
 pub const USAGE: &str = "usage: portitor-issuer bundle build --in <folder> --out <folder> \
 --version <version> --profile <iri> --authority <did> --kid <did-url> --key <pem file> \
-[--issued <date>] [--not-latest]";
+[--issued <date or UTC date and time>] [--not-latest]";
 
 /// The flag that keeps `latest.json` as it is.
 const NOT_LATEST: &str = "--not-latest";
@@ -116,7 +116,10 @@ pub struct Options {
     pub kid: String,
     /// `--key`: the bundle key, PKCS#8 PEM.
     pub key: PathBuf,
-    /// `--issued` (optional): the issue date; today (UTC) when left out.
+    /// `--issued` (optional): when the version is issued, `YYYY-MM-DD` or
+    /// `YYYY-MM-DDThh:mm:ssZ` (`dcterms:issued`, W3C DCAT 3); now (UTC,
+    /// to the second) when left out, so two versions built the same day
+    /// keep their order.
     pub issued: Option<String>,
     /// `--not-latest`: leave `latest.json` as it is (for example to build
     /// a version that connectors following the newest one should not get
@@ -164,7 +167,7 @@ impl Options {
             authority: take(&mut values, "--authority")?,
             kid: take(&mut values, "--kid")?,
             key: PathBuf::from(take(&mut values, "--key")?),
-            // optional: a missing --issued means today
+            // optional: a missing --issued means now
             issued: values.remove("--issued"),
             not_latest,
         })
@@ -256,7 +259,7 @@ pub fn build(options: &Options, key: &SigningKey) -> Result<Built, String> {
     let (entries, contents) = read_entries(&input_folder)?;
     let manifest = Manifest {
         version: options.version.clone(),
-        issued: options.issued.clone().unwrap_or_else(today),
+        issued: options.issued.clone().unwrap_or_else(now),
         authority: options.authority.clone(),
         profile: options.profile.clone(),
         files: entries,
@@ -355,11 +358,9 @@ fn check_kid(options: &Options) -> Result<(), String> {
     }
 }
 
-/// Today's date in UTC, `YYYY-MM-DD`.
-fn today() -> String {
-    let now = portitor_runtime::system::xsd_date_time(portitor_runtime::system::now_secs());
-    // the first 10 characters of `YYYY-MM-DDThh:mm:ssZ` are the date
-    now.get(..10).unwrap_or_default().to_owned()
+/// Now, as an `xsd:dateTime` in UTC (`YYYY-MM-DDThh:mm:ssZ`).
+fn now() -> String {
+    portitor_runtime::system::xsd_date_time(portitor_runtime::system::now_secs())
 }
 
 /// Reads and parses `bundle.json`.

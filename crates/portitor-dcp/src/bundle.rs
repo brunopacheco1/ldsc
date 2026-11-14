@@ -171,6 +171,23 @@ pub enum BundleError {
     UnlistedFile(String),
 }
 
+/// Whether `issued` has one of the two forms a manifest may use, both
+/// allowed for `dcterms:issued` by W3C DCAT 3: an `xsd:date`
+/// (`YYYY-MM-DD`) or an `xsd:dateTime` in UTC without fractions
+/// (`YYYY-MM-DDThh:mm:ssZ`). With these two forms, comparing the text
+/// compares the times, and a date alone comes before any time of that
+/// day; two versions issued as the same date cannot be told apart, so
+/// authorities that publish more than one version a day give the time.
+#[must_use]
+pub fn issued_is_valid(issued: &str) -> bool {
+    let form = match issued.len() {
+        10 => true,
+        20 => issued.as_bytes()[10] == b'T' && issued.ends_with('Z'),
+        _ => false,
+    };
+    form && portitor_time::parse(issued).is_some()
+}
+
 /// `manifest.json`: what a bundle holds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -178,7 +195,9 @@ pub struct Manifest {
     /// The bundle version, for example `2026.11.0`. Also the name of the
     /// bundle's folder, so only letters, digits, `.`, `_` and `-`.
     pub version: String,
-    /// The issue date, an `xsd:date` (`YYYY-MM-DD`).
+    /// When it was issued (`dcterms:issued` in W3C DCAT 3): an
+    /// `xsd:date` (`YYYY-MM-DD`) or an `xsd:dateTime` in UTC
+    /// (`YYYY-MM-DDThh:mm:ssZ`). See [`issued_is_valid`].
     pub issued: String,
     /// The authority's `did:web` DID.
     pub authority: String,
@@ -285,8 +304,10 @@ impl Manifest {
     /// The first rule broken.
     pub fn check(&self) -> Result<(), BundleError> {
         check_version(&self.version)?;
-        if self.issued.len() != 10 || portitor_time::parse(&self.issued).is_none() {
-            return Err(manifest_error("issued is not a date (YYYY-MM-DD)"));
+        if !issued_is_valid(&self.issued) {
+            return Err(manifest_error(
+                "issued is not a date (YYYY-MM-DD) or a UTC date and time (YYYY-MM-DDThh:mm:ssZ)",
+            ));
         }
         crate::did_web_url(&self.authority)
             .map_err(|e| BundleError::Manifest(format!("authority: {e}")))?;
@@ -708,8 +729,9 @@ impl VerifiedBundle {
         &self.manifest.version
     }
 
-    /// The issue date (`YYYY-MM-DD`). A connector that follows the
-    /// newest version never takes one issued before the one it uses.
+    /// When it was issued (`YYYY-MM-DD` or `YYYY-MM-DDThh:mm:ssZ`). A
+    /// connector that follows the newest version never takes one issued
+    /// before the one it uses; see [`issued_is_valid`] for the order.
     #[must_use]
     pub fn issued(&self) -> &str {
         &self.manifest.issued
@@ -1202,6 +1224,10 @@ mod tests {
             |m| m["files"] = serde_json::json!([]),
             |m| m["version"] = "../1".into(),
             |m| m["issued"] = "14.11.2026".into(),
+            |m| m["issued"] = "2026-11-14T10:00:00+01:00".into(),
+            |m| m["issued"] = "2026-11-14T10:00Z".into(),
+            |m| m["issued"] = "2026-11-14T10:00:00.5Z".into(),
+            |m| m["issued"] = "2026-11-14Z".into(),
             |m| m["authority"] = "did:key:z6Mk".into(),
             |m| m["profile"] = "not an iri".into(),
             |m| {
@@ -1226,5 +1252,32 @@ mod tests {
         let mut bytes = serde_json::to_vec(&manifest()).unwrap();
         bytes.push(b'\n');
         assert!(sign_manifest(&bytes, &key, &kid()).is_err());
+    }
+
+    #[test]
+    fn issued_is_a_date_or_a_utc_date_and_time_in_order() {
+        for good in ["2026-11-14", "2026-11-14T00:00:00Z", "2026-11-14T23:59:59Z"] {
+            assert!(issued_is_valid(good), "{good}");
+        }
+        for bad in [
+            "",
+            "2026-11-14T10:00:00",
+            "2026-11-14T10:00Z",
+            "2026-11-14T10:00:00+01:00",
+            "2026-11-14T10:00:00.5Z",
+            "2026-11-14T25:00:00Z",
+            "2026-02-30",
+        ] {
+            assert!(!issued_is_valid(bad), "{bad}");
+        }
+        // the text order is the time order, a date first on its day
+        let order = [
+            "2026-11-13T23:59:59Z",
+            "2026-11-14",
+            "2026-11-14T00:00:00Z",
+            "2026-11-14T09:30:00Z",
+            "2026-11-15",
+        ];
+        assert!(order.windows(2).all(|pair| pair[0] < pair[1]));
     }
 }
