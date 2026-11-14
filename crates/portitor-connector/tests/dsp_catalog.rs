@@ -493,19 +493,33 @@ fn config_from_variables() {
         portitor_connector::Config::from_vars(vars(&[("PORTITOR_DATASETS", "a,b")])).unwrap_err();
     assert!(removed.to_string().contains("PORTITOR_DATASETS_FILE"));
 
-    for bad in ["hourly", "-1", ""] {
-        let invalid = portitor_connector::Config::from_vars(vars(&[(
+    // above one year: refused, as a schedule that far ahead overflows the
+    // clock (and would abort the connector) instead of a config error
+    let too_large = ["31536001", "18446744073709551615"];
+    for bad in ["hourly", "-1", ""].into_iter().chain(too_large) {
+        for name in [
             "PORTITOR_HARVEST_INTERVAL_SECONDS",
-            bad,
-        )]))
-        .unwrap_err();
-        assert!(
-            invalid
-                .to_string()
-                .contains("PORTITOR_HARVEST_INTERVAL_SECONDS"),
-            "{invalid}"
-        );
+            "PORTITOR_DATA_TOKEN_SECONDS",
+        ] {
+            let invalid = portitor_connector::Config::from_vars(vars(&[(name, bad)])).unwrap_err();
+            assert!(invalid.to_string().contains(name), "{name}={bad}: {invalid}");
+        }
     }
+    let one_year = portitor_connector::Config::from_vars(vars(&[
+        ("PORTITOR_HARVEST_INTERVAL_SECONDS", "31536000"),
+        ("PORTITOR_DATA_TOKEN_SECONDS", "31536000"),
+    ]))
+    .unwrap();
+    assert_eq!(
+        one_year.harvest_interval_seconds,
+        portitor_connector::MAX_SETTING_SECONDS
+    );
+    assert_eq!(one_year.data_token_seconds, 31_536_000);
+    // a token must live at least one second
+    assert!(
+        portitor_connector::Config::from_vars(vars(&[("PORTITOR_DATA_TOKEN_SECONDS", "0")]))
+            .is_err()
+    );
 
     // the file is read by the harvest, not here: a missing file is no
     // configuration error (since 0.7)

@@ -111,6 +111,9 @@ versions may change behaviour and configuration.
   transfers will be refused`); the 0.6 start warnings are gone.
 - ADR 0018 (issuer component, with its amendment from the 0.6 review) and
   ADR 0019 (credential constraints) accepted by the maintainer.
+- `PORTITOR_HARVEST_INTERVAL_SECONDS` and `PORTITOR_DATA_TOKEN_SECONDS`
+  above `31536000` (one year) are refused at start. Before, a huge
+  harvest interval aborted the connector right after start.
 
 ### Security
 

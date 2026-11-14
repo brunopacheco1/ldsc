@@ -99,7 +99,8 @@ pub struct Config {
     /// [`Ports::harvest`] names another source.
     pub datasets_file: Option<PathBuf>,
     /// Seconds between two harvest runs (`PORTITOR_HARVEST_INTERVAL_SECONDS`,
-    /// default one hour); 0 harvests only at start.
+    /// default one hour, at most [`MAX_SETTING_SECONDS`]); 0 harvests only
+    /// at start.
     pub harvest_interval_seconds: u64,
     /// Allow `http://` callback addresses (development and the TCK only;
     /// the consumer chooses the address, so this widens what the connector
@@ -108,7 +109,8 @@ pub struct Config {
     /// The `SQLite` file that keeps negotiations.
     pub db_file: std::path::PathBuf,
     /// How long a data access token stays valid, in seconds
-    /// (`PORTITOR_DATA_TOKEN_SECONDS`, default one hour).
+    /// (`PORTITOR_DATA_TOKEN_SECONDS`, default one hour, at most
+    /// [`MAX_SETTING_SECONDS`]).
     pub data_token_seconds: u64,
     /// The credential types that policies may use, with their DCP scopes
     /// (`PORTITOR_POLICY_CREDENTIALS`, ADR 0019). A dataset with an offer
@@ -123,6 +125,28 @@ pub const SOURCE_KEY: &str = harvest::SOURCE_KEY;
 
 /// Default lifetime of a data access token: one hour.
 pub const DEFAULT_DATA_TOKEN_SECONDS: u64 = 3_600;
+
+/// The largest value of a setting in seconds: one year (365 days).
+/// Larger values are refused, as a time that far ahead can overflow the
+/// clock types (a schedule `Instant`, a token expiry stored in `SQLite`).
+pub const MAX_SETTING_SECONDS: u64 = 31_536_000;
+
+/// Reads a setting in whole seconds, from 0 to [`MAX_SETTING_SECONDS`];
+/// `default` when the variable is not set.
+fn seconds_var(
+    var: impl Fn(&str) -> Option<OsString>,
+    name: &'static str,
+    default: u64,
+) -> Result<u64, ConfigError> {
+    let Some(value) = var(name) else {
+        return Ok(default);
+    };
+    let value = value.to_string_lossy().into_owned();
+    match value.parse::<u64>() {
+        Ok(seconds) if seconds <= MAX_SETTING_SECONDS => Ok(seconds),
+        _ => Err(ConfigError::Invalid(name, value)),
+    }
+}
 
 /// Why the configuration could not be read.
 #[derive(Debug)]
@@ -181,8 +205,10 @@ impl Config {
     ///
     /// # Errors
     ///
-    /// A number is not a number, `PORTITOR_POLICY_CREDENTIALS` cannot be
-    /// used, or the removed `PORTITOR_DATASETS` variable is set.
+    /// A number is not a number, a number of seconds is above
+    /// [`MAX_SETTING_SECONDS`] (one year), `PORTITOR_DATA_TOKEN_SECONDS` is
+    /// 0, `PORTITOR_POLICY_CREDENTIALS` cannot be used, or the removed
+    /// `PORTITOR_DATASETS` variable is set.
     pub fn from_vars(var: impl Fn(&str) -> Option<OsString>) -> Result<Self, ConfigError> {
         // the variable's value as text, or `default` when it is not set
         let text = |name: &str, default: &str| match var(name) {
@@ -194,28 +220,20 @@ impl Config {
                 "PORTITOR_DATASETS was removed in 0.2; define datasets in a JSON file and set PORTITOR_DATASETS_FILE",
             ));
         }
-        let data_token_seconds = match var("PORTITOR_DATA_TOKEN_SECONDS") {
-            None => DEFAULT_DATA_TOKEN_SECONDS,
-            Some(v) => {
-                let v = v.to_string_lossy().into_owned();
-                match v.parse::<u64>() {
-                    Ok(n) if n > 0 => n,
-                    _ => return Err(ConfigError::Invalid("PORTITOR_DATA_TOKEN_SECONDS", v)),
-                }
-            }
-        };
-        let harvest_interval_seconds = match var("PORTITOR_HARVEST_INTERVAL_SECONDS") {
-            None => harvest::DEFAULT_INTERVAL_SECONDS,
-            Some(v) => {
-                let v = v.to_string_lossy().into_owned();
-                match v.parse::<u64>() {
-                    Ok(n) => n,
-                    Err(_) => {
-                        return Err(ConfigError::Invalid("PORTITOR_HARVEST_INTERVAL_SECONDS", v));
-                    }
-                }
-            }
-        };
+        let data_token_seconds =
+            seconds_var(&var, "PORTITOR_DATA_TOKEN_SECONDS", DEFAULT_DATA_TOKEN_SECONDS)?;
+        if data_token_seconds == 0 {
+            return Err(ConfigError::Invalid(
+                "PORTITOR_DATA_TOKEN_SECONDS",
+                "0".to_owned(),
+            ));
+        }
+        // 0 is allowed here: no schedule, a harvest only at start
+        let harvest_interval_seconds = seconds_var(
+            &var,
+            "PORTITOR_HARVEST_INTERVAL_SECONDS",
+            harvest::DEFAULT_INTERVAL_SECONDS,
+        )?;
         let credential_types =
             auth::policy_credentials(&var).map_err(ConfigError::PolicyCredentials)?;
         Ok(Self {

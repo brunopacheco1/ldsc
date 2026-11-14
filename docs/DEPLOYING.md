@@ -101,7 +101,7 @@ All configuration is by environment variable. The full table is in the
 | `PORTITOR_PARTICIPANT_ID` | your DID |
 | `PORTITOR_PUBLIC_URL` | your public `https://` URL |
 | `PORTITOR_DATASETS_FILE` | path of the mounted datasets file, harvested at start and at each run |
-| `PORTITOR_HARVEST_INTERVAL_SECONDS` | leave the default, `3600` (one hour); `0` harvests only at start. A value that is not a whole number stops the start |
+| `PORTITOR_HARVEST_INTERVAL_SECONDS` | leave the default, `3600` (one hour); `0` harvests only at start. A value that is not a whole number, or is above `31536000` (one year), stops the start |
 | `PORTITOR_BUNDLE_URL` | with a bundle: the `https://` base URL of one bundle version folder, for example `https://issuer.example.com/bundles/2026-11/`; plain `http://` only with `PORTITOR_ALLOW_HTTP_CALLBACKS=true` |
 | `PORTITOR_BUNDLE_DIR` | unset; a local bundle version folder, for development and tests only. Not together with `PORTITOR_BUNDLE_URL` |
 | `PORTITOR_BUNDLE_VERSION` | with a bundle, **required**: the version you pin; the manifest must have exactly this version |
@@ -112,7 +112,7 @@ All configuration is by environment variable. The full table is in the
 | `PORTITOR_MANAGEMENT_API_KEY_FILE` | path of the mounted key file, or unset (management API off) |
 | `PORTITOR_MANAGEMENT_BIND` | `0.0.0.0:8081` in a container (publish it only on an internal interface); the default `127.0.0.1:8081` is unreachable from outside a container |
 | `PORTITOR_ALLOW_HTTP_CALLBACKS` | **unset** (never `true` in production) |
-| `PORTITOR_DATA_TOKEN_SECONDS` | leave the default, `3600`, unless consumers need longer to fetch |
+| `PORTITOR_DATA_TOKEN_SECONDS` | leave the default, `3600`, unless consumers need longer to fetch; at most `31536000` (one year) |
 | `PORTITOR_STS_URL` | **required**: your identity's STS token endpoint, `<identity base URL>/sts/token` |
 | `PORTITOR_STS_ALLOW_HTTP` | unset; `true` only when `PORTITOR_STS_URL` is plain `http://` on an internal network ([section 4](#endpoints)) |
 | `PORTITOR_STS_CLIENT_SECRET_FILE` | **required**: path of the mounted STS secret, the same file as the identity's |
