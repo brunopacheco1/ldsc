@@ -33,3 +33,12 @@ license_choices:
     - given: "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
       choice: "Apache-2.0"
       comment: "Offered by the wasi crate family; same licence as Portitor."
+  package_license_choices:
+    - package_id: "Crate::r-efi:5.3.0"
+      license_choices:
+        - given: "MIT OR Apache-2.0 OR LGPL-2.1-or-later"
+          choice: "Apache-2.0"
+          comment: >-
+            getrandom 0.3 (through rand 0.9, which oxrdf uses) depends on r-efi only on UEFI
+            targets, so it is never built into the images; if it were, we take Apache-2.0,
+            the licence Portitor itself uses.

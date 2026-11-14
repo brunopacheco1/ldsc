@@ -774,7 +774,8 @@ mod tests {
         replace_folder(&folder, &[("a.ttl", b"one")]).unwrap();
         // `a` is a file, so `a/b` cannot be written
         let error = replace_folder(&folder, &[("a", b"x"), ("a/b", b"y")]).unwrap_err();
-        assert!(error.contains("/a"), "{error}");
+        // the message names the path that failed (not printed: it holds the scratch folder)
+        assert!(error.contains("/a"));
         assert_eq!(names(&cache), ["1"]);
         assert_eq!(std::fs::read(folder.join("a.ttl")).unwrap(), b"one");
         std::fs::remove_dir_all(&cache).unwrap();
