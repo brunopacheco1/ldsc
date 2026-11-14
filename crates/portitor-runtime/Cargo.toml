@@ -19,6 +19,7 @@ hyper.workspace = true
 hyper-rustls.workspace = true
 hyper-util.workspace = true
 portitor-dcp = { path = "../portitor-dcp" }
+portitor-time = { path = "../portitor-time" }
 ring.workspace = true
 rusqlite.workspace = true
 rustls.workspace = true

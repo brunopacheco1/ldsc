@@ -16,7 +16,7 @@
 //! The public routes are in [`router`]; the management API has its own
 //! router and port.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use axum::Router;
 use axum::routing::{get, post};
@@ -151,15 +151,6 @@ impl Identity {
             kid: &self.kid,
             did: &self.participant_id,
         }
-    }
-
-    /// The used token ids. A panic while the lock was held could at worst
-    /// leave one id that is never forgotten (it only panics when memory
-    /// runs out), so a poisoned lock is used as it is.
-    fn used_token_ids(&self) -> std::sync::MutexGuard<'_, JtiCache> {
-        self.used_token_ids
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
     }
 }
 
