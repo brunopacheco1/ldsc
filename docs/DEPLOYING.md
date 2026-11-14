@@ -607,6 +607,7 @@ DID.
 | `PORTITOR_MANAGEMENT_API_KEY_FILE` | unset (management API off) | path of the mounted key file |
 | `PORTITOR_MANAGEMENT_BIND` | `127.0.0.1:8071` | `0.0.0.0:8071` in a container, published only on an internal interface |
 | `PORTITOR_ALLOW_HTTP_CALLBACKS` | `false` | `false`; `true` only for local tests with plain-HTTP DIDs |
+| `PORTITOR_ISSUER_MAX_ACTIVE_PER_HOLDER` | `10` | keep; the most credentials of one definition a participant may hold that are neither revoked nor expired. A request beyond it ends `REJECTED`. It keeps one participant from filling a status list (131,072 positions) |
 | `RUST_LOG` | `info` | `info` |
 
 The credential definitions file (ADR 0018):
@@ -633,12 +634,30 @@ Management API (`Authorization: Bearer <key>`; described in
 | `DELETE /v1/participants/{did}` | removes a registration (the DID percent-encoded as a whole, for example `jq -rR @uri`); issued credentials stay valid until revoked |
 | `POST /v1/offers` `{"participantDid": ..., "credentialIds": [...]}` | sends a `CredentialOfferMessage` to the participant's credential service |
 | `GET /v1/credentials?holder={did}` | lists issued credentials, with their delivery state (`PENDING`, `DELIVERED`, `FAILED`) |
-| `POST /v1/credentials/{id}/revoke` | revokes one: its bit is set and the status list signed again |
+| `POST /v1/credentials/{id}/revoke` | revokes one: its bit is set and the status list signed again. Revoking again signs the list again, so after a `500` simply repeat the call |
 
-A request from an unregistered DID, or for an id not in the metadata,
-ends `REJECTED`; nothing is sent to the holder, which reads the status.
-A delivery that fails is retried, waiting 1, 2, 4 ... seconds up to an
-hour, for about 8 hours; then it is `FAILED` in the list and logged.
+Who gets what (ADR 0018, amended during the 0.6 review):
+
+- Only registered participants may call the issuer service: anyone else
+  gets `401`, before the issuer resolves its DID, and nothing is kept.
+  A participant whose registration is deleted gets `401` from then on;
+  a request it made before that is still waiting ends `REJECTED`.
+- A request for an id not in the metadata, beyond
+  `PORTITOR_ISSUER_MAX_ACTIVE_PER_HOLDER`, or when the profile's status
+  list is full, ends `REJECTED`; nothing is sent to the holder, which
+  reads the status.
+- Each credential gets a random free position in its status list (W3C
+  Bitstring Status List: "SHOULD assign indexes randomly").
+- A delivery that fails for a passing reason (no answer, the holder's
+  DID or credential service not found, HTTP 401, 408, 429 or 5xx) is
+  retried, waiting 1, 2, 4 ... seconds up to an hour, for about 8 hours.
+  Any other 4xx answer (400, 403, 404, ...) means the holder refuses the
+  message: it is not retried. Either way it is then `FAILED` in the list
+  and logged (`delivery given up`, or `delivery refused by the holder,
+  given up`); the credentials stay issued. Send the participant an offer
+  so that it asks again.
+- A request whose decision failed (for example the disk was full) stays
+  `RECEIVED` and is decided again within a minute.
 
 ### Ports
 
@@ -655,7 +674,7 @@ The public endpoints are described in
 1. Create the key, the credential definitions and the management key;
    start the issuer and check that its DID document resolves.
 2. Register each participant (its DID and claims) through the management
-   API. A request from a DID that is not registered is rejected.
+   API. A DID that is not registered gets `401` from the issuer service.
 3. Give participants the issuer's DID; each adds it to
    `PORTITOR_TRUSTED_ISSUERS` and asks for its credentials (or you send
    it an offer).

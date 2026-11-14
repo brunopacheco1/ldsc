@@ -76,7 +76,8 @@ credential type is `BitstringStatusListCredential`.
 
 ### Who gets a credential
 
-- A request from a DID that is not registered ends `REJECTED`.
+- A request from a DID that is not registered ends `REJECTED`
+  (changed: see "Amended during the 0.6 review" below).
 - A request for an id that is not in the metadata ends `REJECTED` (the
   TCK allows a synchronous 4xx too; the issuer answers 400 when the body
   itself is wrong, and `REJECTED` otherwise, so the decision is always
@@ -151,3 +152,19 @@ index, dates; not the signed JWT), the status list bits, and the outbox.
   request (ADR 0015 already accepts deliveries for pending requests).
 - Signing the ADR 0005 shape bundle is not decided here; it is decided
   with ADR 0005 in 0.7.
+
+## Amended during the 0.6 review (2026-11-14)
+
+The engineering review of release 0.6 found that some behaviour decided
+above lets one party harm the others. These changes replace the text
+above where they differ:
+
+| Behaviour | Was | Now | Why |
+|---|---|---|---|
+| A caller that is not a registered participant | its request is stored and ends `REJECTED` | `401` on `POST /credentials` and `GET /requests/{issuerPid}`, checked on the token's `sub` before its DID is resolved; nothing is stored or fetched | Before, any valid self-issued token made the issuer fetch a DID document from a host the caller chose, fill the in-memory used-token-id cache (100,000 entries) and add rows that are never removed. DCP v1.0.1, 6.4: the Issuer Service "MAY respond with `401 Not Authorized` if the request is unauthorized". The DCP TCK expects a 4xx for both cases where a non-registered DID calls (a status request from another holder, an unresolvable subject) |
+| A participant deleted after its request was taken | — | the waiting request ends `REJECTED`; its later calls get `401` | follows from the row above |
+| How many credentials a participant may get | no limit | at most `PORTITOR_ISSUER_MAX_ACTIVE_PER_HOLDER` (default 10) credentials of one definition that are neither revoked nor expired; a request beyond it ends `REJECTED` | One registered participant could otherwise fill a status list (131,072 positions) and stop issuance for everyone. Checked in the same transaction that issues, so two requests at once cannot both pass |
+| Status list positions | handed out in order, taken before the request was issued (a rejected or failed request used them up) | a random free position, chosen in the transaction that issues; a request that is not issued uses none | W3C Bitstring Status List v1.0, `statusListIndex`: "implementations SHOULD assign indexes randomly", so a position tells nothing about when or to whom a credential was issued |
+| Delivery retries | every failure retried for about 8 hours | no answer, the holder's DID or credential service not found, and HTTP 401, 408, 429 and 5xx are retried as before; any other 4xx (400, 403, 404, ...) ends the delivery `FAILED` at once | A 4xx says the holder will not take this message (DCP 6.5: "HTTP 2xx OR HTTP 4xx Client Error"); retrying it for hours only delays the `FAILED` the operator must act on. In turn a holder answers 2xx to a message with an `issuerPid` it already stored, so a lost answer does not end `FAILED` (agreed with the holder side, `portitor-identity`) |
+| A decision that failed (for example a store error) | stays `RECEIVED` until the next start | decided again on the outbox's next round (at most a minute) | so a passing error does not leave a request waiting until a restart |
+| Revoking a credential that is revoked already | `204`, nothing else | `204`, and the list is signed again; signing is one at a time | If signing failed after the revocation was stored, repeating the call now publishes it; two revocations at once can no longer publish a list without one of them |

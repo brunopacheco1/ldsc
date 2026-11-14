@@ -5,10 +5,9 @@
 //! What the issuer keeps (ADR 0018, "Storage"): the registered
 //! participants, the credential requests and where they stand, the issued
 //! credentials (id, holder, definition, status list position, dates; not
-//! the signed JWT), the next free position of each status list, and the
-//! outbox of deliveries (ADR 0007). [`IssuerStore`] is the port;
-//! [`SqliteStore`] the adapter, one `SQLite` file per process (one
-//! replica per file, ADR 0006).
+//! the signed JWT), and the outbox of deliveries (ADR 0007).
+//! [`IssuerStore`] is the port; [`SqliteStore`] the adapter, one `SQLite`
+//! file per process (one replica per file, ADR 0006).
 //!
 //! Which credentials are revoked is the status list: the lists are built
 //! from the revoked credentials, so the two cannot disagree.
@@ -16,12 +15,14 @@
 //! Used token ids (`jti`) are not here: they live in memory
 //! ([`portitor_dcp::JtiCache`], ADR 0016).
 
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use portitor_dcp::credential::Profile;
 use portitor_dcp::issuance::STATUS_LIST_ENTRIES;
 use portitor_dcp::message::RequestStatus;
+use portitor_runtime::system::random_below;
 use rusqlite::{Connection, OptionalExtension as _, Row, Transaction, params};
 use serde_json::{Map, Value};
 
@@ -160,11 +161,56 @@ pub struct Delivery {
 pub enum Revocation {
     /// Revoked now; the list of this profile must be signed again.
     Revoked(Profile),
-    /// It was revoked before.
-    AlreadyRevoked,
+    /// It was revoked before. The list of this profile is signed again
+    /// too: an earlier signing may have failed after the revocation was
+    /// stored.
+    AlreadyRevoked(Profile),
     /// No credential with this id.
     NotFound,
 }
+
+/// One credential to issue for a request: from which definition, in
+/// which profile (each profile has its own status list).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Planned {
+    /// The definition's id.
+    pub definition_id: String,
+    /// The definition's profile.
+    pub profile: Profile,
+}
+
+/// What [`IssuerStore::issue`] needs besides the request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IssueRules {
+    /// The most credentials of one definition a holder may have that are
+    /// neither revoked nor expired.
+    pub max_active_per_holder: u64,
+    /// The time, seconds since 1970: what has expired, and when the
+    /// delivery is due.
+    pub now: u64,
+}
+
+/// What [`IssuerStore::issue`] did. Only `Issued` wrote anything.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IssueOutcome {
+    /// The request is `ISSUED`, its credentials recorded, its message in
+    /// the outbox.
+    Issued,
+    /// The request is unknown or no longer `RECEIVED`.
+    NotReceived,
+    /// The holder has [`IssueRules::max_active_per_holder`] active
+    /// credentials of this definition already.
+    LimitReached(String),
+    /// The status list of this profile has no free position.
+    ListFull(Profile),
+}
+
+/// Signs a request's credentials once their status list positions are
+/// chosen: gets one position per [`Planned`] credential, in the same
+/// order, and returns the credentials to record and the
+/// `CredentialMessage` (JSON) for the outbox.
+pub type SignCredentials<'a> =
+    dyn FnMut(&[u64]) -> Result<(Vec<IssuedCredential>, String), String> + 'a;
 
 /// Port: the issuer's storage.
 pub trait IssuerStore: Send + Sync {
@@ -221,27 +267,24 @@ pub trait IssuerStore: Send + Sync {
     /// The store fails.
     fn reject(&self, issuer_pid: &str) -> Result<bool, StoreError>;
 
-    /// The next free position in the status list of `profile`, or `None`
-    /// when the list is full. A position is never given twice.
+    /// Issues a request that is still `RECEIVED`, all in one transaction:
+    /// checks the holder's limit for each planned credential, picks a
+    /// random free position in its status list (W3C Bitstring Status List
+    /// v1.0: "implementations SHOULD assign indexes randomly"), has
+    /// `sign` sign them, then marks the request `ISSUED`, records the
+    /// credentials and puts the message into the outbox, due at
+    /// [`IssueRules::now`]. A position is never given twice, and none is
+    /// used up when the request is not issued.
     ///
     /// # Errors
-    /// The store fails.
-    fn allocate_status_index(&self, profile: Profile) -> Result<Option<u64>, StoreError>;
-
-    /// Issues a request that is still `RECEIVED`, all at once: it becomes
-    /// `ISSUED`, the credentials are recorded, and `message` goes into the
-    /// outbox, due at `now`. Returns false if the request is not
-    /// `RECEIVED` (nothing is written).
-    ///
-    /// # Errors
-    /// The store fails; then nothing is written.
+    /// The store or `sign` fails; then nothing is written.
     fn issue(
         &self,
         issuer_pid: &str,
-        credentials: &[IssuedCredential],
-        message: &str,
-        now: u64,
-    ) -> Result<bool, StoreError>;
+        planned: &[Planned],
+        rules: IssueRules,
+        sign: &mut SignCredentials<'_>,
+    ) -> Result<IssueOutcome, StoreError>;
 
     /// The deliveries due at `now`, oldest first.
     ///
@@ -326,10 +369,6 @@ const MIGRATIONS: &[&str] = &[
         UNIQUE (profile, status_index)
     );
     CREATE INDEX issued_credential_holder ON issued_credential (holder_did);
-    CREATE TABLE status_list (
-        profile    TEXT PRIMARY KEY,
-        next_index INTEGER NOT NULL
-    );
     CREATE TABLE outbox (
         issuer_pid      TEXT PRIMARY KEY REFERENCES credential_request (issuer_pid),
         message         TEXT NOT NULL,
@@ -427,7 +466,7 @@ impl IssuerStore for SqliteStore {
                 request.holder_pid,
                 ids,
                 request.access_token,
-                status_text(request.status),
+                request.status.as_str(),
                 seconds(request.received_at)
             ],
         )?;
@@ -463,7 +502,7 @@ impl IssuerStore for SqliteStore {
         let mut stmt = conn.prepare(
             "SELECT issuer_pid FROM credential_request WHERE status = ?1 ORDER BY received_at",
         )?;
-        let mut rows = stmt.query([status_text(RequestStatus::Received)])?;
+        let mut rows = stmt.query([RequestStatus::Received.as_str()])?;
         let mut found = Vec::new();
         while let Some(row) = rows.next()? {
             found.push(row.get("issuer_pid")?);
@@ -478,60 +517,69 @@ impl IssuerStore for SqliteStore {
                  WHERE issuer_pid = ?1 AND status = ?3",
             params![
                 issuer_pid,
-                status_text(RequestStatus::Rejected),
-                status_text(RequestStatus::Received)
+                RequestStatus::Rejected.as_str(),
+                RequestStatus::Received.as_str()
             ],
         )?;
         Ok(changed == 1)
     }
 
-    fn allocate_status_index(&self, profile: Profile) -> Result<Option<u64>, StoreError> {
-        // one statement, so two requests never get the same position; the
-        // counter goes on past the end, which only means "full"
-        let taken: i64 = self.conn().query_row(
-            "INSERT INTO status_list (profile, next_index) VALUES (?1, 1)
-                 ON CONFLICT (profile) DO UPDATE SET next_index = next_index + 1
-                 RETURNING next_index - 1",
-            [profile.alias()],
-            |row| row.get(0),
-        )?;
-        let index = unsigned(taken);
-        Ok((index < STATUS_LIST_ENTRIES).then_some(index))
-    }
-
     fn issue(
         &self,
         issuer_pid: &str,
-        credentials: &[IssuedCredential],
-        message: &str,
-        now: u64,
-    ) -> Result<bool, StoreError> {
+        planned: &[Planned],
+        rules: IssueRules,
+        sign: &mut SignCredentials<'_>,
+    ) -> Result<IssueOutcome, StoreError> {
         let mut conn = self.conn();
+        // dropping the transaction without `commit` writes nothing
         let tx = conn.transaction()?;
-        let decided = tx.execute(
-            "UPDATE credential_request SET status = ?2, delivery = ?3
-                 WHERE issuer_pid = ?1 AND status = ?4",
+        let request: Option<(String, String)> = tx
+            .query_row(
+                "SELECT holder_did, status FROM credential_request WHERE issuer_pid = ?1",
+                [issuer_pid],
+                |row| Ok((row.get("holder_did")?, row.get("status")?)),
+            )
+            .optional()?;
+        let holder_did = match request {
+            Some((holder_did, status)) if status == RequestStatus::Received.as_str() => holder_did,
+            _ => return Ok(IssueOutcome::NotReceived),
+        };
+        for credential in planned {
+            let active =
+                active_credentials(&tx, &holder_did, &credential.definition_id, rules.now)?;
+            if active >= rules.max_active_per_holder {
+                return Ok(IssueOutcome::LimitReached(credential.definition_id.clone()));
+            }
+        }
+        let mut positions: Vec<u64> = Vec::new();
+        for credential in planned {
+            let taken_here: Vec<u64> = positions_in(planned, &positions, credential.profile);
+            match free_position(&tx, credential.profile, &taken_here, STATUS_LIST_ENTRIES)? {
+                Some(position) => positions.push(position),
+                None => return Ok(IssueOutcome::ListFull(credential.profile)),
+            }
+        }
+        let (credentials, message) =
+            sign(&positions).map_err(|e| StoreError(format!("signing: {e}")))?;
+        tx.execute(
+            "UPDATE credential_request SET status = ?2, delivery = ?3 WHERE issuer_pid = ?1",
             params![
                 issuer_pid,
-                status_text(RequestStatus::Issued),
-                DeliveryState::Pending.text(),
-                status_text(RequestStatus::Received)
+                RequestStatus::Issued.as_str(),
+                DeliveryState::Pending.text()
             ],
         )?;
-        if decided == 0 {
-            // dropping the transaction writes nothing
-            return Ok(false);
-        }
-        for credential in credentials {
+        for credential in &credentials {
             insert_issued(&tx, credential)?;
         }
         tx.execute(
             "INSERT INTO outbox (issuer_pid, message, attempts, next_attempt_at)
                  VALUES (?1, ?2, 0, ?3)",
-            params![issuer_pid, message, seconds(now)],
+            params![issuer_pid, message, seconds(rules.now)],
         )?;
         tx.commit()?;
-        Ok(true)
+        Ok(IssueOutcome::Issued)
     }
 
     fn due_deliveries(&self, now: u64) -> Result<Vec<Delivery>, StoreError> {
@@ -631,7 +679,7 @@ impl IssuerStore for SqliteStore {
             .optional()?;
         let outcome = match found {
             None => Revocation::NotFound,
-            Some((_, Some(_))) => Revocation::AlreadyRevoked,
+            Some((profile, Some(_))) => Revocation::AlreadyRevoked(profile_from_text(&profile)?),
             Some((profile, None)) => {
                 tx.execute(
                     "UPDATE issued_credential SET revoked_at = ?2 WHERE id = ?1",
@@ -683,6 +731,95 @@ fn insert_issued(tx: &Transaction<'_>, credential: &IssuedCredential) -> Result<
     Ok(())
 }
 
+/// How many credentials of `definition_id` the holder has that are
+/// neither revoked nor expired at `now`.
+fn active_credentials(
+    tx: &Transaction<'_>,
+    holder_did: &str,
+    definition_id: &str,
+    now: u64,
+) -> Result<u64, StoreError> {
+    let count: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM issued_credential
+             WHERE holder_did = ?1 AND definition_id = ?2
+             AND revoked_at IS NULL AND expires_at > ?3",
+        params![holder_did, definition_id, seconds(now)],
+        |row| row.get(0),
+    )?;
+    Ok(unsigned(count))
+}
+
+/// The positions already chosen in this request for credentials of
+/// `profile` (two definitions may share a profile, and so a list).
+fn positions_in(planned: &[Planned], chosen: &[u64], profile: Profile) -> Vec<u64> {
+    let mut taken = Vec::new();
+    for (credential, position) in planned.iter().zip(chosen) {
+        if credential.profile == profile {
+            taken.push(*position);
+        }
+    }
+    taken
+}
+
+/// How many random positions are tried before the free ones are counted.
+/// Until a list is nearly full, one or two tries find a free position.
+const RANDOM_TRIES: usize = 32;
+
+/// A random free position below `entries` in the status list of
+/// `profile`, other than `taken_here`; `None` if there is none.
+fn free_position(
+    tx: &Transaction<'_>,
+    profile: Profile,
+    taken_here: &[u64],
+    entries: u64,
+) -> Result<Option<u64>, StoreError> {
+    let is_recorded = |position: u64| -> Result<bool, StoreError> {
+        let found = tx
+            .query_row(
+                "SELECT 1 FROM issued_credential WHERE profile = ?1 AND status_index = ?2",
+                params![profile.alias(), seconds(position)],
+                |_row| Ok(()),
+            )
+            .optional()?;
+        Ok(found.is_some())
+    };
+    for _ in 0..RANDOM_TRIES {
+        let candidate = random_below(entries);
+        if !taken_here.contains(&candidate) && !is_recorded(candidate)? {
+            return Ok(Some(candidate));
+        }
+    }
+    // the list is nearly full (or unlucky): read every taken position and
+    // pick one of the free ones at random
+    let mut taken: BTreeSet<u64> = taken_here.iter().copied().collect();
+    let mut stmt = tx.prepare("SELECT status_index FROM issued_credential WHERE profile = ?1")?;
+    let mut rows = stmt.query([profile.alias()])?;
+    while let Some(row) = rows.next()? {
+        let index: i64 = row.get(0)?;
+        taken.insert(unsigned(index));
+    }
+    let free = entries.saturating_sub(u64::try_from(taken.len()).unwrap_or(u64::MAX));
+    if free == 0 {
+        return Ok(None);
+    }
+    Ok(nth_free(&taken, entries, random_below(free)))
+}
+
+/// The `n`th position (from 0) below `entries` that is not in `taken`.
+fn nth_free(taken: &BTreeSet<u64>, entries: u64, n: u64) -> Option<u64> {
+    let mut skipped = 0;
+    for position in 0..entries {
+        if taken.contains(&position) {
+            continue;
+        }
+        if skipped == n {
+            return Some(position);
+        }
+        skipped += 1;
+    }
+    None
+}
+
 /// An issued credential from a row with the [`ISSUED_COLUMNS`], read by
 /// column name.
 fn issued_from(row: &Row<'_>) -> Result<IssuedCredential, StoreError> {
@@ -715,21 +852,9 @@ fn participant_from(row: &Row<'_>) -> Result<Participant, StoreError> {
     })
 }
 
-fn status_text(status: RequestStatus) -> &'static str {
-    match status {
-        RequestStatus::Received => "RECEIVED",
-        RequestStatus::Issued => "ISSUED",
-        RequestStatus::Rejected => "REJECTED",
-    }
-}
-
 fn status_from_text(text: &str) -> Result<RequestStatus, StoreError> {
-    match text {
-        "RECEIVED" => Ok(RequestStatus::Received),
-        "ISSUED" => Ok(RequestStatus::Issued),
-        "REJECTED" => Ok(RequestStatus::Rejected),
-        other => Err(StoreError(format!("unknown request status {other}"))),
-    }
+    RequestStatus::from_name(text)
+        .ok_or_else(|| StoreError(format!("unknown request status {text}")))
 }
 
 fn profile_from_text(text: &str) -> Result<Profile, StoreError> {
@@ -788,7 +913,50 @@ mod tests {
         }
     }
 
-    fn check(store: &dyn IssuerStore) {
+    fn planned(definition_id: &str, profile: Profile) -> Planned {
+        Planned {
+            definition_id: definition_id.to_owned(),
+            profile,
+        }
+    }
+
+    const RULES: IssueRules = IssueRules {
+        max_active_per_holder: 10,
+        now: 100,
+    };
+
+    /// Issues the request with one credential `id` per planned one, and
+    /// returns the outcome and the positions given.
+    fn issue_as(
+        store: &dyn IssuerStore,
+        issuer_pid: &str,
+        planned: &[Planned],
+        rules: IssueRules,
+    ) -> (IssueOutcome, Vec<u64>) {
+        let mut given = Vec::new();
+        let outcome = store
+            .issue(issuer_pid, planned, rules, &mut |positions| {
+                given = positions.to_vec();
+                let mut credentials = Vec::new();
+                for (one, position) in planned.iter().zip(positions) {
+                    let mut record = credential(&new_id(), issuer_pid, *position);
+                    record.definition_id.clone_from(&one.definition_id);
+                    record.profile = one.profile;
+                    credentials.push(record);
+                }
+                Ok((credentials, "{}".to_owned()))
+            })
+            .unwrap();
+        (outcome, given)
+    }
+
+    fn new_id() -> String {
+        portitor_runtime::system::new_uuid()
+    }
+
+    /// Runs every operation; returns the status list position of the one
+    /// credential issued and revoked.
+    fn check(store: &dyn IssuerStore) -> u64 {
         // participants
         let mut claims = Map::new();
         claims.insert("role".to_owned(), Value::from("provider"));
@@ -821,20 +989,14 @@ mod tests {
         assert_eq!(rejected.status, RequestStatus::Rejected);
         assert_eq!(rejected.access_token, None);
 
-        // positions are handed out once each
-        assert_eq!(store.allocate_status_index(Profile::Vc11).unwrap(), Some(0));
-        assert_eq!(store.allocate_status_index(Profile::Vc11).unwrap(), Some(1));
-        assert_eq!(store.allocate_status_index(Profile::Vc20).unwrap(), Some(0));
-
-        assert!(
-            store
-                .issue("i-1", &[credential("c-1", "i-1", 0)], "{}", 100)
-                .unwrap()
-        );
-        assert!(
-            !store.issue("i-1", &[], "{}", 100).unwrap(),
-            "issued already"
-        );
+        let vc11 = [planned("membership-vc11", Profile::Vc11)];
+        let (outcome, given) = issue_as(store, "i-1", &vc11, RULES);
+        assert_eq!(outcome, IssueOutcome::Issued);
+        let position = given[0];
+        assert!(position < STATUS_LIST_ENTRIES);
+        let again = store.issue("i-1", &vc11, RULES, &mut |_| panic!("signed twice"));
+        assert_eq!(again.unwrap(), IssueOutcome::NotReceived);
+        let id = store.issued(None).unwrap()[0].credential.id.clone();
         assert_eq!(
             store.request("i-1").unwrap().unwrap().status,
             RequestStatus::Issued
@@ -869,15 +1031,15 @@ mod tests {
             DeliveryState::Delivered
         );
         assert_eq!(
-            store.revoke("c-1", 150).unwrap(),
+            store.revoke(&id, 150).unwrap(),
             Revocation::Revoked(Profile::Vc11)
         );
         assert_eq!(
-            store.revoke("c-1", 160).unwrap(),
-            Revocation::AlreadyRevoked
+            store.revoke(&id, 160).unwrap(),
+            Revocation::AlreadyRevoked(Profile::Vc11)
         );
         assert_eq!(store.revoke("c-x", 160).unwrap(), Revocation::NotFound);
-        assert_eq!(store.revoked_indexes(Profile::Vc11).unwrap(), [0]);
+        assert_eq!(store.revoked_indexes(Profile::Vc11).unwrap(), [position]);
         assert!(store.revoked_indexes(Profile::Vc20).unwrap().is_empty());
         assert_eq!(
             store.issued(None).unwrap()[0].credential.revoked_at,
@@ -888,6 +1050,7 @@ mod tests {
         assert!(store.delete_participant(HOLDER).unwrap());
         assert!(!store.delete_participant(HOLDER).unwrap());
         assert_eq!(store.issued(None).unwrap().len(), 1);
+        position
     }
 
     #[test]
@@ -899,31 +1062,124 @@ mod tests {
     fn in_a_file_that_is_opened_again() {
         let dir = std::env::temp_dir().join(format!(
             "portitor-issuer-store-{}",
-            portitor_runtime::system::new_uuid().trim_start_matches("urn:uuid:")
+            new_id().trim_start_matches("urn:uuid:")
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("issuer.db");
-        check(&SqliteStore::open(&path).unwrap());
+        let position = check(&SqliteStore::open(&path).unwrap());
         let again = SqliteStore::open(&path).unwrap();
-        assert_eq!(again.revoked_indexes(Profile::Vc11).unwrap(), [0]);
-        assert_eq!(again.allocate_status_index(Profile::Vc11).unwrap(), Some(2));
+        assert_eq!(again.revoked_indexes(Profile::Vc11).unwrap(), [position]);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_limit_counts_active_credentials_of_one_definition() {
+        let store = SqliteStore::in_memory().unwrap();
+        let rules = IssueRules {
+            max_active_per_holder: 2,
+            now: 100,
+        };
+        let vc11 = [planned("membership-vc11", Profile::Vc11)];
+        for (pid, expected) in [
+            ("i-1", IssueOutcome::Issued),
+            ("i-2", IssueOutcome::Issued),
+            (
+                "i-3",
+                IssueOutcome::LimitReached("membership-vc11".to_owned()),
+            ),
+        ] {
+            store.add_request(&request(pid, pid)).unwrap();
+            assert_eq!(issue_as(&store, pid, &vc11, rules).0, expected, "{pid}");
+        }
+        // nothing was written for i-3: it is still RECEIVED
+        assert_eq!(store.received_requests().unwrap(), ["i-3"]);
+        // another definition has its own count
+        let vc20 = [planned("membership-vc20", Profile::Vc20)];
+        store.add_request(&request("i-4", "i-4")).unwrap();
+        assert_eq!(
+            issue_as(&store, "i-4", &vc20, rules).0,
+            IssueOutcome::Issued
+        );
+        // a revoked credential, and an expired one, no longer count
+        let first = store.issued(None).unwrap();
+        let revoked = first
+            .iter()
+            .find(|record| record.credential.issuer_pid == "i-1")
+            .unwrap();
+        store.revoke(&revoked.credential.id, 100).unwrap();
+        assert_eq!(
+            issue_as(&store, "i-3", &vc11, rules).0,
+            IssueOutcome::Issued
+        );
+        store.add_request(&request("i-5", "i-5")).unwrap();
+        let later = IssueRules {
+            max_active_per_holder: 2,
+            now: 200,
+        };
+        assert_eq!(
+            issue_as(&store, "i-5", &vc11, later).0,
+            IssueOutcome::Issued
+        );
+    }
+
+    #[test]
+    fn positions_are_random_distinct_and_never_wasted() {
+        let store = SqliteStore::in_memory().unwrap();
+        // two definitions in one list get two positions
+        let both = [
+            planned("membership-a", Profile::Vc11),
+            planned("membership-b", Profile::Vc11),
+        ];
+        store.add_request(&request("i-1", "h-1")).unwrap();
+        let (outcome, positions) = issue_as(&store, "i-1", &both, RULES);
+        assert_eq!(outcome, IssueOutcome::Issued);
+        assert_ne!(positions[0], positions[1]);
+        // random: forty credentials are not at 0..40
+        let rules = IssueRules {
+            max_active_per_holder: 100,
+            now: 100,
+        };
+        let mut seen = BTreeSet::new();
+        for n in 0..20 {
+            let pid = format!("r-{n}");
+            store.add_request(&request(&pid, &pid)).unwrap();
+            let (_, given) = issue_as(&store, &pid, &both, rules);
+            seen.extend(given);
+        }
+        assert_eq!(seen.len(), 40, "never the same position twice");
+        assert!(seen.iter().any(|position| *position >= 40));
+        // a failed signing writes nothing
+        store.add_request(&request("i-2", "h-2")).unwrap();
+        let failed = store.issue("i-2", &both, rules, &mut |_| Err("no key".to_owned()));
+        assert!(failed.is_err());
+        assert_eq!(store.received_requests().unwrap(), ["i-2"]);
+        assert_eq!(store.issued(None).unwrap().len(), 42);
     }
 
     #[test]
     fn a_full_list_gives_no_position() {
         let store = SqliteStore::in_memory().unwrap();
-        store
-            .conn()
-            .execute(
-                "INSERT INTO status_list (profile, next_index) VALUES (?1, ?2)",
-                params![Profile::Vc20.alias(), seconds(STATUS_LIST_ENTRIES - 1)],
-            )
-            .unwrap();
-        assert_eq!(
-            store.allocate_status_index(Profile::Vc20).unwrap(),
-            Some(STATUS_LIST_ENTRIES - 1)
-        );
-        assert_eq!(store.allocate_status_index(Profile::Vc20).unwrap(), None);
+        store.add_request(&request("i-1", "h-1")).unwrap();
+        let mut conn = store.conn();
+        let tx = conn.transaction().unwrap();
+        for position in [0, 1, 3] {
+            insert_issued(&tx, &credential(&new_id(), "i-1", position)).unwrap();
+        }
+        // a list of 4 with 0, 1 and 3 taken: only 2 is free, then none
+        for _ in 0..5 {
+            assert_eq!(free_position(&tx, Profile::Vc11, &[], 4).unwrap(), Some(2));
+        }
+        assert_eq!(free_position(&tx, Profile::Vc11, &[2], 4).unwrap(), None);
+        // the other profile's list is empty
+        assert!(free_position(&tx, Profile::Vc20, &[], 4).unwrap().is_some());
+    }
+
+    #[test]
+    fn the_nth_free_position_skips_taken_ones() {
+        let taken: BTreeSet<u64> = [0, 2, 3].into_iter().collect();
+        assert_eq!(nth_free(&taken, 6, 0), Some(1));
+        assert_eq!(nth_free(&taken, 6, 1), Some(4));
+        assert_eq!(nth_free(&taken, 6, 2), Some(5));
+        assert_eq!(nth_free(&taken, 6, 3), None);
     }
 }

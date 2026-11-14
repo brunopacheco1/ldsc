@@ -188,12 +188,17 @@ mod tests {
         assert_eq!(response.headers()[header::WWW_AUTHENTICATE], "Bearer");
 
         let bearer = headers(&format!("Bearer {}", token(&key, "j-3")));
-        // not admitted: the DID is never resolved
-        let never = |_did: String| async { Err::<Arc<DidDocument>, _>("resolved".to_owned()) };
-        let not_admitted = authenticate(&bearer, audience, |_| false, never).await;
-        assert!(not_admitted.is_err());
-        let unresolvable = authenticate(&bearer, audience, |_| true, never).await;
-        assert!(unresolvable.is_err());
+        // not admitted: the DID is never resolved (this resolver panics if
+        // it is called)
+        let must_not_resolve =
+            |did: String| -> std::future::Ready<Result<Arc<DidDocument>, String>> {
+                panic!("{did} was resolved although it was not admitted")
+            };
+        let not_admitted = authenticate(&bearer, audience, |_| false, must_not_resolve).await;
+        assert_eq!(not_admitted.unwrap_err().status(), StatusCode::UNAUTHORIZED);
+        let unresolvable = |_did: String| async { Err::<Arc<DidDocument>, _>("no".to_owned()) };
+        let not_resolved = authenticate(&bearer, audience, |_| true, unresolvable).await;
+        assert_eq!(not_resolved.unwrap_err().status(), StatusCode::UNAUTHORIZED);
         // neither attempt used up the token id
         assert!(
             authenticate(&bearer, audience, |_| true, found)

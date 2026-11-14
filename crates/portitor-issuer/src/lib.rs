@@ -66,6 +66,8 @@ pub struct Issuer {
     /// Its path on this server, `""` or for example `/issuer`.
     service_path: String,
     definitions: Vec<Definition>,
+    /// `PORTITOR_ISSUER_MAX_ACTIVE_PER_HOLDER`.
+    max_active_per_holder: u64,
     metadata: IssuerMetadata,
     store: Arc<dyn IssuerStore>,
     directory: Arc<dyn Directory>,
@@ -123,6 +125,7 @@ impl Issuer {
             service_url: config.issuer_service_url.trim_end_matches('/').to_owned(),
             service_path,
             definitions,
+            max_active_per_holder: config.max_active_per_holder,
             metadata,
             store: ports.store,
             directory: ports.directory,

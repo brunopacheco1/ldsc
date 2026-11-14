@@ -373,7 +373,8 @@ async fn list_credentials(
 
 /// Revoke an issued credential: its bit in the status list is set and
 /// the list is signed again. Revocation cannot be undone; revoking again
-/// changes nothing.
+/// signs the list again, so a call that failed with 500 after the
+/// revocation was stored can simply be repeated.
 #[utoipa::path(
     post,
     path = "/v1/credentials/{id}/revoke",
@@ -382,22 +383,26 @@ async fn list_credentials(
         (status = 204, description = "Revoked (now or before)"),
         (status = 401, description = "Missing or wrong API key", body = Problem, content_type = "application/problem+json"),
         (status = 404, description = "No such credential", body = Problem, content_type = "application/problem+json"),
+        (status = 500, description = "The revocation is stored but the status list was not signed again; repeat the call", body = Problem, content_type = "application/problem+json"),
     ),
     security(("api_key" = [])),
     tag = "Credentials"
 )]
 async fn revoke(State(issuer): State<Arc<Issuer>>, Path(id): Path<String>) -> Response {
-    match issuer.store.revoke(&id, now_secs()) {
+    let profile = match issuer.store.revoke(&id, now_secs()) {
         Ok(Revocation::Revoked(profile)) => {
-            if let Err(e) = status_lists::refresh(&issuer, profile) {
-                return internal_error("status list", &e);
-            }
             tracing::info!(%id, "credential revoked");
-            StatusCode::NO_CONTENT.into_response()
+            profile
         }
-        Ok(Revocation::AlreadyRevoked) => StatusCode::NO_CONTENT.into_response(),
-        Ok(Revocation::NotFound) => problem(StatusCode::NOT_FOUND, "no such credential"),
-        Err(e) => internal_error("issuer store", &e),
+        // signed again all the same: the call that revoked it may have
+        // failed to sign the list
+        Ok(Revocation::AlreadyRevoked(profile)) => profile,
+        Ok(Revocation::NotFound) => return problem(StatusCode::NOT_FOUND, "no such credential"),
+        Err(e) => return internal_error("issuer store", &e),
+    };
+    match status_lists::refresh(&issuer, profile) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => internal_error("status list", &e),
     }
 }
 

@@ -19,6 +19,13 @@ pub const DEFAULT_MANAGEMENT_BIND: &str = "127.0.0.1:8071";
 /// The `SQLite` file unless `PORTITOR_DB_FILE` says otherwise.
 pub const DEFAULT_DB_FILE: &str = "/data/portitor-issuer.db";
 
+/// How many credentials of one definition a holder may have that are
+/// neither revoked nor expired, unless
+/// `PORTITOR_ISSUER_MAX_ACTIVE_PER_HOLDER` says otherwise. It keeps one
+/// registered participant from filling a status list (ADR 0018, amended
+/// during the 0.6 review).
+pub const DEFAULT_MAX_ACTIVE_PER_HOLDER: u64 = 10;
+
 /// Everything the issuer needs to start.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -42,6 +49,10 @@ pub struct Config {
     /// Plain-HTTP DIDs and URLs allowed (`PORTITOR_ALLOW_HTTP_CALLBACKS`,
     /// tests only).
     pub allow_http: bool,
+    /// The most credentials of one definition a holder may have that are
+    /// neither revoked nor expired; a request beyond it ends `REJECTED`
+    /// (`PORTITOR_ISSUER_MAX_ACTIVE_PER_HOLDER`, at least 1).
+    pub max_active_per_holder: u64,
 }
 
 /// Where the management API listens, and its key.
@@ -90,6 +101,18 @@ impl Config {
         if base_path(&issuer_service_url).is_none() {
             return Err(invalid("PORTITOR_ISSUER_SERVICE_URL", "not an http(s) URL"));
         }
+        let max_active_per_holder = match text("PORTITOR_ISSUER_MAX_ACTIVE_PER_HOLDER") {
+            None => DEFAULT_MAX_ACTIVE_PER_HOLDER,
+            Some(value) => match value.parse::<u64>() {
+                Ok(limit) if limit >= 1 => limit,
+                _ => {
+                    return Err(invalid(
+                        "PORTITOR_ISSUER_MAX_ACTIVE_PER_HOLDER",
+                        "not a whole number of at least 1",
+                    ));
+                }
+            },
+        };
         let management = text("PORTITOR_MANAGEMENT_API_KEY_FILE")
             .filter(|v| !v.is_empty())
             .map(|file| ManagementConfig {
@@ -109,6 +132,7 @@ impl Config {
             management,
             allow_http: text("PORTITOR_ALLOW_HTTP_CALLBACKS")
                 .is_some_and(|v| v.eq_ignore_ascii_case("true")),
+            max_active_per_holder,
         })
     }
 }
@@ -120,21 +144,7 @@ fn invalid(name: &'static str, problem: &str) -> ConfigError {
     }
 }
 
-/// The path part of an `http(s)` URL, without a trailing `/`: `""` for
-/// `https://issuer.example/`, `"/issuer"` for
-/// `https://issuer.example/issuer/`. `None` if it is not an `http(s)` URL
-/// with a host.
-#[must_use]
-pub fn base_path(url: &str) -> Option<String> {
-    let rest = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))?;
-    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
-    if host.is_empty() || path.contains(['?', '#']) {
-        return None;
-    }
-    Some(format!("/{path}").trim_end_matches('/').to_owned())
-}
+pub use portitor_runtime::settings::base_path;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
@@ -171,6 +181,7 @@ mod tests {
         assert_eq!(config.issuer_service_url, "https://issuer.example/issuer");
         assert_eq!(config.management, None);
         assert!(!config.allow_http);
+        assert_eq!(config.max_active_per_holder, 10);
     }
 
     #[test]
@@ -205,15 +216,16 @@ mod tests {
         let mut vars = MINIMAL.to_vec();
         vars.push(("PORTITOR_ISSUER_SERVICE_URL", "ftp://issuer.example"));
         assert_eq!(read(&vars).unwrap_err().name, "PORTITOR_ISSUER_SERVICE_URL");
-    }
-
-    #[test]
-    fn base_paths() {
-        assert_eq!(base_path("https://issuer.example").as_deref(), Some(""));
-        assert_eq!(
-            base_path("http://localhost:8100/issuer/").as_deref(),
-            Some("/issuer")
-        );
-        assert_eq!(base_path("https:///issuer"), None);
+        for wrong in ["0", "-1", "ten"] {
+            let mut vars = MINIMAL.to_vec();
+            vars.push(("PORTITOR_ISSUER_MAX_ACTIVE_PER_HOLDER", wrong));
+            assert_eq!(
+                read(&vars).unwrap_err().name,
+                "PORTITOR_ISSUER_MAX_ACTIVE_PER_HOLDER"
+            );
+        }
+        let mut vars = MINIMAL.to_vec();
+        vars.push(("PORTITOR_ISSUER_MAX_ACTIVE_PER_HOLDER", "50"));
+        assert_eq!(read(&vars).unwrap().max_active_per_holder, 50);
     }
 }

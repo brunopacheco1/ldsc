@@ -13,60 +13,30 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::State;
-use portitor_dcp::{
-    DidDocument, Relationship, Service, SigningKey, VerificationMethod, did_web_url,
-};
+use portitor_dcp::{Purpose, SigningKey};
+use portitor_runtime::did_document::OwnDocument;
+pub use portitor_runtime::did_document::{DID_CONTEXT, path};
 use serde_json::Value;
 
 use crate::Identity;
-
-/// The DID Core context.
-pub const DID_CONTEXT: &str = "https://www.w3.org/ns/did/v1";
 
 /// The DID document of `did`, with `key` known as `kid`, and the
 /// credential service at `credential_service_url`.
 #[must_use]
 pub fn build(did: &str, kid: &str, key: &SigningKey, credential_service_url: &str) -> Value {
-    let only_key = vec![Relationship::Reference(kid.to_owned())];
-    let document = DidDocument {
-        id: did.to_owned(),
-        verification_method: vec![VerificationMethod {
-            id: kid.to_owned(),
-            kind: "JsonWebKey2020".to_owned(),
-            controller: did.to_owned(),
-            public_key_jwk: key.public_jwk(),
-        }],
-        capability_invocation: only_key.clone(),
-        authentication: only_key.clone(),
-        assertion_method: only_key,
-        service: vec![Service {
-            id: format!("{did}#credential-service"),
-            kind: "CredentialService".to_owned(),
-            service_endpoint: Value::from(credential_service_url),
-        }],
-    };
-    let mut json = serde_json::to_value(&document).unwrap_or_default();
-    if let Value::Object(fields) = &mut json {
-        fields.insert(
-            "@context".to_owned(),
-            serde_json::json!([DID_CONTEXT, portitor_dcp::message::CONTEXT]),
-        );
-    }
-    json
-}
-
-/// The HTTP path where `did:web` says the document of `did` is:
-/// `/.well-known/did.json`, or `/<path>/did.json` for a DID with a path.
-///
-/// # Errors
-/// `did` is not a valid `did:web` DID.
-pub fn path(did: &str) -> Result<String, String> {
-    let url = did_web_url(did).map_err(|e| e.to_string())?;
-    let after_scheme = url.trim_start_matches("https://");
-    match after_scheme.find('/') {
-        Some(slash) => Ok(after_scheme[slash..].to_owned()),
-        None => Err(format!("no path in {url}")),
-    }
+    portitor_runtime::did_document::build(&OwnDocument {
+        did,
+        kid,
+        key,
+        purposes: &[
+            Purpose::Authentication,
+            Purpose::AssertionMethod,
+            Purpose::CapabilityInvocation,
+        ],
+        service_fragment: "credential-service",
+        service_type: "CredentialService",
+        service_url: credential_service_url,
+    })
 }
 
 /// `GET` the DID document.
@@ -78,20 +48,7 @@ pub(crate) async fn serve(State(identity): State<Arc<Identity>>) -> Json<Value> 
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use portitor_dcp::Purpose;
-
-    #[test]
-    fn paths() {
-        assert_eq!(
-            path("did:web:localhost%3A8090").unwrap(),
-            "/.well-known/did.json"
-        );
-        assert_eq!(
-            path("did:web:identity.example:participants:alice").unwrap(),
-            "/participants/alice/did.json"
-        );
-        assert!(path("did:key:z6Mk").is_err());
-    }
+    use portitor_dcp::DidDocument;
 
     #[test]
     fn the_key_has_every_relationship() {
