@@ -176,6 +176,7 @@ fn recursive_shapes_on_cyclic_data_terminate() {
 /// of a layer to every node of the next one, and every node of the last
 /// layer back to `ex:n0`. Every node has `ex:mark`, except `unmarked`.
 fn layered_graph(layers: usize, fan_out: usize, unmarked: Option<&str>) -> String {
+    use std::fmt::Write as _;
     let name = |layer: usize, index: usize| {
         if layer == 0 {
             "ex:n0".to_owned()
@@ -189,14 +190,14 @@ fn layered_graph(layers: usize, fan_out: usize, unmarked: Option<&str>) -> Strin
         for index in 0..width {
             let node = name(layer, index);
             if unmarked != Some(node.as_str()) {
-                text.push_str(&format!("{node} ex:mark true .\n"));
+                writeln!(text, "{node} ex:mark true .").unwrap();
             }
             if layer == layers {
-                text.push_str(&format!("{node} ex:next ex:n0 .\n"));
+                writeln!(text, "{node} ex:next ex:n0 .").unwrap();
                 continue;
             }
             for next in 0..fan_out {
-                text.push_str(&format!("{node} ex:next {} .\n", name(layer + 1, next)));
+                writeln!(text, "{node} ex:next {} .", name(layer + 1, next)).unwrap();
             }
         }
     }

@@ -478,6 +478,7 @@ fn has_datatype(value: &Term, datatype: &str) -> bool {
 mod tests {
     use super::*;
     use crate::{Document, Format, Graph, Shapes, parse_document};
+    use std::fmt::Write as _;
 
     fn load(text: &str) -> Shapes {
         Shapes::load(
@@ -519,10 +520,7 @@ mod tests {
         // a chain of 10 nodes, every one of them valid
         let mut text = String::new();
         for index in 0..10 {
-            text.push_str(&format!(
-                "<urn:n{index}> <urn:next> <urn:n{}> .\n",
-                index + 1
-            ));
+            writeln!(text, "<urn:n{index}> <urn:next> <urn:n{}> .", index + 1).unwrap();
         }
         let graph = data(&text);
         // enough checks: it conforms
