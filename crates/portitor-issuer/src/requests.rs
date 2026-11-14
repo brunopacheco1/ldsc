@@ -14,7 +14,10 @@
 //!
 //! The last two take a self-issued ID token of the holder in
 //! `Authorization: Bearer` (DCP 4.3), checked by
-//! `portitor_runtime::caller`.
+//! `portitor_runtime::caller`, and only from registered participants:
+//! anyone else gets 401 (DCP 6.4: "MAY respond with `401 Not
+//! Authorized` if the request is unauthorized") before its DID is
+//! resolved, so nothing is fetched or stored for it.
 
 use std::sync::Arc;
 
@@ -40,17 +43,32 @@ pub(crate) async fn metadata(State(issuer): State<Arc<Issuer>>) -> Json<IssuerMe
     Json(issuer.metadata.clone())
 }
 
-/// The caller's verified claims. Anyone with a valid token may call: who
-/// gets credentials is decided afterwards, so that a request from a DID
-/// that is not registered ends `REJECTED` (ADR 0018).
+/// The caller's verified claims. Only a registered participant is
+/// admitted, and that is checked first, on the token's unverified `sub`:
+/// an unknown caller cannot make the issuer fetch a DID document from a
+/// host of its choice, fill the used token ids, or leave rows in the
+/// store (ADR 0018, amended during the 0.6 review).
 async fn caller(issuer: &Issuer, headers: &HeaderMap) -> Result<Claims, Response> {
     let audience = Audience {
         did: &issuer.did,
         leeway: LEEWAY,
         used_token_ids: &issuer.used_token_ids,
     };
+    let registered = |claims: &Claims| is_registered(issuer, &claims.sub);
     let resolve = |did: String| async move { issuer.directory.did_document(&did).await };
-    authenticate(headers, audience, |_| true, resolve).await
+    authenticate(headers, audience, registered, resolve).await
+}
+
+/// Whether `did` is a registered participant. A store error counts as
+/// no (and is logged): the caller gets 401 and may try again.
+fn is_registered(issuer: &Issuer, did: &str) -> bool {
+    match issuer.store.participant(did) {
+        Ok(found) => found.is_some(),
+        Err(error) => {
+            tracing::error!(%error, "cannot read the registered participants");
+            false
+        }
+    }
 }
 
 /// `POST /credentials` (DCP 6.4).

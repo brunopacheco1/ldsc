@@ -65,7 +65,7 @@
         "tags": [
           "Credentials"
         ],
-        "summary": "Revoke an issued credential: its bit in the status list is set and\nthe list is signed again. Revocation cannot be undone; revoking again\nchanges nothing.",
+        "summary": "Revoke an issued credential: its bit in the status list is set and\nthe list is signed again. Revocation cannot be undone; revoking again\nsigns the list again, so a call that failed with 500 after the\nrevocation was stored can simply be repeated.",
         "operationId": "revoke",
         "parameters": [
           {
@@ -94,6 +94,16 @@
           },
           "404": {
             "description": "No such credential",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The revocation is stored but the status list was not signed again; repeat the call",
             "content": {
               "application/problem+json": {
                 "schema": {

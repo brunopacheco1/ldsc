@@ -53,6 +53,31 @@ pub fn new_uuid() -> String {
     )
 }
 
+/// A random number in `0..bound` from the operating system's generator,
+/// each value equally likely (`bound` 0 gives 0). Used to pick status
+/// list positions: W3C Bitstring Status List v1.0, `statusListIndex`,
+/// "implementations SHOULD assign indexes randomly".
+#[must_use]
+pub fn random_below(bound: u64) -> u64 {
+    use ring::rand::SecureRandom as _;
+    if bound == 0 {
+        return 0;
+    }
+    // numbers at or above the largest multiple of `bound` are drawn
+    // again, so that `% bound` favours no value
+    let limit = u64::MAX - u64::MAX % bound;
+    let generator = ring::rand::SystemRandom::new();
+    loop {
+        let mut bytes = [0u8; 8];
+        // as in `new_uuid`: if the OS has no randomness, zeros are used
+        let _ = generator.fill(&mut bytes);
+        let drawn = u64::from_le_bytes(bytes);
+        if drawn < limit {
+            return drawn % bound;
+        }
+    }
+}
+
 /// Seconds since 1970 as XSD dateTime in UTC, for example
 /// `2026-11-12T12:00:00Z` (the pure function lives in `portitor-time`, so
 /// the domain crates can use it too).
@@ -80,6 +105,19 @@ mod tests {
         assert_eq!(a.len(), "urn:uuid:".len() + 36);
         assert_eq!(&a[9 + 14..9 + 15], "4");
         assert!(matches!(&a[9 + 19..9 + 20], "8" | "9" | "a" | "b"));
+    }
+
+    #[test]
+    fn random_numbers_stay_below_the_bound() {
+        assert_eq!(random_below(0), 0);
+        assert_eq!(random_below(1), 0);
+        let mut seen = [false; 4];
+        for _ in 0..200 {
+            let drawn = random_below(4);
+            assert!(drawn < 4);
+            seen[usize::try_from(drawn).unwrap_or_default()] = true;
+        }
+        assert_eq!(seen, [true; 4], "200 draws reach every value");
     }
 
     #[test]
