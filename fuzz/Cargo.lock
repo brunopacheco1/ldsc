@@ -115,7 +115,7 @@ dependencies = [
 
 [[package]]
 name = "portitor-dcp"
-version = "0.4.0"
+version = "0.6.0"
 dependencies = [
  "base64",
  "miniz_oxide",
@@ -128,7 +128,7 @@ dependencies = [
 
 [[package]]
 name = "portitor-dsp"
-version = "0.4.0"
+version = "0.6.0"
 dependencies = [
  "portitor-time",
  "serde",
@@ -148,7 +148,7 @@ dependencies = [
 
 [[package]]
 name = "portitor-time"
-version = "0.4.0"
+version = "0.6.0"
 
 [[package]]
 name = "proc-macro2"
