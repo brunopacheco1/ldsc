@@ -117,7 +117,9 @@ fn build_writes_a_signed_bundle() {
 /// Builds from an input whose `bundle.json` lists one file, `path`.
 fn build_one(path: &str, content: &str, media_type: Option<&str>) -> Result<(), String> {
     let (input, output) = (scratch(), scratch());
-    if !path.contains("..") {
+    // only a path inside the folder is written: an absolute one (such as
+    // `/etc/hostname`) or one with `..` must never be written by the test
+    if !path.contains("..") && !Path::new(path).is_absolute() {
         write(&input, path, content);
     }
     let mut entry = serde_json::json!({"path": path, "role": {"type": "vocabulary"}});
