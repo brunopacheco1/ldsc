@@ -10,37 +10,33 @@
 # A provider (connector and identity) serves tck/datasets.json. A consumer
 # identity gives the load tool its tokens: the dsp-load example sends
 # catalog requests as a consumer connector does, each with a fresh token
-# from the consumer's STS (a DCP token may be used once). The demo
-# authority (test-issuer) gives both their MembershipCredential, as in
-# scripts/demo.sh.
+# from the consumer's STS (a DCP token may be used once). A portitor-issuer
+# gives both their MembershipCredential, as in scripts/demo.sh; its binary
+# size and memory are measured too.
 #
 # Without DCP: with TCK_CONNECTOR, a connector built with the test-only
 # `tck` feature runs the same load with one fixed Authorization header
 # (PORTITOR_TCK_AUTHORIZATION), so the difference is what DCP costs.
 #
-# Usage: scripts/measure.sh [portitor-connector [portitor-identity]]
-#   Without paths it builds the release binaries. The identity binary
-#   defaults to the one next to the connector.
+# Usage: scripts/measure.sh [portitor-connector [portitor-identity [portitor-issuer]]]
+#   Without paths it builds the release binaries. The identity and issuer
+#   binaries default to the ones next to the connector.
 # Environment:
-#   TEST_ISSUER    the test-issuer binary (default: built with cargo)
 #   DSP_LOAD       the dsp-load binary (default: built with cargo, release)
 #   TCK_CONNECTOR  a connector built with --features tck (optional)
 #   LOAD_SECONDS   how long each load runs (default 20)
-# Needs curl, openssl and python3. Prints key=value lines; exits non-zero
+# Needs curl, jq, openssl and python3. Prints key=value lines; exits non-zero
 # if a step fails. Every wait is bounded.
 
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 if [[ $# -eq 0 ]]; then
-  cargo build --quiet --release -p portitor-connector -p portitor-identity
+  cargo build --quiet --release -p portitor-connector -p portitor-identity -p portitor-issuer
 fi
 CONNECTOR=${1:-${CARGO_TARGET_DIR:-target}/release/portitor-connector}
 IDENTITY=${2:-$(dirname "$CONNECTOR")/portitor-identity}
-if [[ -z ${TEST_ISSUER:-} ]]; then
-  cargo build --quiet -p portitor-identity --example test-issuer
-  TEST_ISSUER=${CARGO_TARGET_DIR:-target}/debug/examples/test-issuer
-fi
+ISSUER=${3:-$(dirname "$CONNECTOR")/portitor-issuer}
 if [[ -z ${DSP_LOAD:-} ]]; then
   cargo build --quiet --release -p portitor-connector --example dsp-load
   DSP_LOAD=${CARGO_TARGET_DIR:-target}/release/examples/dsp-load
@@ -48,7 +44,8 @@ fi
 LOAD_SECONDS=${LOAD_SECONDS:-20}
 CLIENTS=50
 
-AUTHORITY_SITE=127.0.0.1:18260
+ISSUER_ADDRESS=127.0.0.1:18260
+ISSUER_MANAGEMENT=127.0.0.1:18261
 PROVIDER=127.0.0.1:18280
 PROVIDER_IDENTITY=127.0.0.1:18282
 PROVIDER_IDENTITY_MANAGEMENT=127.0.0.1:18283
@@ -67,7 +64,7 @@ cleanup() {
 trap cleanup EXIT
 
 # shellcheck source=scripts/participants.sh
-source scripts/participants.sh # fail, wait_for, the authority, start_identity, deliver, start_connector
+source scripts/participants.sh # fail, wait_for, the issuer, start_identity, request_credentials, start_connector
 PROVIDER_ID=$(did_web "$PROVIDER_IDENTITY")
 CONSUMER_ID=$(did_web "$CONSUMER_IDENTITY")
 export RUST_LOG=warn
@@ -98,21 +95,26 @@ load() { # name clients seconds [VAR=value...]: runs dsp-load, prefixes its line
 
 # --- the participants ----------------------------------------------------
 
-publish_authority
+start_issuer
+ISSUER_PID=${PIDS[-1]}
 start_identity provider "$PROVIDER_ID" "$PROVIDER_IDENTITY" "$PROVIDER_IDENTITY_MANAGEMENT"
 start_identity consumer "$CONSUMER_ID" "$CONSUMER_IDENTITY" "$CONSUMER_IDENTITY_MANAGEMENT"
 CONSUMER_IDENTITY_PID=${PIDS[-1]}
 PROVIDER_IDENTITY_PID=${PIDS[-2]}
-wait_for "http://$AUTHORITY_SITE/.well-known/did.json"
+wait_for "http://$ISSUER_ADDRESS/.well-known/did.json"
 wait_for "http://$PROVIDER_IDENTITY/.well-known/did.json"
 wait_for "http://$CONSUMER_IDENTITY/.well-known/did.json"
-deliver provider "$PROVIDER_ID" "$PROVIDER_IDENTITY" "$PROVIDER_IDENTITY_MANAGEMENT" 1
-deliver consumer "$CONSUMER_ID" "$CONSUMER_IDENTITY" "$CONSUMER_IDENTITY_MANAGEMENT" 2
+echo "issuer_idle_rss_kb=$(rss_kb "$ISSUER_PID" VmRSS)"
+register "$PROVIDER_ID" "$(jq -nc --arg m "$MEMBER_OF" '{memberOf: $m}')"
+register "$CONSUMER_ID" "$(jq -nc --arg m "$MEMBER_OF" '{memberOf: $m}')"
+request_credentials provider "$PROVIDER_IDENTITY_MANAGEMENT" membership-vc20
+request_credentials consumer "$CONSUMER_IDENTITY_MANAGEMENT" membership-vc20
 
 # --- size, start, idle memory ------------------------------------------------
 
 echo "connector_binary_bytes=$(stat -c %s "$CONNECTOR")"
 echo "identity_binary_bytes=$(stat -c %s "$IDENTITY")"
+echo "issuer_binary_bytes=$(stat -c %s "$ISSUER")"
 start=$(now_ms)
 start_connector provider "$PROVIDER_ID" "$PROVIDER" "$PROVIDER_IDENTITY" \
   PORTITOR_DATASETS_FILE=tck/datasets.json
@@ -136,6 +138,8 @@ dcp_load dcp "$CLIENTS" "$LOAD_SECONDS"
 echo "connector_peak_rss_kb=$(rss_kb "$CONNECTOR_PID" VmHWM)"
 echo "identity_provider_peak_rss_kb=$(rss_kb "$PROVIDER_IDENTITY_PID" VmHWM)"
 echo "identity_consumer_peak_rss_kb=$(rss_kb "$CONSUMER_IDENTITY_PID" VmHWM)"
+# the issuer serves the status lists every verification reads
+echo "issuer_peak_rss_kb=$(rss_kb "$ISSUER_PID" VmHWM)"
 
 # --- without DCP (the tck build and its fixed header) ------------------------
 

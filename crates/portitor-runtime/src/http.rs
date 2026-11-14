@@ -333,6 +333,7 @@ impl HttpSender {
             .map_err(|e| e.to_string())?;
         let status = response.status();
         if !status.is_success() {
+            // `answered_status` reads the code back from this text
             return Err(format!("HTTP {status}"));
         }
         // read at most max_bytes: the counter-party controls the size
@@ -344,6 +345,21 @@ impl HttpSender {
             .to_bytes();
         Ok((parts.headers, body))
     }
+}
+
+/// The HTTP status code in an error of [`HttpSender`] when the
+/// counter-party answered with one that is not 2xx (the error text is
+/// then `HTTP 404 Not Found`, for example); `None` when no answer came
+/// (refused URL, connection error, timeout) or for any other text.
+#[must_use]
+pub fn answered_status(error: &str) -> Option<u16> {
+    let after = error.strip_prefix("HTTP ")?;
+    let code = after.get(..3)?;
+    let rest = after.get(3..)?;
+    if !(rest.is_empty() || rest.starts_with(' ')) {
+        return None;
+    }
+    code.parse().ok().filter(|code| (100..600).contains(code))
 }
 
 /// Whether a Portitor process may send to `url`. Other participants
@@ -397,22 +413,21 @@ pub fn bearer_token_in(headers: &hyper::HeaderMap) -> Option<&str> {
     bearer_token(text)
 }
 
-/// The HTTP status code of an error from [`HttpSender`] when the other
-/// party answered, but not with a 2xx status (the error text is `HTTP
-/// <status>`, written in `exchange`). `None` when there was no answer:
-/// a refused URL, a network error or a timeout. Callers use it to tell a
-/// definite refusal from an unknown outcome.
-#[must_use]
-pub fn answered_status(error: &str) -> Option<u16> {
-    let rest = error.strip_prefix("HTTP ")?;
-    let code = rest.get(..3)?;
-    code.parse().ok()
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn answered_status_is_read_back_from_the_error() {
+        let error = format!("HTTP {}", hyper::StatusCode::NOT_FOUND);
+        assert_eq!(answered_status(&error), Some(404));
+        assert_eq!(answered_status("HTTP 503"), Some(503));
+        assert_eq!(answered_status("no answer within 30s"), None);
+        assert_eq!(answered_status("HTTP 4040 x"), None);
+        assert_eq!(answered_status("HTTP abc"), None);
+        assert_eq!(answered_status("HTTP 999 x"), None);
+    }
 
     #[test]
     fn bearer_tokens_are_read_from_the_authorization_header() {

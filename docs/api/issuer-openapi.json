@@ -91,7 +91,7 @@
       ],
       "post": {
         "summary": "Credential Request API: a holder asks for credentials (DCP 6.4)",
-        "description": "The request is recorded RECEIVED and decided in the background: ISSUED if the caller's DID is a registered participant and every id is in the metadata, REJECTED otherwise. Issued credentials go, in one CredentialMessage, to the holder's Storage API (the CredentialService of its DID document), with a self-issued ID token of the issuer whose token claim carries back the access token of the request's token. A rejection is not delivered; the holder reads the request status.",
+        "description": "Only registered participants may call; anyone else gets 401, and nothing is recorded. The request is recorded RECEIVED and decided in the background: ISSUED if every id is in the metadata, the holder stays within the limit of active credentials per definition (PORTITOR_ISSUER_MAX_ACTIVE_PER_HOLDER) and the status list has room, REJECTED otherwise. Issued credentials go, in one CredentialMessage, to the holder's Storage API (the CredentialService of its DID document), with a self-issued ID token of the issuer whose token claim carries back the access token of the request's token. A rejection is not delivered; the holder reads the request status.",
         "operationId": "credentialRequest",
         "security": [
           {
@@ -128,7 +128,7 @@
             "description": "Not a valid CredentialRequestMessage, an empty holderPid or an empty credentials array"
           },
           "401": {
-            "description": "The caller was refused"
+            "description": "The caller was refused: not a registered participant, or its token is not valid"
           },
           "409": {
             "description": "This holder made a request with this holderPid before; nothing is issued again"
@@ -150,7 +150,7 @@
       ],
       "get": {
         "summary": "Credential Request Status API (DCP 6.8)",
-        "description": "Only the holder that made the request may read it; anyone else gets 404, as for an unknown id. The status is RECEIVED, then ISSUED or REJECTED, and never changes after that.",
+        "description": "Only the holder that made the request may read it; another registered participant gets 404, as for an unknown id, and a caller that is not registered gets 401. The status is RECEIVED, then ISSUED or REJECTED, and never changes after that.",
         "operationId": "requestStatus",
         "security": [
           {
@@ -183,7 +183,7 @@
             }
           },
           "401": {
-            "description": "The caller was refused"
+            "description": "The caller was refused: not a registered participant, or its token is not valid"
           },
           "404": {
             "description": "No such request for this caller"

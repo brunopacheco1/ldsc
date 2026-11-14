@@ -3,19 +3,21 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Sourced, not run: Portitor participants with DCP on this machine, as
-# scripts/demo.sh and scripts/measure.sh start them. Each participant is
-# a portitor-identity and (most often) a portitor-connector; the test-only
-# demo authority (the test-issuer example) gives each a
-# MembershipCredential.
+# scripts/demo.sh, scripts/measure.sh and scripts/dev-identities.sh start
+# them. Each participant is a portitor-identity and (most often) a
+# portitor-connector. A portitor-issuer, the data space's authority,
+# registers them; each identity then asks it for its credentials through
+# its own management API (DCP issuance, ADR 0018).
 #
 # The script that sources this file sets, before it calls a function:
 #   WORK         a scratch directory (keys, secrets, databases, logs)
 #   PIDS         an array; every process started here is added to it
-#   TEST_ISSUER  the test-issuer binary
+#   ISSUER       the portitor-issuer binary
 #   IDENTITY     the portitor-identity binary
 #   CONNECTOR    the portitor-connector binary
-#   AUTHORITY_SITE  host:port of the authority's web site
-# and gets AUTHORITY (the authority's DID) and LIST_URL (its status list).
+#   ISSUER_ADDRESS     host:port of the issuer's public server
+#   ISSUER_MANAGEMENT  host:port of the issuer's management API
+# and gets AUTHORITY (the issuer's DID).
 
 # a participant's DID is its identity's did:web DID ("%3A" is the colon)
 did_web() { # host:port
@@ -23,8 +25,11 @@ did_web() { # host:port
   echo "did:web:${address/:/%3A}"
 }
 
-AUTHORITY=$(did_web "$AUTHORITY_SITE")
-LIST_URL=http://$AUTHORITY_SITE/status/membership
+AUTHORITY=$(did_web "$ISSUER_ADDRESS")
+# what the issuer can issue (ids, types, the claims copied into credentialSubject)
+ISSUER_CREDENTIALS=examples/issuer-credentials.json
+# the claim the demo's member-directory offer checks (ADR 0019)
+MEMBER_OF="Portitor interop dataspace"
 
 fail() {
   printf 'FAILED: %s\n' "$*" >&2
@@ -56,16 +61,36 @@ PYTHON
   PIDS+=($!)
 }
 
-authority() { # command [flags]: test-only, its key is a test fixture
-  local subcommand=$1
-  shift # the rest: its flags
-  "$TEST_ISSUER" "$subcommand" --key crates/portitor-identity/tests/fixtures/test-only-demo-authority.pem \
-    --did "$AUTHORITY" "$@"
+start_issuer() { # the authority's portitor-issuer, with a new key and database
+  local dir=$WORK/issuer
+  mkdir -p "$dir"
+  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$dir/issuer-key.pem" 2>/dev/null
+  openssl rand -hex 32 >"$dir/management.key"
+  PORTITOR_PARTICIPANT_ID=$AUTHORITY \
+  PORTITOR_BIND=$ISSUER_ADDRESS \
+  PORTITOR_ISSUER_SERVICE_URL=http://$ISSUER_ADDRESS/issuer \
+  PORTITOR_ISSUER_KEY_FILE="$dir/issuer-key.pem" \
+  PORTITOR_ISSUER_CREDENTIALS_FILE=$ISSUER_CREDENTIALS \
+  PORTITOR_DB_FILE="$dir/issuer.db" \
+  PORTITOR_MANAGEMENT_BIND=$ISSUER_MANAGEMENT \
+  PORTITOR_MANAGEMENT_API_KEY_FILE="$dir/management.key" \
+  PORTITOR_ALLOW_HTTP_CALLBACKS=true \
+    "$ISSUER" >"$WORK/issuer.log" 2>&1 &
+  PIDS+=($!)
 }
 
-publish_authority() { # the authority's DID document and status list, served
-  authority init --site "$WORK/authority" --status-list-url "$LIST_URL"
-  serve authority "$AUTHORITY_SITE" "$WORK/authority"
+issuer_api() { # method path [body]: the issuer's management API
+  local method=$1 path=$2 body=${3-}
+  local args=(-sS --fail-with-body -X "$method" "http://$ISSUER_MANAGEMENT$path"
+    -H "authorization: Bearer $(cat "$WORK/issuer/management.key")")
+  if [[ $# -gt 2 ]]; then args+=(-H 'content-type: application/json' -d "$body"); fi
+  curl "${args[@]}"
+}
+
+register() { # did claims-json: the authority admits a participant
+  local did=$1 claims=$2
+  issuer_api POST /v1/participants "$(jq -nc --arg did "$did" --argjson claims "$claims" \
+    '{did: $did, claims: $claims}')" >/dev/null || fail "register $did"
 }
 
 start_identity() { # name did address management-address
@@ -89,13 +114,32 @@ start_identity() { # name did address management-address
   PIDS+=($!)
 }
 
-deliver() { # name did address management-address status-index
-  local name=$1 did=$2 address=$3 management_address=$4 status_index=$5
-  authority deliver --holder "$did" --profile vc20-bssl/jwt \
-    --status-list-url "$LIST_URL" --status-index "$status_index" \
-    --management "http://$management_address" --api-key-file "$WORK/$name/identity-management.key" \
-    --credential-service "http://$address/cs" --allow-http >/dev/null ||
-    fail "deliver the $name's credential"
+# request_credentials name management-address credential-id...: the
+# identity asks the issuer for the credentials through its own management
+# API, then waits until the issuer has delivered them. The issuer decides
+# in the background and delivers through its outbox, so the credentials
+# arrive a moment after the request.
+request_credentials() {
+  local name=$1 management_address=$2
+  shift 2 # the rest: the credential ids, from the issuer's metadata
+  local key ids holder_pid view status
+  key=$(cat "$WORK/$name/identity-management.key")
+  ids=$(printf '%s\n' "$@" | jq -R . | jq -sc .)
+  holder_pid=$(curl -sS --fail-with-body -X POST "http://$management_address/v1/credential-requests" \
+    -H "authorization: Bearer $key" -H 'content-type: application/json' \
+    -d "$(jq -nc --arg issuer "$AUTHORITY" --argjson ids "$ids" '{issuerDid: $issuer, credentialIds: $ids}')" |
+    jq -r '.holderPid') || fail "the $name's credential request"
+  for _ in $(seq 1 100); do
+    view=$(curl -sf "http://$management_address/v1/credential-requests/$holder_pid" \
+      -H "authorization: Bearer $key") || fail "read the $name's credential request"
+    status=$(jq -r '.status' <<<"$view")
+    case $status in
+      ISSUED) return 0 ;;
+      REJECTED) fail "the issuer rejected the $name's request: $view" ;;
+    esac
+    sleep 0.2
+  done
+  fail "the $name's credentials did not arrive: $view"
 }
 
 start_connector() { # name did address identity-address [more VAR=value settings]

@@ -848,8 +848,6 @@ name = "portitor-identity"
 version = "0.5.0"
 dependencies = [
  "axum",
- "http-body-util",
- "hyper",
  "portitor-dcp",
  "portitor-runtime",
  "rusqlite",

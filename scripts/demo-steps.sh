@@ -19,6 +19,10 @@
 # 5. Request a transfer under the agreement: STARTED, with a data address.
 # 6. Fetch the data with the token: it equals the expected file.
 # 7. Complete the transfer: COMPLETED, the token is gone and refused.
+# 8. A second credential type (ADR 0019): the processing-records offer
+#    checks the consumer's DataProcessorCredential: FINALIZED, a transfer
+#    STARTED. Once the issuer revokes that credential, a new transfer
+#    request under the same agreement is refused: TERMINATED.
 #
 # Environment:
 #   PROVIDER    the provider's base URL, as the consumer reaches it
@@ -30,11 +34,14 @@
 #   STS_SECRET_FILE  the file holding the consumer's STS client secret
 #   CONSUMER_ID, PROVIDER_ID  the two participants' DIDs
 #   EXPECTED    the file the provider serves for air-quality
+#   ISSUER_MANAGEMENT  the issuer's management API base URL
+#   ISSUER_KEY_FILE    the file holding the issuer's management API key
 
 set -euo pipefail
 
 : "${PROVIDER:?}" "${MANAGEMENT:?}" "${KEY_FILE:?}" "${EXPECTED:?}"
 : "${STS:?}" "${STS_SECRET_FILE:?}" "${CONSUMER_ID:?}" "${PROVIDER_ID:?}"
+: "${ISSUER_MANAGEMENT:?}" "${ISSUER_KEY_FILE:?}"
 HERE=${HERE:-$PROVIDER}
 DSP=dsp/2025-1
 # what the provider may read from the consumer's credential service (the
@@ -179,4 +186,39 @@ DONE=$(until_state "/v1/transfers/$TPID" 'COMPLETED|TERMINATED')
 STATUS=$(curl -s -o /dev/null -w '%{http_code}' "$ENDPOINT" -H "authorization: Bearer $TOKEN")
 [[ $STATUS == 401 ]] || fail "after completion the data plane answered $STATUS, not 401"
 
-step "Done: the consumer authenticated with DCP, a contract agreed, changed terms refused, credential claims checked, data transferred and the transfer completed"
+transfer() { # agreement -> prints the transfer once STARTED or TERMINATED
+  local agreement=$1 pid
+  pid=$(api POST /v1/transfers "$(jq -nc --arg a "$agreement" '{agreementId: $a}')" |
+    jq -r '.consumerPid') || fail "request transfer"
+  until_state "/v1/transfers/$pid" 'STARTED|TERMINATED'
+}
+
+issuer_api() { # method path: the issuer's management API
+  curl -sS --fail-with-body -X "$1" "$ISSUER_MANAGEMENT$2" \
+    -H "authorization: Bearer $(cat "$ISSUER_KEY_FILE")"
+}
+
+step "Negotiate the processing-records offer: the provider checks the consumer's DataProcessorCredential"
+PROCESSING=$(jq -c '.dataset[] | select(.["@id"] == "processing-records") | .hasPolicy[0]' <<<"$CATALOG")
+[[ -n $PROCESSING ]] || fail "no processing-records offer in the catalog"
+VIEW=$(negotiate "$PROCESSING" processing-records)
+jq '{state, constraint: .agreement.permission[0].constraint}' <<<"$VIEW"
+[[ $(jq -r '.state' <<<"$VIEW") == FINALIZED ]] || fail "expected FINALIZED: $VIEW"
+PROCESSING_AGREEMENT=$(jq -r '.agreement["@id"]' <<<"$VIEW")
+TRANSFER=$(transfer "$PROCESSING_AGREEMENT")
+[[ $(jq -r '.state' <<<"$TRANSFER") == STARTED ]] || fail "expected STARTED: $TRANSFER"
+echo "transfer $(jq -r '.consumerPid' <<<"$TRANSFER") STARTED"
+
+step "The issuer revokes the consumer's DataProcessorCredential: a new transfer is refused"
+CREDENTIAL=$(issuer_api GET "/v1/credentials?holder=$(jq -rn --arg d "$CONSUMER_ID" '$d | @uri')" |
+  jq -r '.[] | select(.credentialType == "DataProcessorCredential") | .id') ||
+  fail "list the consumer's credentials at the issuer"
+[[ -n $CREDENTIAL ]] || fail "the issuer has no DataProcessorCredential for $CONSUMER_ID"
+issuer_api POST "/v1/credentials/$(jq -rn --arg c "$CREDENTIAL" '$c | @uri')/revoke" >/dev/null ||
+  fail "revoke $CREDENTIAL"
+echo "revoked $CREDENTIAL"
+TRANSFER=$(transfer "$PROCESSING_AGREEMENT")
+jq '{state}' <<<"$TRANSFER"
+[[ $(jq -r '.state' <<<"$TRANSFER") == TERMINATED ]] || fail "expected TERMINATED: $TRANSFER"
+
+step "Done: the consumer authenticated with DCP, a contract agreed, changed terms refused, credential claims checked, data transferred, the transfer completed, and a revoked credential refused"

@@ -27,6 +27,10 @@ pub const MEDIA_TYPE: &str = "application/vc+jwt";
 #[derive(Debug, Default)]
 pub struct StatusLists {
     signed: Mutex<Signed>,
+    /// Held for a whole [`refresh`] (read the store, sign, keep): two
+    /// revocations at once could otherwise each sign a list without the
+    /// other's bit, and the older one be kept last.
+    refreshing: Mutex<()>,
 }
 
 #[derive(Debug, Default)]
@@ -81,11 +85,18 @@ pub(crate) fn sign_all(issuer: &Issuer) -> Result<(), String> {
 }
 
 /// Signs the list of `profile` again, from the revoked credentials in
-/// the store.
+/// the store. One refresh at a time, so the list kept last always has
+/// every revocation stored before it started.
 ///
 /// # Errors
 /// The store or signing fails.
 pub(crate) fn refresh(issuer: &Issuer, profile: Profile) -> Result<(), String> {
+    // no `await` while it is held; a panic while held left no half state
+    let _one_at_a_time = issuer
+        .status_lists
+        .refreshing
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     let revoked = issuer
         .store
         .revoked_indexes(profile)

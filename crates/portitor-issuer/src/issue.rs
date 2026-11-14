@@ -3,13 +3,18 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Deciding a credential request and issuing it (ADR 0018, "Who gets a
-//! credential"):
+//! credential", amended during the 0.6 review):
 //!
-//! - a request from a DID the authority has not registered ends
-//!   `REJECTED`;
+//! - only registered participants get this far: the issuer service
+//!   answers 401 to anyone else (`requests`); a participant deleted after
+//!   its request was taken ends `REJECTED`;
 //! - a request for an id that is not in the issuer metadata ends
 //!   `REJECTED` (DCP 6.4: each id "MUST be one of the `id` values" of the
 //!   metadata);
+//! - a request that would give the holder more than
+//!   `PORTITOR_ISSUER_MAX_ACTIVE_PER_HOLDER` credentials of one
+//!   definition that are neither revoked nor expired ends `REJECTED`, and
+//!   so does one whose status list is full;
 //! - otherwise every asked credential is signed, the request ends
 //!   `ISSUED`, and one `CredentialMessage` with all of them goes into the
 //!   outbox (DCP 6.5: the status covers the whole request).
@@ -29,14 +34,16 @@ use serde_json::{Map, Value};
 use crate::Issuer;
 use crate::definitions::Definition;
 use crate::status_lists;
-use crate::store::{CredentialRequest, IssuedCredential, Participant};
+use crate::store::{
+    CredentialRequest, IssueOutcome, IssueRules, IssuedCredential, Participant, Planned,
+};
 
 /// Seconds in a day.
 const DAY: u64 = 86_400;
 
 /// Decides the request `issuer_pid` if it is still `RECEIVED`, then wakes
 /// the outbox. Errors are logged; the request then stays `RECEIVED` and
-/// is decided again at the next start.
+/// the outbox decides it again on its next round ([`decide_waiting`]).
 pub fn decide(issuer: &Issuer, issuer_pid: &str) {
     match try_decide(issuer, issuer_pid) {
         Ok(Outcome::Issued(count)) => {
@@ -51,7 +58,8 @@ pub fn decide(issuer: &Issuer, issuer_pid: &str) {
     }
 }
 
-/// Decides every request still `RECEIVED` (after a restart).
+/// Decides every request still `RECEIVED`: after a restart, and on each
+/// round of the outbox, for a decision that failed.
 pub fn decide_waiting(issuer: &Issuer) {
     match issuer.store.received_requests() {
         Ok(waiting) => {
@@ -77,47 +85,74 @@ fn try_decide(issuer: &Issuer, issuer_pid: &str) -> Result<Outcome, String> {
     if request.status != RequestStatus::Received {
         return Ok(Outcome::Unchanged);
     }
-    let participant = store
+    let Some(participant) = store
         .participant(&request.holder_did)
-        .map_err(|e| e.to_string())?;
-    let chosen = participant
-        .as_ref()
-        .ok_or_else(|| "the holder is not a registered participant".to_owned())
-        .and_then(|participant| {
-            asked_definitions(&issuer.definitions, &request.credential_ids)
-                .map(|definitions| (participant, definitions))
-        });
-    let (participant, definitions) = match chosen {
-        Ok(found) => found,
-        Err(reason) => return reject(issuer, issuer_pid, reason),
-    };
-    let mut signed = Vec::new();
-    let mut records = Vec::new();
-    for definition in definitions {
-        match sign_one(issuer, &request, participant, definition)? {
-            Some((credential, record)) => {
-                signed.push(credential);
-                records.push(record);
-            }
-            None => return reject(issuer, issuer_pid, "a status list is full".to_owned()),
-        }
-    }
-    let count = signed.len();
-    let message = credential_message(issuer_pid, &request.holder_pid, signed);
-    let json = serde_json::to_string(&message).map_err(|e| e.to_string())?;
-    if store
-        .issue(issuer_pid, &records, &json, now_secs())
         .map_err(|e| e.to_string())?
-    {
-        Ok(Outcome::Issued(count))
-    } else {
-        Ok(Outcome::Unchanged)
+    else {
+        return reject(issuer, issuer_pid, "the holder is no longer registered");
+    };
+    let definitions = match asked_definitions(&issuer.definitions, &request.credential_ids) {
+        Ok(definitions) => definitions,
+        Err(reason) => return reject(issuer, issuer_pid, &reason),
+    };
+    let mut planned = Vec::new();
+    for definition in &definitions {
+        planned.push(Planned {
+            definition_id: definition.id.clone(),
+            profile: definition.profile,
+        });
+    }
+    let rules = IssueRules {
+        max_active_per_holder: issuer.max_active_per_holder,
+        now: now_secs(),
+    };
+    // called by the store once the positions are chosen, inside its
+    // transaction
+    let mut sign =
+        |positions: &[u64]| sign_all(issuer, &request, &participant, &definitions, positions);
+    let outcome = store
+        .issue(issuer_pid, &planned, rules, &mut sign)
+        .map_err(|e| e.to_string())?;
+    match outcome {
+        IssueOutcome::Issued => Ok(Outcome::Issued(planned.len())),
+        IssueOutcome::NotReceived => Ok(Outcome::Unchanged),
+        IssueOutcome::LimitReached(definition_id) => reject(
+            issuer,
+            issuer_pid,
+            &format!("the holder has the most active {definition_id} credentials allowed"),
+        ),
+        IssueOutcome::ListFull(profile) => reject(
+            issuer,
+            issuer_pid,
+            &format!("the {} status list is full", profile.alias()),
+        ),
     }
 }
 
-fn reject(issuer: &Issuer, issuer_pid: &str, reason: String) -> Result<Outcome, String> {
+/// Signs one credential per definition, at the given status list
+/// positions, and the `CredentialMessage` that carries them all.
+fn sign_all(
+    issuer: &Issuer,
+    request: &CredentialRequest,
+    participant: &Participant,
+    definitions: &[&Definition],
+    positions: &[u64],
+) -> Result<(Vec<IssuedCredential>, String), String> {
+    let mut signed = Vec::new();
+    let mut records = Vec::new();
+    for (definition, position) in definitions.iter().zip(positions) {
+        let (credential, record) = sign_one(issuer, request, participant, definition, *position)?;
+        signed.push(credential);
+        records.push(record);
+    }
+    let message = credential_message(&request.issuer_pid, &request.holder_pid, signed);
+    let json = serde_json::to_string(&message).map_err(|e| e.to_string())?;
+    Ok((records, json))
+}
+
+fn reject(issuer: &Issuer, issuer_pid: &str, reason: &str) -> Result<Outcome, String> {
     if issuer.store.reject(issuer_pid).map_err(|e| e.to_string())? {
-        Ok(Outcome::Rejected(reason))
+        Ok(Outcome::Rejected(reason.to_owned()))
     } else {
         Ok(Outcome::Unchanged)
     }
@@ -156,21 +191,15 @@ pub fn subject_claims(participant: &Participant, definition: &Definition) -> Map
     claims
 }
 
-/// Signs one credential of `definition` for the request. `None` when the
-/// profile's status list is full.
+/// Signs one credential of `definition` for the request, at position
+/// `index` of its profile's status list.
 fn sign_one(
     issuer: &Issuer,
     request: &CredentialRequest,
     participant: &Participant,
     definition: &Definition,
-) -> Result<Option<(Issued, IssuedCredential)>, String> {
-    let Some(index) = issuer
-        .store
-        .allocate_status_index(definition.profile)
-        .map_err(|e| e.to_string())?
-    else {
-        return Ok(None);
-    };
+    index: u64,
+) -> Result<(Issued, IssuedCredential), String> {
     let id = new_uuid();
     let now = now_secs();
     let until = now + definition.validity_days * DAY;
@@ -207,7 +236,7 @@ fn sign_one(
         profile: definition.profile,
         jwt,
     };
-    Ok(Some((delivered, record)))
+    Ok((delivered, record))
 }
 
 #[cfg(test)]

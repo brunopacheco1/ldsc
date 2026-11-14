@@ -5,27 +5,32 @@
 #
 # The EDC interop test (interop/edc/compose.yaml, docs/TESTING.md): a
 # Portitor participant and an EDC v1.0.0-RC7 participant, both members of
-# a demo data space whose MembershipCredentials the test-issuer example
-# signs. Exits non-zero at the first failed check, then removes everything.
+# a data space whose authority runs portitor-issuer. Exits non-zero at the
+# first failed check, then removes everything.
 #
-#  1. The demo authority's site, the keys and secrets (interop/edc/run/).
-#  2. Docker Compose up; the EDC IdentityHub gets a participant and its
-#     MembershipCredential, the EDC control plane an asset and an offer.
-#  3. Portitor's identity receives its MembershipCredential the DCP way:
-#     a pending request, then a CredentialMessage to its Storage API.
+#  1. The keys and secrets (interop/edc/run/), and the key set of the
+#     tokens for the IdentityHub's Identity API.
+#  2. Docker Compose up; the EDC IdentityHub gets a participant, the EDC
+#     control plane an asset and an offer.
+#  3. The issuer registers both participants. Each identity asks the
+#     issuer for its MembershipCredential through its own API (DCP 6.4),
+#     and the issuer delivers it to its Storage API (DCP 6.5): the EDC
+#     IdentityHub through its Identity API (.../credentials/request),
+#     Portitor's identity through its management API
+#     (/v1/credential-requests).
 #  4. With Portitor's identity, the EDC provider's catalog: EDC checks
 #     Portitor's ID token and its credential (DCP presentation query).
 #  5. Portitor consumer, EDC provider: negotiation, PULL transfer, fetch.
 #  6. EDC consumer, Portitor provider: catalog, negotiation, PULL
 #     transfer, fetch through the EDC data plane.
-#  7. Revocation: once the authority revokes a participant's credential,
-#     the other refuses it (both ways).
+#  7. Revocation: once the issuer revokes a participant's credential
+#     (POST /v1/credentials/{id}/revoke), the other refuses it (both ways).
 #
 # Usage: scripts/edc-interop.sh [--no-build]
 #   --no-build  use the EDC images already built (docker compose --no-build)
 # Environment:
-#   PORTITOR_IMAGE, PORTITOR_IDENTITY_IMAGE  Portitor images (compose.yaml)
-#   TEST_ISSUER  the test-issuer binary (default: built with cargo)
+#   PORTITOR_IMAGE, PORTITOR_IDENTITY_IMAGE, PORTITOR_ISSUER_IMAGE
+#                Portitor images (compose.yaml)
 #   LOGS=FILE    on failure, write every container's whole log there
 #   KEEP=1       leave the containers running, and interop/edc/run/, at the end
 # Needs docker with the compose plugin, curl, jq and openssl.
@@ -40,13 +45,11 @@ UP_FLAGS=(--build)
 if [[ ${1:-} == --no-build ]]; then UP_FLAGS=(--no-build); fi
 
 # who is who
-AUTHORITY=did:web:authority
-LIST_URL=http://authority/status/membership
+AUTHORITY=did:web:issuer%3A8070
+CREDENTIAL_ID=membership-vc20 # config/issuer-credentials.json
 PORTITOR_DID=did:web:portitor-identity%3A8090
 EDC_DID=did:web:edc-identityhub%3A7083:edc
 EDC_CONTEXT=edc
-PORTITOR_INDEX=1 # each holder's position in the status list
-EDC_INDEX=2
 SCOPE=org.eclipse.dspace.dcp.vc.type:MembershipCredential:read
 DSP=dsp/2025-1
 EDC_PROTOCOL=dataspace-protocol-http:2025-1
@@ -55,7 +58,7 @@ CONTENT_TYPE_JSON='content-type: application/json'
 STATE_PATH='.state'
 
 # how this script reaches them
-AUTHORITY_SITE=$RUN/authority
+ISSUER_MANAGEMENT=http://127.0.0.1:18371
 IDENTITY=http://127.0.0.1:18190
 IDENTITY_MANAGEMENT=http://127.0.0.1:18191
 CONNECTOR=http://127.0.0.1:18080
@@ -92,30 +95,63 @@ wait_up() { # url what: until it answers HTTP at all (EDC answers 404 on /)
   fail "$what did not answer"
 }
 
-# --- 1. keys, secrets and the authority's site ----------------------------
+# --- 1. keys and secrets ----------------------------------------------------
 
-if [[ -z ${TEST_ISSUER:-} ]]; then
-  cargo build -q -p portitor-identity --example test-issuer
-  TEST_ISSUER=${CARGO_TARGET_DIR:-target}/debug/examples/test-issuer
-fi
-AUTHORITY_KEY=crates/portitor-identity/tests/fixtures/test-only-demo-authority.pem
-authority() { # command [flags]: the demo authority
-  local subcommand=$1
-  shift # the rest: its flags
-  "$TEST_ISSUER" "$subcommand" --key "$AUTHORITY_KEY" --did "$AUTHORITY" "$@"
+# The IdentityHub's Identity API (its "oauth2" variant) takes JWTs checked
+# against a key set (config/edc-identityhub.properties). This test signs
+# them itself with a test-only RSA key made for each run (RS256: openssl
+# writes that signature as it is), and serves the key set from
+# identity-api-jwks (compose.yaml).
+IDENTITY_API_KEY=$RUN/identity-api-key.pem
+IDENTITY_API_KID=edc-interop-admin-key
+
+base64url() { # stdin -> base64url without padding
+  openssl base64 -A | tr '+/' '-_' | tr -d '='
 }
 
-step "Write the demo authority's site, the keys and the secrets"
+hex_to_bytes() { # hex text on stdin -> bytes on stdout
+  local hex
+  hex=$(tr -d '\n')
+  # shellcheck disable=SC2059 # the hex digits become \x escapes on purpose
+  printf "$(sed 's/../\\x&/g' <<<"$hex")"
+}
+
+identity_api_key_set() { # writes the key and its JWKS
+  openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$IDENTITY_API_KEY" 2>/dev/null
+  local modulus
+  modulus=$(openssl rsa -in "$IDENTITY_API_KEY" -noout -modulus | cut -d= -f2 | hex_to_bytes | base64url)
+  mkdir -p "$RUN/identity-api"
+  jq -n --arg n "$modulus" --arg kid "$IDENTITY_API_KID" \
+    '{keys: [{kty: "RSA", n: $n, e: "AQAB", kid: $kid, alg: "RS256", use: "sig"}]}' \
+    >"$RUN/identity-api/jwks.json"
+}
+
+identity_api_token() { # scope: a five-minute token for the Identity API
+  local scope=$1 now header claims input signature
+  now=$(date +%s)
+  header=$(jq -nc --arg kid "$IDENTITY_API_KID" '{alg: "RS256", typ: "JWT", kid: $kid}')
+  claims=$(jq -nc --arg scope "$scope" --argjson now "$now" --arg jti "$(openssl rand -hex 16)" \
+    '{iss: "edc-interop-admin", sub: "admin", scope: $scope, jti: $jti,
+      iat: $now, nbf: $now, exp: ($now + 300)}')
+  input="$(printf '%s' "$header" | base64url).$(printf '%s' "$claims" | base64url)"
+  signature=$(printf '%s' "$input" | openssl dgst -sha256 -sign "$IDENTITY_API_KEY" | base64url)
+  echo "$input.$signature"
+}
+
+step "Write the keys, the secrets and the Identity API's key set"
 rm -rf "$RUN"
-mkdir -p "$RUN/portitor"
-authority init --site "$AUTHORITY_SITE" --status-list-url "$LIST_URL"
+mkdir -p "$RUN/portitor" "$RUN/issuer"
+identity_api_key_set
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
+  -out "$RUN/issuer/issuer-key.pem" 2>/dev/null
+openssl rand -hex 32 >"$RUN/issuer/management.key"
 openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
   -out "$RUN/portitor/identity-key.pem" 2>/dev/null
 openssl rand -hex 32 >"$RUN/portitor/identity-management.key"
 openssl rand -hex 32 >"$RUN/portitor/connector-management.key"
 openssl rand -hex 32 >"$RUN/portitor/sts-client-secret"
 # the Portitor images run as user 65532 and must read them
-chmod 644 "$RUN"/portitor/*
+chmod 644 "$RUN"/portitor/* "$RUN"/issuer/*
 chmod -R a+rX "$RUN"
 
 cleanup() {
@@ -136,6 +172,7 @@ trap cleanup EXIT
 
 step "Start the data space"
 "${COMPOSE[@]}" up -d --quiet-pull "${UP_FLAGS[@]}"
+wait_for "$ISSUER_MANAGEMENT/health" "Portitor issuer"
 wait_for "$IDENTITY/health" "Portitor identity"
 wait_for "$CONNECTOR/health" "Portitor connector"
 wait_up http://127.0.0.1:18281/ "EDC IdentityHub"
@@ -145,7 +182,7 @@ wait_up "$EDC_DATAPLANE/" "EDC data plane"
 edc_identity() { # method path [body]: the IdentityHub's Identity API, as admin
   local method=$1 path=$2 body=${3-}
   local token args
-  token=$(authority admin-token --scope identity-api:admin)
+  token=$(identity_api_token identity-api:admin)
   args=(-sS --fail-with-body -X "$method" "$EDC_IDENTITY_API$path" -H "authorization: Bearer $token")
   if [[ $# -gt 2 ]]; then args+=(-H "$CONTENT_TYPE_JSON" -d "$body"); fi
   curl "${args[@]}"
@@ -188,25 +225,6 @@ edc_identity POST /participants "$(jq -nc --arg did "$EDC_DID" --arg ctx "$EDC_C
 "${COMPOSE[@]}" run --rm -q fetch -sf "http://edc-identityhub:7083/$EDC_CONTEXT/did.json" |
   jq -e --arg did "$EDC_DID" '.id == $did' >/dev/null || fail "the EDC DID does not resolve"
 
-step "EDC IdentityHub: its MembershipCredential from the demo authority"
-NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-EDC_CREDENTIAL=$(authority issue --holder "$EDC_DID" --profile vc20-bssl/jwt \
-  --status-list-url "$LIST_URL" --status-index "$EDC_INDEX")
-# the Identity API stores the JWT as it is, next to its content in EDC's
-# own model, which it uses for queries
-edc_identity POST "/participants/$EDC_CONTEXT/credentials" "$(jq -nc \
-  --arg ctx "$EDC_CONTEXT" --arg jwt "$EDC_CREDENTIAL" --arg did "$EDC_DID" \
-  --arg issuer "$AUTHORITY" --arg now "$NOW" --arg list "$LIST_URL" --arg index "$EDC_INDEX" '{
-  id: "edc-membership", participantContextId: $ctx,
-  verifiableCredentialContainer: {rawVc: $jwt, format: "VC2_0_JOSE", credential: {
-    "@context": ["https://www.w3.org/ns/credentials/v2"],
-    type: ["VerifiableCredential", "MembershipCredential"],
-    issuer: {id: $issuer}, issuanceDate: $now, dataModelVersion: "V_2_0",
-    credentialSubject: [{id: $did}],
-    credentialStatus: [{id: "\($list)#\($index)", type: "BitstringStatusListEntry",
-      statusPurpose: "revocation", statusListIndex: $index, statusListCredential: $list}]}}}')" \
-  >/dev/null || fail "store the EDC participant's credential"
-
 step "EDC control plane: the data plane, an asset and an offer"
 # EDC 1.0 data planes speak the Data Plane Signaling API; each side
 # registers the other (no authorization: test-only, see runtimes/; the
@@ -236,17 +254,71 @@ edc_management POST /v4/contractdefinitions "$(jq -nc --argjson c "$CONTEXT" '{
   accessPolicyId: "use", contractPolicyId: "use", assetsSelector: []}')" >/dev/null ||
   fail "create the contract definition"
 
-# --- 3. Portitor's credential ---------------------------------------------
+# --- 3. the credentials, from the issuer -------------------------------------
 
-step "Portitor identity: its MembershipCredential, delivered the DCP way"
-authority deliver --holder "$PORTITOR_DID" --profile vc20-bssl/jwt \
-  --status-list-url "$LIST_URL" --status-index "$PORTITOR_INDEX" \
-  --management "$IDENTITY_MANAGEMENT" --api-key-file "$RUN/portitor/identity-management.key" \
-  --credential-service "$IDENTITY/cs" --allow-http >/dev/null ||
-  fail "deliver Portitor's credential"
-curl -sf "$IDENTITY_MANAGEMENT/v1/credentials" \
-  -H "authorization: Bearer $(cat "$RUN/portitor/identity-management.key")" |
-  jq -e 'length == 1' >/dev/null || fail "the identity does not hold one credential"
+issuer_api() { # method path [body]: the issuer's management API
+  local method=$1 path=$2 body=${3-}
+  local args=(-sS --fail-with-body -X "$method" "$ISSUER_MANAGEMENT$path"
+    -H "authorization: Bearer $(cat "$RUN/issuer/management.key")")
+  if [[ $# -gt 2 ]]; then args+=(-H "$CONTENT_TYPE_JSON" -d "$body"); fi
+  curl "${args[@]}"
+}
+
+step "Issuer: register both participants"
+for did in "$PORTITOR_DID" "$EDC_DID"; do
+  issuer_api POST /v1/participants "$(jq -nc --arg did "$did" \
+    '{did: $did, claims: {memberOf: "Portitor interop dataspace"}}')" >/dev/null ||
+    fail "register $did"
+done
+
+until_issued() { # what read-function: until its .status is ISSUED, at most 60 seconds
+  local what=$1 read=$2
+  local view status=
+  for _ in $(seq 1 60); do
+    view=$("$read") || fail "read the $what"
+    status=$(jq -r '.status' <<<"$view")
+    case $status in
+      ISSUED) return 0 ;;
+      REJECTED | ERROR | TERMINATED) fail "the $what ended $status: $view" ;;
+    esac
+    sleep 1
+  done
+  fail "the $what is still $status: $view"
+}
+
+step "EDC IdentityHub: asks the issuer for its MembershipCredential (Identity API, credentials/request)"
+# the IdentityHub sends the DCP CredentialRequestMessage with a token from
+# its STS, and accepts the issuer's delivery for that request only. Its
+# answer, 201, names the request in its Location header.
+LOCATION=$(curl -sS --fail-with-body -X POST -D - -o /dev/null \
+  "$EDC_IDENTITY_API/participants/$EDC_CONTEXT/credentials/request" \
+  -H "authorization: Bearer $(identity_api_token identity-api:admin)" -H "$CONTENT_TYPE_JSON" \
+  -d "$(jq -nc --arg issuer "$AUTHORITY" --arg id "$CREDENTIAL_ID" '{issuerDid: $issuer,
+    credentials: [{id: $id, type: "MembershipCredential", format: "vc20-bssl/jwt"}]}')" |
+  tr -d '\r' | awk 'tolower($1) == "location:" {print $2}') || fail "the EDC credential request"
+EDC_HOLDER_PID=${LOCATION##*/}
+[[ -n $EDC_HOLDER_PID ]] || fail "the IdentityHub gave no request id"
+edc_request() { edc_identity GET "/participants/$EDC_CONTEXT/credentials/request/$EDC_HOLDER_PID"; }
+until_issued "EDC credential request $EDC_HOLDER_PID" edc_request
+edc_identity GET "/participants/$EDC_CONTEXT/credentials?type=MembershipCredential" |
+  jq -e --arg issuer "$AUTHORITY" 'length == 1 and .[0].issuerId == $issuer' >/dev/null ||
+  fail "the IdentityHub does not hold the issuer's MembershipCredential"
+
+step "Portitor identity: asks the issuer for its MembershipCredential (management API)"
+identity_management() { # method path [body]: the Portitor identity's management API
+  local method=$1 path=$2 body=${3-}
+  local args=(-sS --fail-with-body -X "$method" "$IDENTITY_MANAGEMENT$path"
+    -H "authorization: Bearer $(cat "$RUN/portitor/identity-management.key")")
+  if [[ $# -gt 2 ]]; then args+=(-H "$CONTENT_TYPE_JSON" -d "$body"); fi
+  curl "${args[@]}"
+}
+PORTITOR_HOLDER_PID=$(identity_management POST /v1/credential-requests "$(jq -nc \
+  --arg issuer "$AUTHORITY" --arg id "$CREDENTIAL_ID" '{issuerDid: $issuer, credentialIds: [$id]}')" |
+  jq -r '.holderPid') || fail "Portitor's credential request"
+portitor_request() { identity_management GET "/v1/credential-requests/$PORTITOR_HOLDER_PID"; }
+until_issued "Portitor credential request $PORTITOR_HOLDER_PID" portitor_request
+identity_management GET /v1/credentials | jq -e 'length == 1' >/dev/null ||
+  fail "the identity does not hold one credential"
 
 # --- 4. EDC checks Portitor's identity --------------------------------------
 
@@ -378,20 +450,24 @@ echo "received $(wc -c <"$RUN/fetched-from-portitor") bytes, as published"
 
 # --- 7. revocation --------------------------------------------------------------
 
-step "The authority revokes Portitor's credential: EDC refuses Portitor"
-revoke() { # index
-  local index=$1
-  authority revoke --site "$AUTHORITY_SITE" --status-list-url "$LIST_URL" --status-index "$index"
-  chmod -R a+rX "$AUTHORITY_SITE"
+step "The issuer revokes Portitor's credential: EDC refuses Portitor"
+revoke() { # holder DID: the issuer revokes its credentials
+  local holder=$1 id
+  for id in $(issuer_api GET "/v1/credentials?holder=$(jq -rn --arg d "$holder" '$d | @uri')" |
+    jq -r '.[].id'); do
+    issuer_api POST "/v1/credentials/$(jq -rn --arg c "$id" '$c | @uri')/revoke" >/dev/null ||
+      fail "revoke $id"
+    echo "revoked $id"
+  done
   sleep 2 # EDC reads status lists again after a second (revocation.cache.validity)
 }
-revoke "$PORTITOR_INDEX"
+revoke "$PORTITOR_DID"
 STATUS=$(edc_catalog_for_portitor)
 [[ $STATUS == 401 ]] || fail "after the revocation EDC answered $STATUS, not 401"
 echo "EDC answered $STATUS"
 
-step "The authority revokes the EDC participant's credential: Portitor refuses EDC"
-revoke "$EDC_INDEX"
+step "The issuer revokes the EDC participant's credential: Portitor refuses EDC"
+revoke "$EDC_DID"
 VIEW=$(edc_negotiate)
 [[ $(jq -r "$STATE_PATH" <<<"$VIEW") == TERMINATED ]] || fail "expected TERMINATED: $VIEW"
 jq -r '.errorDetail' <<<"$VIEW" | grep -q 'code=401' || fail "not refused as unauthorized: $VIEW"
