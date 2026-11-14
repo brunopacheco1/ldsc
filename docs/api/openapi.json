@@ -1595,6 +1595,40 @@
         ]
       }
     },
+    "/data/{flowId}": {
+      "get": {
+        "tags": [
+          "Data plane"
+        ],
+        "summary": "The data of a started transfer",
+        "description": "Open route with its own token: the bearer token from the transfer's data address (DSP dataAddress, endpointProperties \"authorization\"). Valid while the transfer is STARTED and for PORTITOR_DATA_TOKEN_SECONDS after the start. Streams the source's 2xx answer with its Content-Type; the source URL is never shown.",
+        "operationId": "transferData",
+        "parameters": [
+          {
+            "name": "flowId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The data, streamed from the dataset's source"
+          },
+          "401": {
+            "description": "No token, a wrong or expired token, or an unknown flow"
+          },
+          "500": {
+            "description": "The store could not be read"
+          },
+          "502": {
+            "description": "The source did not answer with 2xx"
+          }
+        }
+      }
+    },
     "/health": {
       "get": {
         "tags": [

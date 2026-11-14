@@ -12,6 +12,17 @@ versions may change behaviour and configuration.
 
 ## [Unreleased]
 
+### Changed
+
+- ADR 0018 (issuer component, with its amendment from the 0.6 review) and
+  ADR 0019 (credential constraints) accepted by the maintainer.
+
+### Documentation
+
+- Four more C4 level 4 diagrams (transfer, DSP caller authentication with
+  DCP, issuance, presentation), and corrections from a review of the docs,
+  the website and the diagrams against the 0.6 code.
+
 ## [0.6.0] - 2026-11-14
 
 ### Added
@@ -235,7 +246,7 @@ versions may change behaviour and configuration.
   metadata). Management API on its own port: credential requests,
   credentials, offers (`docs/api/identity-management-openapi.json`).
   Credentials in SQLite. Settings in `DEPLOYING.md`, section 4.
-- The DCP TCK 1.2.1 credential service tests (presentation and holder
+- The DCP TCK v1.2.1 credential service tests (presentation and holder
   side of issuance, 54 tests) run in CI against `portitor-identity`.
 - `portitor-dcp`: presentations and access tokens a holder signs, PEM
   keys, JWK thumbprints, issuer metadata. Fuzz target `dcp_access_token`.
@@ -252,7 +263,7 @@ versions may change behaviour and configuration.
   document and its STS agree. New settings: `PORTITOR_STS_URL`,
   `PORTITOR_STS_CLIENT_ID`, `PORTITOR_STS_CLIENT_SECRET_FILE`,
   `PORTITOR_TRUSTED_ISSUERS`, `PORTITOR_DCP_SCOPES`.
-- The DCP TCK 1.2.1 verifier tests (22) run in CI against the connector,
+- The DCP TCK v1.2.1 verifier tests (22) run in CI against the connector,
   with `portitor-identity` as its identity.
 - `/.well-known/dspace-version` names the authentication: DCP 1.0, both
   profiles.

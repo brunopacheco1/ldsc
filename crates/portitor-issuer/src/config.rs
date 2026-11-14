@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! The issuer's settings, read from environment variables
-//! (`DEPLOYING.md`, "Issuer component"). The names follow the identity
+//! (`DEPLOYING.md`, section 7, "Run the issuer"). The names follow the identity
 //! component's.
 
 use std::ffi::OsString;
