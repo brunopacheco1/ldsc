@@ -80,6 +80,42 @@ Where the tests are:
   revoked one is still refused (DCP 5.4.3, step 8), and once the revoked
   one is deleted the consumer is admitted again. The
   SQLite store is tested on an in-memory database and on a real file.
+- **Dataset harvest** (connector, ADR 0020): `src/harvest/tests.rs`
+  runs harvests with fixed sources and the in-memory store: add, update,
+  unchanged snapshot, a rejected entry that keeps the previous good
+  version, a duplicate `@id`, withdrawal and return, a source that
+  fails, and the check again when the rules change (hide, show again).
+  `src/store/harvest.rs` tests the SQLite adapter (one transaction per
+  run, 100 jobs kept). `tests/end_to_end.rs`,
+  `a_withdrawn_dataset_keeps_its_transfers`: a dataset removed from the
+  file leaves the catalog and refuses new contract requests, while a
+  transfer under the agreement already made still gets its data.
+  `tests/management_api.rs` tests `GET /v1/harvest-jobs` (pages, newest
+  first) and one job with its errors.
+- **Bundle** (ADR 0005): `crates/portitor-dcp/tests/bundle_manifest_schema.rs`
+  checks examples and broken manifests against both
+  `docs/schemas/bundle-manifest.schema.json` and the Rust type.
+  `crates/portitor-issuer/tests/bundle.rs` builds and signs a bundle
+  (`bundle build`), refuses RDF/XML and paths that leave the folder,
+  serves built bundles, and lists the bundle key in the DID document.
+  `crates/portitor-connector/tests/bundle_source.rs` loads the bundle an
+  issuer on a local port serves: the cache is used when the authority is
+  down, an error without a cache, a key the DID document does not list or
+  another authority or version is refused, and a folder is checked like a
+  download.
+- **SHACL engine** (`crates/portitor-shacl`): `tests/w3c.rs` runs the
+  W3C SHACL core test cases for the parts the engine implements (copied
+  unchanged into `tests/w3c`), comparing every result;
+  `tests/refusal.rs` checks that each SHACL term the engine does not
+  implement is refused, naming the term and the shape;
+  `tests/engine.rs` covers constraints, paths, targets and JSON-LD to
+  RDF; `tests/healthdcat.rs` loads the HealthDCAT-AP release 8 and
+  DCAT-AP 3.0.0 shapes for each access level, checks valid and invalid
+  samples (Turtle and DSP JSON-LD), and compares with the EU ITB
+  validator's results on the 0.6 spike samples. Run one with
+  `cargo test -p portitor-shacl --test healthdcat`.
+- **SHACL in the connector** (dataset check and message guard): see the
+  tests of the SHACL adapters. <!-- verify with D -->
 - `tests/dsp_catalog.rs` also checks that every path in
   [docs/api/openapi.json](api/openapi.json) is served.
 - `tests/management_api.rs` tests the management API and checks that
@@ -373,12 +409,44 @@ cargo +nightly fuzz run dsp_negotiation -- -max_total_time=60
 
 Targets (`fuzz/fuzz_targets`): `dsp_messages`, `dsp_negotiation`, `dsp_transfer`,
 `odrl_policy`, `dcp_token_parse`, `dcp_token_validate`, `dcp_messages`,
-`dcp_status_list`, `dcp_credentials`, `dcp_access_token`, `dcp_did_document`. A new parser of untrusted input
+`dcp_status_list`, `dcp_credentials`, `dcp_access_token`, `dcp_did_document`,
+`bundle_manifest` (the bundle manifest and its signature), `shacl_load`
+(Turtle shapes loaded by `portitor-shacl`) and `shacl_jsonld` (JSON-LD to
+RDF with local contexts). A new parser of untrusted input
 gets a target. In CI, ClusterFuzzLite fuzzes every pull request briefly
 (`cflite_pr.yml`) and runs longer each week (`cflite_batch.yml`). A crash
 is a bug: add the input that caused it as a regression test.
 
 ## Manual tests
+
+### HealthDCAT-AP demo bundle
+
+`examples/bundle/healthdcat-ap-r8` holds the sources of a demo schema and
+vocabulary bundle (ADR 0005): the HealthDCAT-AP release 8 shapes for each
+access level, the DCAT-AP 3.0.0 shapes, reduced code lists and a JSON-LD
+context. Build and sign it with a new demo bundle key:
+
+```sh
+scripts/demo-bundle.sh target/demo-bundle
+# AUTHORITY, AUTHORITY_URL and VERSION change the defaults, which match
+# the issuer of scripts/demo.sh (did:web:127.0.0.1%3A18060)
+```
+
+It writes `target/demo-bundle/bundles/<version>/` for
+`PORTITOR_ISSUER_BUNDLE_DIR` and the public key
+`target/demo-bundle/bundle-key.jwk` for `PORTITOR_ISSUER_BUNDLE_KEY_FILE`.
+A connector then needs `PORTITOR_BUNDLE_URL=<issuer>/bundles/<version>/`,
+`PORTITOR_BUNDLE_VERSION` and `PORTITOR_BUNDLE_AUTHORITY`.
+`examples/healthdcat-datasets.json` has a public and a restricted dataset
+that pass the shapes and one, `bed-occupancy`, that does not: its
+`shacl` error shows in `GET /v1/harvest-jobs`. The demos do not use the
+bundle yet.
+
+To make the reduced code lists again, convert the sources that
+`scripts/reduce_code_lists.py` lists to N-Triples, then run it (its
+header says how).
+
+### Without an identity component
 
 A connector needs an identity component and a credential for every DSP
 request (ADR 0016), which is more than a quick test wants. The `tck`

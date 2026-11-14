@@ -14,20 +14,107 @@ versions may change behaviour and configuration.
 
 ### Added
 
+- Dataset harvest into a read copy (ADR 0020). The connector reads its
+  datasets from a source, today the datasets file
+  (`PORTITOR_DATASETS_FILE`, same format), at start and every
+  `PORTITOR_HARVEST_INTERVAL_SECONDS` (default 3600; `0`: only at start),
+  one run at a time. Each dataset is checked on its own (JSON, DSP
+  `Dataset` form, catalog rules, ODRL constraints, `portitor:source`); a
+  dataset that passes is added or updated, one that fails is rejected and
+  its previous good version stays. A dataset no longer in the source is
+  withdrawn: out of the catalog, new contract requests refused, transfers
+  under agreements already made still work. When the rules change, stored
+  datasets are checked again at start and those that fail are hidden.
+  Each run commits in one transaction; the last 100 runs are kept.
+- Management API: `GET /v1/harvest-jobs` and `GET /v1/harvest-jobs/{id}`
+  (read only): each run's trigger, outcome, counts, summary and the
+  error of each rejected dataset.
+- `portitor-shacl`, our own SHACL Core subset on Oxigraph's RDF crates
+  (ADR 0005): `sh:class`, `sh:datatype`, `sh:nodeKind`, `sh:minCount`,
+  `sh:maxCount`, `sh:hasValue`, `sh:node`, `sh:or`, `sh:pattern`,
+  `sh:property`; class and node targets; property, inverse, sequence and
+  alternative paths. Any other SHACL term is refused when shapes are
+  loaded; `sh:extends` and `sh:shape` are ignored with a warning. JSON-LD
+  to RDF with contexts from a given map only. Tested with 42 W3C SHACL
+  core tests, the HealthDCAT-AP release 8 and DCAT-AP 3.0.0 shapes, and
+  against the EU ITB validator on the 0.6 spike samples.
+- Signed schema and vocabulary bundle (ADR 0005, "Bundle format"):
+  `portitor-issuer bundle build` builds and signs a bundle offline
+  (`manifest.json`, compact JWS ES256 `manifest.jws`, typ
+  `portitor-bundle+jws`); JSON Schema in
+  `docs/schemas/bundle-manifest.schema.json`. The issuer lists the bundle
+  key as `<did>#bundle-key` (`PORTITOR_ISSUER_BUNDLE_KEY_FILE`) and serves
+  built bundles read only at `GET /bundles/{version}/{path}`
+  (`PORTITOR_ISSUER_BUNDLE_DIR`).
+- The connector loads a pinned bundle (`PORTITOR_BUNDLE_URL` or
+  `PORTITOR_BUNDLE_DIR`, `PORTITOR_BUNDLE_VERSION`,
+  `PORTITOR_BUNDLE_AUTHORITY`), verifies it against the authority's DID
+  document and every digest, and keeps it in a disk cache
+  (`PORTITOR_BUNDLE_CACHE_DIR`) used only when the source cannot be
+  reached.
+- With a bundle, each harvested dataset is checked against the SHACL
+  shapes for its `dct:accessRights` level, and DSP messages against the
+  message shapes (SHACL `MessageGuard`); datasets that pass carry
+  `dct:conformsTo`, and the catalog `@context` gets the prefixes of the
+  bundle's contexts. <!-- verify with D -->
+- Demo bundle sources for HealthDCAT-AP release 8
+  (`examples/bundle/healthdcat-ap-r8`: release 8 and DCAT-AP 3.0.0
+  shapes, reduced code lists, a JSON-LD context),
+  `scripts/demo-bundle.sh` to build and sign it,
+  `scripts/reduce_code_lists.py` to make the reduced code lists, and
+  `examples/healthdcat-datasets.json`.
+- New fuzz targets: `shacl_load`, `shacl_jsonld`, `bundle_manifest`.
 - ADR 0020 (datasets harvested into a read copy) proposed, and ADR 0005
   updated with the bundle format for 0.7; ROADMAP 0.7 rewritten for the
-  approved plan. New empty crate `portitor-shacl`.
+  approved plan.
 
 ### Changed
 
+- **Behaviour change:** a datasets file that cannot be read, or a dataset
+  that breaks a rule (including a credential constraint on a type not in
+  `PORTITOR_POLICY_CREDENTIALS`, or a `portitor:source` that is not an
+  HTTP(S) URL), no longer stops the connector at start. The dataset is
+  rejected and logged, and the connector starts without it. To keep a
+  strict start, check `GET /v1/harvest-jobs` in a start-up probe.
+- Datasets live in the connector's SQLite database (migration to schema
+  version 7: read copy, harvest jobs and errors); the catalog and the
+  data plane read the copy in memory, replaced as a whole after a run
+  that changed it.
+- The log warning about a dataset without `portitor:source` now comes
+  from the harvest (`harvest: dataset has no portitor:source; its
+  transfers will be refused`); the 0.6 start warnings are gone.
 - ADR 0018 (issuer component, with its amendment from the 0.6 review) and
   ADR 0019 (credential constraints) accepted by the maintainer.
+
+### Security
+
+- The bundle is signed with its own bundle key, separate from the
+  issuer's credential key; the issuer refuses to start if they are the
+  same, and needs only the public key. The connector accepts only the
+  pinned version, signed by the key the authority's `did:web` document
+  lists under `assertionMethod`, with every file's SHA-256 matching; a
+  bundle that fails a check stops the start and is never replaced by the
+  cache. Limits: manifest 1 MiB, 64 MiB per file, 256 MiB in all, 120 s
+  per download.
+- No JSON-LD context is fetched from the network: `portitor-shacl` reads
+  contexts only from a map the caller fills (the bundle's and the DSP
+  contexts). No Portitor binary parses RDF/XML: `bundle build` refuses it,
+  and code lists travel as N-Triples.
+- `portitor-shacl` refuses shapes that use a SHACL term it does not
+  implement, so nothing passes silently.
 
 ### Documentation
 
 - Four more C4 level 4 diagrams (transfer, DSP caller authentication with
   DCP, issuance, presentation), and corrections from a review of the docs,
   the website and the diagrams against the 0.6 code.
+- Two new C4 level 4 diagrams (dataset harvest; bundle publish and load);
+  C1, C2 and C3 diagrams show the harvest, the read copy, the shape
+  source, the SHACL checks and the issuer's bundles.
+- DEPLOYING: dataset harvest, schema and vocabulary bundle (connector and
+  issuer), new settings and log messages, upgrade note "From 0.6 to 0.7".
+  README, ARCHITECTURE, TESTING, SECURITY-ASSURANCE, RUST-IDIOMS and the
+  website updated for 0.7.
 
 ## [0.6.0] - 2026-11-14
 
