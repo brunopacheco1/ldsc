@@ -62,7 +62,7 @@ impl NegotiationStore for &Store {
 
 struct Catalog;
 
-impl DatasetStore for Catalog {
+impl CatalogDatasets for Catalog {
     fn all(&self) -> Vec<Dataset> {
         self.get("d1").into_iter().collect()
     }
@@ -90,6 +90,7 @@ impl DatasetStore for Catalog {
                 kind: DistributionType,
                 format: "HttpData-PULL".to_owned(),
                 access_service: "svc".to_owned(),
+                metadata: crate::Metadata::default(),
             }],
             metadata: crate::Metadata::default(),
         })

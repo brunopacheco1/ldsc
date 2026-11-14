@@ -76,9 +76,26 @@ fn assert_valid(path: &str, body: &Value) {
     assert!(errors.is_empty(), "{path}: {errors:?}\n{body:#}");
 }
 
-fn tck_datasets() -> Vec<portitor_dsp::Dataset> {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tck/datasets.json");
-    portitor_connector::read_datasets(std::path::Path::new(path)).unwrap()
+/// The TCK's datasets file.
+const TCK_DATASETS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tck/datasets.json");
+
+/// The TCK's datasets, as JSON entries.
+fn tck_entries() -> Vec<Value> {
+    serde_json::from_slice(&std::fs::read(TCK_DATASETS).unwrap()).unwrap()
+}
+
+/// A provider configuration that harvests `datasets_file`.
+fn provider_config(datasets_file: Option<&str>) -> portitor_connector::Config {
+    portitor_connector::Config {
+        participant_id: "did:web:provider.example".into(),
+        public_url: "https://provider.example".into(),
+        datasets_file: datasets_file.map(Into::into),
+        harvest_interval_seconds: 0,
+        allow_http_callbacks: false,
+        db_file: "unused.db".into(),
+        data_token_seconds: 3_600,
+        credential_types: portitor_dsp::policy::CredentialTypes::default(),
+    }
 }
 
 /// The catalog tests never send anything.
@@ -102,20 +119,7 @@ fn ports() -> portitor_connector::Ports {
 }
 
 fn app() -> axum::Router {
-    portitor_connector::router(
-        &portitor_connector::Config {
-            participant_id: "did:web:provider.example".into(),
-            public_url: "https://provider.example".into(),
-            datasets: tck_datasets(),
-            allow_http_callbacks: false,
-            db_file: "unused.db".into(),
-            sources: std::collections::BTreeMap::new(),
-            data_token_seconds: 3_600,
-            credential_types: portitor_dsp::policy::CredentialTypes::default(),
-        },
-        ports(),
-    )
-    .unwrap()
+    portitor_connector::router(&provider_config(Some(TCK_DATASETS)), ports()).unwrap()
 }
 
 async fn call(req: Request<Body>) -> (StatusCode, Value) {
@@ -327,21 +331,11 @@ async fn ids_are_stable_and_distributions_point_to_the_service() {
 #[tokio::test]
 async fn example_datasets_file_is_valid() {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/datasets.json");
-    let datasets = portitor_connector::read_datasets(std::path::Path::new(path)).unwrap();
-    let app = portitor_connector::router(
-        &portitor_connector::Config {
-            participant_id: "did:web:provider.example".into(),
-            public_url: "https://provider.example/".into(),
-            datasets,
-            allow_http_callbacks: false,
-            db_file: "unused.db".into(),
-            sources: std::collections::BTreeMap::new(),
-            data_token_seconds: 3_600,
-            credential_types: portitor_dsp::policy::CredentialTypes::default(),
-        },
-        ports(),
-    )
-    .unwrap();
+    let mut config = provider_config(Some(path));
+    config.public_url = "https://provider.example/".into();
+    let (app, negotiator) = portitor_connector::build(&config, ports()).unwrap();
+    let jobs = negotiator.harvest_jobs(None, 10).unwrap();
+    assert_eq!(jobs[0].record.counts.rejected, 0, "{jobs:?}");
     let msg = json!({"@context": ["https://w3id.org/dspace/2025/1/context.jsonld"], "@type": "CatalogRequestMessage"});
     let res = app
         .oneshot(post("/dsp/2025-1/catalog/request", &msg))
@@ -361,80 +355,101 @@ async fn example_datasets_file_is_valid() {
     assert_eq!(weather["dct:title"], "Weather stations");
 }
 
-#[test]
-fn broken_definitions_stop_the_start() {
-    let mut datasets = tck_datasets();
-    datasets[0].has_policy.clear();
-    let err = portitor_connector::router(
-        &portitor_connector::Config {
-            participant_id: "did:web:provider.example".into(),
-            public_url: "https://provider.example".into(),
-            datasets,
-            allow_http_callbacks: false,
-            db_file: "unused.db".into(),
-            sources: std::collections::BTreeMap::new(),
-            data_token_seconds: 3_600,
-            credential_types: portitor_dsp::policy::CredentialTypes::default(),
-        },
-        ports(),
-    )
-    .unwrap_err();
-    assert!(err.to_string().contains("no offer"));
+/// The catalog of a provider whose datasets come from `entries`, and its
+/// handle.
+fn harvested(entries: Vec<Value>) -> (axum::Router, portitor_connector::Negotiator) {
+    let mut ports = ports();
+    ports.harvest.source = Some(std::sync::Arc::new(
+        portitor_connector::harvest::FixedSource::new(entries),
+    ));
+    portitor_connector::build(&provider_config(None), ports).unwrap()
+}
+
+/// The ids of the datasets in `app`'s catalog.
+async fn catalog_ids(app: &axum::Router) -> Vec<String> {
+    let msg = json!({"@context": ["https://w3id.org/dspace/2025/1/context.jsonld"], "@type": "CatalogRequestMessage"});
+    let res = app
+        .clone()
+        .oneshot(post("/dsp/2025-1/catalog/request", &msg))
+        .await
+        .unwrap();
+    let body: Value =
+        serde_json::from_slice(&to_bytes(res.into_body(), 1 << 20).await.unwrap()).unwrap();
+    let mut ids = Vec::new();
+    // an empty catalog has no `dataset` entry
+    let datasets = body["dataset"].as_array().cloned().unwrap_or_default();
+    for dataset in &datasets {
+        ids.push(dataset["@id"].as_str().unwrap().to_owned());
+    }
+    ids
+}
+
+/// Until 0.6 a broken definition stopped the start; since 0.7 (ADR 0020)
+/// that dataset is rejected, with the same message, and the others are
+/// served.
+#[tokio::test]
+async fn a_broken_definition_is_rejected_and_the_others_are_served() {
+    let mut entries = tck_entries();
+    entries[0]["hasPolicy"] = json!([]);
+    let broken = entries[0]["@id"].as_str().unwrap().to_owned();
+    let (app, negotiator) = harvested(entries.clone());
+    let ids = catalog_ids(&app).await;
+    assert_eq!(ids.len(), entries.len() - 1);
+    assert!(!ids.contains(&broken));
+    let jobs = negotiator.harvest_jobs(None, 10).unwrap();
+    assert_eq!(jobs[0].record.outcome.name(), "partial");
+    let (_, errors) = negotiator.harvest_job(jobs[0].id).unwrap().unwrap();
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].position, Some(0));
+    assert_eq!(errors[0].dataset_id.as_deref(), Some(broken.as_str()));
+    assert!(errors[0].message.contains("no offer"), "{errors:?}");
 }
 
 /// A dataset's source is read, taken out of the dataset, and never
-/// shown in the catalog; a source that is not an HTTP URL stops the start.
+/// shown in the catalog; a source that is not an HTTP URL rejects that
+/// dataset only.
 #[tokio::test]
 async fn sources_are_read_but_never_shown() {
-    let dir = std::env::temp_dir().join(format!("portitor-sources-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let file = dir.join("datasets.json");
-    let mut items: Value = serde_json::from_slice(
-        &std::fs::read(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../tck/datasets.json"
-        ))
-        .unwrap(),
-    )
-    .unwrap();
-    items[0]["portitor:source"] = json!("https://upstream.internal/secret.csv");
-    let id = items[0]["@id"].as_str().unwrap().to_owned();
-    std::fs::write(&file, items.to_string()).unwrap();
-    let (datasets, sources) = portitor_connector::read_datasets_and_sources(&file).unwrap();
-    assert_eq!(sources[&id], "https://upstream.internal/secret.csv");
-    assert_eq!(datasets.len(), items.as_array().unwrap().len());
-    let shown = serde_json::to_string(&datasets).unwrap();
+    let mut entries = tck_entries();
+    entries[0]["portitor:source"] = json!("https://upstream.internal/secret.csv");
+    entries[1]["portitor:source"] = json!("file:///etc/passwd");
+    let refused = entries[1]["@id"].as_str().unwrap().to_owned();
+    let (app, negotiator) = harvested(entries.clone());
+    let msg = json!({"@context": ["https://w3id.org/dspace/2025/1/context.jsonld"], "@type": "CatalogRequestMessage"});
+    let res = app
+        .clone()
+        .oneshot(post("/dsp/2025-1/catalog/request", &msg))
+        .await
+        .unwrap();
+    let shown =
+        String::from_utf8(to_bytes(res.into_body(), 1 << 20).await.unwrap().to_vec()).unwrap();
     assert!(!shown.contains("upstream.internal"), "{shown}");
-
-    items[0]["portitor:source"] = json!("file:///etc/passwd");
-    std::fs::write(&file, items.to_string()).unwrap();
-    assert!(matches!(
-        portitor_connector::read_datasets_and_sources(&file),
-        Err(portitor_connector::ConfigError::Invalid(
-            "portitor:source",
-            _
-        ))
-    ));
-    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(!shown.contains("portitor:source"), "{shown}");
+    let ids = catalog_ids(&app).await;
+    assert_eq!(ids.len(), entries.len() - 1);
+    assert!(!ids.contains(&refused));
+    let jobs = negotiator.harvest_jobs(None, 10).unwrap();
+    let (_, errors) = negotiator.harvest_job(jobs[0].id).unwrap().unwrap();
+    assert_eq!(errors[0].kind.name(), "dsp");
+    assert!(errors[0].message.contains("portitor:source"), "{errors:?}");
 }
 
-#[test]
-fn unreadable_or_malformed_files_are_errors() {
-    let missing =
-        portitor_connector::read_datasets(std::path::Path::new("/nonexistent/datasets.json"));
-    assert!(matches!(
-        missing,
-        Err(portitor_connector::ConfigError::Read(..))
-    ));
+/// A datasets file that cannot be read, or is not a JSON array, does not
+/// stop the start: the run fails and the catalog is empty (first start).
+#[tokio::test]
+async fn unreadable_or_malformed_files_leave_an_empty_catalog() {
     let dir = std::env::temp_dir().join(format!("portitor-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let bad = dir.join("bad.json");
-    std::fs::write(&bad, r#"[{"@id": "x", "@type": "Catalog"}]"#).unwrap();
-    let parsed = portitor_connector::read_datasets(&bad);
-    assert!(matches!(
-        parsed,
-        Err(portitor_connector::ConfigError::Parse(..))
-    ));
+    std::fs::write(&bad, r#"{"@id": "x", "@type": "Catalog"}"#).unwrap();
+    for file in ["/nonexistent/datasets.json", bad.to_str().unwrap()] {
+        let (app, negotiator) =
+            portitor_connector::build(&provider_config(Some(file)), ports()).unwrap();
+        assert!(catalog_ids(&app).await.is_empty());
+        let jobs = negotiator.harvest_jobs(None, 10).unwrap();
+        assert_eq!(jobs[0].record.outcome.name(), "failed");
+        assert!(jobs[0].record.summary.contains("datasets file"), "{jobs:?}");
+    }
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -454,7 +469,8 @@ fn config_from_variables() {
     let defaults = portitor_connector::Config::from_vars(vars(&[])).unwrap();
     assert_eq!(defaults.participant_id, "did:web:localhost%3A8080");
     assert_eq!(defaults.public_url, "http://localhost:8080");
-    assert!(defaults.datasets.is_empty());
+    assert_eq!(defaults.datasets_file, None);
+    assert_eq!(defaults.harvest_interval_seconds, 3_600);
     assert!(!defaults.allow_http_callbacks);
     assert_eq!(defaults.db_file, std::path::PathBuf::from("portitor.db"));
 
@@ -462,6 +478,7 @@ fn config_from_variables() {
         ("PORTITOR_PARTICIPANT_ID", "did:web:p.example"),
         ("PORTITOR_PUBLIC_URL", "https://p.example"),
         ("PORTITOR_DATASETS_FILE", file),
+        ("PORTITOR_HARVEST_INTERVAL_SECONDS", "0"),
         ("PORTITOR_ALLOW_HTTP_CALLBACKS", "TRUE"),
         ("PORTITOR_DB_FILE", "/data/x.db"),
     ]))
@@ -469,18 +486,52 @@ fn config_from_variables() {
     assert_eq!(set.participant_id, "did:web:p.example");
     assert!(set.allow_http_callbacks);
     assert_eq!(set.db_file, std::path::PathBuf::from("/data/x.db"));
-    assert_eq!(set.datasets.len(), 3);
+    assert_eq!(set.datasets_file, Some(std::path::PathBuf::from(file)));
+    assert_eq!(set.harvest_interval_seconds, 0);
 
     let removed =
         portitor_connector::Config::from_vars(vars(&[("PORTITOR_DATASETS", "a,b")])).unwrap_err();
     assert!(removed.to_string().contains("PORTITOR_DATASETS_FILE"));
 
+    // above one year: refused, as a schedule that far ahead overflows the
+    // clock (and would abort the connector) instead of a config error
+    let too_large = ["31536001", "18446744073709551615"];
+    for bad in ["hourly", "-1", ""].into_iter().chain(too_large) {
+        for name in [
+            "PORTITOR_HARVEST_INTERVAL_SECONDS",
+            "PORTITOR_DATA_TOKEN_SECONDS",
+        ] {
+            let invalid = portitor_connector::Config::from_vars(vars(&[(name, bad)])).unwrap_err();
+            assert!(
+                invalid.to_string().contains(name),
+                "{name}={bad}: {invalid}"
+            );
+        }
+    }
+    let one_year = portitor_connector::Config::from_vars(vars(&[
+        ("PORTITOR_HARVEST_INTERVAL_SECONDS", "31536000"),
+        ("PORTITOR_DATA_TOKEN_SECONDS", "31536000"),
+    ]))
+    .unwrap();
+    assert_eq!(
+        one_year.harvest_interval_seconds,
+        portitor_connector::MAX_SETTING_SECONDS
+    );
+    assert_eq!(one_year.data_token_seconds, 31_536_000);
+    // a token must live at least one second
+    assert!(
+        portitor_connector::Config::from_vars(vars(&[("PORTITOR_DATA_TOKEN_SECONDS", "0")]))
+            .is_err()
+    );
+
+    // the file is read by the harvest, not here: a missing file is no
+    // configuration error (since 0.7)
     let missing = portitor_connector::Config::from_vars(vars(&[(
         "PORTITOR_DATASETS_FILE",
         "/nonexistent.json",
     )]))
-    .unwrap_err();
-    assert!(missing.to_string().starts_with("cannot read datasets file"));
+    .unwrap();
+    assert!(missing.datasets_file.is_some());
 }
 
 /// Every operation in docs/api/openapi.json is routed: the router answers

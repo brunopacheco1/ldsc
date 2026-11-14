@@ -18,6 +18,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 portitor-dcp = { path = "../crates/portitor-dcp" }
 portitor-dsp = { path = "../crates/portitor-dsp" }
+portitor-shacl = { path = "../crates/portitor-shacl" }
 serde = "1"
 serde_json = "1"
 
@@ -96,6 +97,27 @@ bench = false
 [[bin]]
 name = "dcp_did_document"
 path = "fuzz_targets/dcp_did_document.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bundle_manifest"
+path = "fuzz_targets/bundle_manifest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "shacl_load"
+path = "fuzz_targets/shacl_load.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "shacl_jsonld"
+path = "fuzz_targets/shacl_jsonld.rs"
 test = false
 doc = false
 bench = false

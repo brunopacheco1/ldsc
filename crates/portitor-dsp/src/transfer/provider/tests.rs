@@ -182,7 +182,7 @@ impl DataFlows for &Flows {
 /// the data plane cannot do).
 struct Catalog;
 
-impl DatasetStore for Catalog {
+impl CatalogDatasets for Catalog {
     fn all(&self) -> Vec<Dataset> {
         self.get("d1").into_iter().collect()
     }
@@ -191,6 +191,7 @@ impl DatasetStore for Catalog {
             kind: DistributionType,
             format: format.to_owned(),
             access_service: "svc".to_owned(),
+            metadata: crate::Metadata::default(),
         };
         (id == "d1").then(|| Dataset {
             context: None,

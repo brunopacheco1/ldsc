@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/brunopacheco1/portitor/docs/schemas/bundle-manifest.schema.json",
+  "$comment": "The manifest of a signed schema and vocabulary bundle (ADR 0005, 'Bundle format'). Rust type: portitor_dcp::bundle::Manifest, which also checks what JSON Schema cannot: the issue date and time is a real one, file paths are unique (ignoring case), and context URLs are unique.",
+  "title": "Portitor bundle manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "issued", "authority", "profile", "files"],
+  "properties": {
+    "version": {
+      "description": "The bundle version; also the name of its folder.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$"
+    },
+    "issued": {
+      "description": "When the version was issued (dcterms:issued, W3C DCAT 3): an xsd:dateTime in UTC, to the second, without fractions. A connector following the newest version never takes one issued before the version it uses.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "authority": {
+      "description": "The authority's did:web DID.",
+      "type": "string",
+      "pattern": "^did:web:[^:/]+(:[^:/]+)*$"
+    },
+    "profile": {
+      "description": "The profile IRI stated as dct:conformsTo by a dataset that passes the shapes.",
+      "$ref": "#/$defs/iri"
+    },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1000,
+      "items": { "$ref": "#/$defs/file" }
+    }
+  },
+  "$defs": {
+    "iri": {
+      "type": "string",
+      "pattern": "^https?://[^\\s]+$"
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "mediaType", "role"],
+      "properties": {
+        "path": {
+          "description": "Relative path inside the bundle folder, '/' between folders; no part starts with '.'; not manifest.json or manifest.jws.",
+          "type": "string",
+          "maxLength": 200,
+          "pattern": "^[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$",
+          "not": { "enum": ["manifest.json", "manifest.jws"] }
+        },
+        "sha256": {
+          "description": "SHA-256 of the file's bytes, lowercase hex.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "mediaType": {
+          "enum": ["text/turtle", "application/n-triples", "application/ld+json"]
+        },
+        "role": {
+          "oneOf": [
+            {
+              "description": "SHACL shapes for dataset metadata, for these dct:accessRights values.",
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type", "accessRights"],
+              "properties": {
+                "type": { "const": "datasets" },
+                "accessRights": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": { "$ref": "#/$defs/iri" }
+                }
+              }
+            },
+            {
+              "description": "SHACL shapes for DSP messages.",
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type"],
+              "properties": { "type": { "const": "messages" } }
+            },
+            {
+              "description": "Ontologies and code lists, as data for sh:class checks.",
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type"],
+              "properties": { "type": { "const": "vocabulary" } }
+            },
+            {
+              "description": "A JSON-LD context, standing for the context at url.",
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type", "url"],
+              "properties": {
+                "type": { "const": "context" },
+                "url": { "$ref": "#/$defs/iri" }
+              }
+            }
+          ]
+        }
+      },
+      "if": {
+        "properties": { "role": { "properties": { "type": { "const": "context" } } } }
+      },
+      "then": {
+        "properties": { "mediaType": { "const": "application/ld+json" } }
+      },
+      "else": {
+        "properties": { "mediaType": { "enum": ["text/turtle", "application/n-triples"] } }
+      }
+    }
+  }
+}

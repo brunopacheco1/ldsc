@@ -45,10 +45,10 @@ fn app() -> Router {
     let config = Config {
         participant_id: CONSUMER.into(),
         public_url: "https://consumer.example".into(),
-        datasets: Vec::new(),
+        datasets_file: None,
+        harvest_interval_seconds: 0,
         allow_http_callbacks: false,
         db_file: "unused.db".into(),
-        sources: std::collections::BTreeMap::new(),
         data_token_seconds: 3_600,
         credential_types: portitor_dsp::policy::CredentialTypes::default(),
     };
@@ -325,4 +325,145 @@ fn published_description_is_current() {
     ] {
         assert!(spec["paths"][path].is_object(), "{path}");
     }
+}
+
+/// A provider whose source changes from one run to the next: three runs,
+/// the last one rejecting an entry. Returns its management router.
+fn harvesting_app() -> Router {
+    let good = json!({
+        "@id": "d1", "@type": "Dataset",
+        "hasPolicy": [{"@id": "d1:offer", "@type": "Offer", "permission": [{"action": "use"}]}],
+        "distribution": [{"@type": "Distribution", "format": "HttpData-PULL"}]
+    });
+    let mut broken = good.clone();
+    broken["@id"] = json!("d2");
+    broken["hasPolicy"] = json!([]);
+    let config = Config {
+        participant_id: "did:web:provider.example".into(),
+        public_url: "https://provider.example".into(),
+        datasets_file: None,
+        harvest_interval_seconds: 0,
+        allow_http_callbacks: false,
+        db_file: "unused.db".into(),
+        data_token_seconds: 3_600,
+        credential_types: portitor_dsp::policy::CredentialTypes::default(),
+    };
+    let store = Arc::new(portitor_connector::store::SqliteNegotiations::in_memory().unwrap());
+    // three starts on one store: three jobs, the newest with a rejection
+    let mut negotiator = None;
+    for entries in [vec![], vec![good.clone()], vec![good, broken]] {
+        let mut ports = authenticating(Ports::new(Arc::new(Provider)), CONSUMER);
+        ports.use_sqlite(&store);
+        ports.harvest.source = Some(Arc::new(portitor_connector::harvest::FixedSource::new(
+            entries,
+        )));
+        negotiator = Some(portitor_connector::build(&config, ports).unwrap().1);
+    }
+    router(negotiator.unwrap(), ApiKey::new(KEY).unwrap())
+}
+
+#[tokio::test]
+async fn harvest_jobs_are_listed_newest_first_a_page_at_a_time() {
+    let app = harvesting_app();
+    let (s, _, page) = call(&app, get("/v1/harvest-jobs")).await;
+    assert_eq!(s, StatusCode::OK);
+    let jobs = page["jobs"].as_array().unwrap();
+    let ids: Vec<u64> = jobs.iter().map(|j| j["id"].as_u64().unwrap()).collect();
+    assert_eq!(ids, vec![3, 2, 1]);
+    assert_eq!(page.get("next"), None);
+    let newest = &jobs[0];
+    assert_eq!(newest["trigger"], "start");
+    assert_eq!(newest["source"], "fixed");
+    assert_eq!(newest["outcome"], "partial");
+    assert_eq!(
+        newest["counts"],
+        json!({"seen": 2, "added": 0, "updated": 0, "unchanged": 1, "withdrawn": 0, "rejected": 1})
+    );
+    assert!(newest["summary"].as_str().unwrap().contains("1 rejected"));
+    assert!(newest["startedAt"].as_str().unwrap().ends_with('Z'));
+    assert_eq!(newest["snapshotSha256"].as_str().unwrap().len(), 64);
+    assert_eq!(jobs[1]["counts"]["added"], 1);
+
+    let (_, _, first) = call(&app, get("/v1/harvest-jobs?limit=2")).await;
+    assert_eq!(first["jobs"].as_array().unwrap().len(), 2);
+    assert_eq!(first["next"], 2);
+    let (_, _, second) = call(&app, get("/v1/harvest-jobs?limit=2&after=2")).await;
+    assert_eq!(second["jobs"][0]["id"], 1);
+    assert_eq!(second.get("next"), None);
+    let (s, _, _) = call(&app, get("/v1/harvest-jobs?after=x")).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+}
+
+/// The job detail has no pages: a job stores at most the first 1000
+/// errors (as its description says), and the counts have the total.
+#[tokio::test]
+async fn a_harvest_job_shows_at_most_the_first_errors() {
+    let config = Config {
+        participant_id: "did:web:provider.example".into(),
+        public_url: "https://provider.example".into(),
+        datasets_file: None,
+        harvest_interval_seconds: 0,
+        allow_http_callbacks: false,
+        db_file: "unused.db".into(),
+        data_token_seconds: 3_600,
+        credential_types: portitor_dsp::policy::CredentialTypes::default(),
+    };
+    let not_objects = vec![json!(1); 1_001];
+    let mut ports = authenticating(Ports::new(Arc::new(Provider)), CONSUMER);
+    ports.harvest.source = Some(Arc::new(portitor_connector::harvest::FixedSource::new(
+        not_objects,
+    )));
+    let negotiator = portitor_connector::build(&config, ports).unwrap().1;
+    let app = router(negotiator, ApiKey::new(KEY).unwrap());
+    let (s, _, job) = call(&app, get("/v1/harvest-jobs/1")).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(job["counts"]["rejected"], 1_001);
+    let errors = job["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 1_000);
+    assert_eq!(errors.len(), portitor_connector::harvest::MAX_STORED_ERRORS);
+    assert_eq!(errors[999]["position"], 999);
+    assert!(
+        job["summary"]
+            .as_str()
+            .unwrap()
+            .contains("only the first 1000 errors are stored"),
+        "{job}"
+    );
+}
+
+#[tokio::test]
+async fn a_harvest_job_shows_its_entry_errors() {
+    let app = harvesting_app();
+    let (s, _, job) = call(&app, get("/v1/harvest-jobs/3")).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(job["id"], 3);
+    assert_eq!(job["outcome"], "partial");
+    assert_eq!(
+        job["errors"],
+        json!([{"position": 1, "datasetId": "d2", "check": "dsp",
+                "message": "dataset \"d2\" has no offer (hasPolicy)"}])
+    );
+    let (s, content_type, _) = call(&app, get("/v1/harvest-jobs/99")).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    assert_eq!(content_type.as_deref(), Some("application/problem+json"));
+    let (s, _, _) = call(&app, get("/v1/harvest-jobs/abc")).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    // read only, and behind the key
+    for method in ["POST", "PUT", "DELETE"] {
+        let req = authed(Request::builder().method(method).uri("/v1/harvest-jobs"))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(call(&app, req).await.0, StatusCode::METHOD_NOT_ALLOWED);
+    }
+    let req = Request::get("/v1/harvest-jobs")
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(call(&app, req).await.0, StatusCode::UNAUTHORIZED);
+    // in the generated description
+    let spec: Value = serde_json::from_str(&openapi_json()).unwrap();
+    let detail = spec["components"]["schemas"]["HarvestJobDetail"].to_string();
+    assert!(
+        detail.contains("errors") && detail.contains("HarvestJobView"),
+        "{detail}"
+    );
 }

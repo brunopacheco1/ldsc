@@ -110,10 +110,10 @@ fn config(allow_http: bool) -> Config {
     Config {
         participant_id: "did:web:provider.example".into(),
         public_url: "https://provider.example".into(),
-        datasets: portitor_connector::read_datasets(std::path::Path::new(path)).unwrap(),
+        datasets_file: Some(path.into()),
+        harvest_interval_seconds: 0,
         allow_http_callbacks: allow_http,
         db_file: "unused.db".into(),
-        sources: std::collections::BTreeMap::new(),
         data_token_seconds: 3_600,
         credential_types: portitor_dsp::policy::CredentialTypes::default(),
     }

@@ -216,10 +216,10 @@ jobs:
           retention-days: 14
 
   # DCP TCK v1.2.1, issuer: the issuance.issuer package, 41 tests, against
-  # portitor-issuer (ADR 0018). The TCK plays the holder, serves its DID
-  # and credential service at 127.0.0.1:8083, and receives the
-  # deliveries; scripts/dcp-issuer-tck.sh registers its DID as a
-  # participant first.
+  # portitor-issuer (ADR 0018), without and with a bundle key (ADR
+  # 0005). The TCK plays the holder, serves its DID and credential
+  # service at 127.0.0.1:8083, and receives the deliveries;
+  # scripts/dcp-issuer-tck.sh registers its DID as a participant first.
   dcp-issuer-tck:
     name: DCP TCK (issuer)
     runs-on: ubuntu-24.04
@@ -240,6 +240,13 @@ jobs:
           echo "$DCP_TCK_SHA256  $RUNNER_TEMP/dcp-tck.jar" | sha256sum -c -
       - name: Run TCK against portitor-issuer
         run: scripts/dcp-issuer-tck.sh "$RUNNER_TEMP/dcp-tck.jar"
+      # the same issuer as a bundle authority (ADR 0005): its DID document
+      # also lists <did>#bundle-key, and it serves the demo bundle
+      - name: Run TCK against portitor-issuer with a bundle key
+        run: |
+          mkdir -p bundle-run
+          cd bundle-run
+          BUNDLE_KEY=1 ../scripts/dcp-issuer-tck.sh "$RUNNER_TEMP/dcp-tck.jar"
       - if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -247,4 +254,6 @@ jobs:
           path: |
             dcp-issuer-tck.log
             issuer.log
+            bundle-run/dcp-issuer-tck.log
+            bundle-run/issuer.log
           retention-days: 14

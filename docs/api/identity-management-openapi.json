@@ -7,7 +7,7 @@
       "name": "Apache-2.0",
       "identifier": "Apache-2.0"
     },
-    "version": "0.6.0"
+    "version": "0.7.0"
   },
   "paths": {
     "/v1/credential-requests": {

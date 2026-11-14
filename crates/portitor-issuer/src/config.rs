@@ -55,6 +55,13 @@ pub struct Config {
     /// neither revoked nor expired; a request beyond it ends `REJECTED`
     /// (`PORTITOR_ISSUER_MAX_ACTIVE_PER_HOLDER`, at least 1).
     pub max_active_per_holder: u64,
+    /// The public bundle key, listed in the DID document as
+    /// `<did>#bundle-key` (`PORTITOR_ISSUER_BUNDLE_KEY_FILE`, optional; a
+    /// JWK or a PKCS#8 PEM, see [`crate::bundles::public_key_from_text`]).
+    pub bundle_key_file: Option<PathBuf>,
+    /// The folder of built bundles, served read-only at
+    /// `/bundles/{version}/{file}` (`PORTITOR_ISSUER_BUNDLE_DIR`, optional).
+    pub bundle_dir: Option<PathBuf>,
 }
 
 /// Where the management API listens, and its key.
@@ -135,6 +142,12 @@ impl Config {
             allow_http: text("PORTITOR_ALLOW_HTTP_CALLBACKS")
                 .is_some_and(|v| v.eq_ignore_ascii_case("true")),
             max_active_per_holder,
+            bundle_key_file: text("PORTITOR_ISSUER_BUNDLE_KEY_FILE")
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from),
+            bundle_dir: text("PORTITOR_ISSUER_BUNDLE_DIR")
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from),
         })
     }
 }
@@ -182,6 +195,21 @@ mod tests {
         assert_eq!(config.management, None);
         assert!(!config.allow_http);
         assert_eq!(config.max_active_per_holder, 10);
+        assert_eq!(config.bundle_key_file, None);
+        assert_eq!(config.bundle_dir, None);
+    }
+
+    #[test]
+    fn bundle_settings() {
+        let mut vars = MINIMAL.to_vec();
+        vars.push(("PORTITOR_ISSUER_BUNDLE_KEY_FILE", "/run/secrets/bundle.jwk"));
+        vars.push(("PORTITOR_ISSUER_BUNDLE_DIR", "/bundles"));
+        let config = read(&vars).unwrap();
+        assert_eq!(
+            config.bundle_key_file,
+            Some(PathBuf::from("/run/secrets/bundle.jwk"))
+        );
+        assert_eq!(config.bundle_dir, Some(PathBuf::from("/bundles")));
     }
 
     #[test]

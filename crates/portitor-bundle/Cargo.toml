@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Portitor contributors
+#
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "portitor-bundle"
+description = "The authority's signed schema and vocabulary bundle on the participant's side: where it comes from (over HTTPS or from a folder, verified) and the read copy on disk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+http-body-util.workspace = true
+hyper.workspace = true
+portitor-dcp = { path = "../portitor-dcp" }
+portitor-runtime = { path = "../portitor-runtime" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

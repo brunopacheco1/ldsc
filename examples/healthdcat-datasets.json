@@ -1,0 +1,173 @@
+[
+  {
+    "@id": "https://provider.example/datasets/hospital-admissions",
+    "@type": "Dataset",
+    "portitor:source": "http://data/hospital-admissions.csv",
+    "dct:identifier": "hospital-admissions",
+    "dct:title": {"@value": "Hospital admissions per month", "@language": "en"},
+    "dct:description": {"@value": "Synthetic counts of hospital admissions per month and region. Made up for the Portitor demo.", "@language": "en"},
+    "dct:accessRights": {"@id": "http://publications.europa.eu/resource/authority/access-right/PUBLIC", "@type": "dct:RightsStatement"},
+    "http://data.europa.eu/r5r/applicableLegislation": {"@id": "http://data.europa.eu/eli/reg/2025/327/oj", "@type": "http://data.europa.eu/eli/ontology#LegalResource"},
+    "dcat:theme": {"@id": "http://publications.europa.eu/resource/authority/data-theme/HEAL"},
+    "http://healthdataportal.eu/ns/health#healthCategory": {"@id": "https://hdeu-dcat.data.health.europa.eu/resource/authority/healthcategories/HRAD"},
+    "http://healthdataportal.eu/ns/health#hasStructuredData": false,
+    "http://healthdataportal.eu/ns/health#minTypicalAge": {"@value": "0", "@type": "xsd:nonNegativeInteger"},
+    "http://healthdataportal.eu/ns/health#hdab": {
+      "@id": "https://hdab.example/", "@type": "http://xmlns.com/foaf/0.1/Agent",
+      "http://xmlns.com/foaf/0.1/name": "Example health data access body",
+      "http://data.europa.eu/m8g/contactPoint": {"@id": "https://hdab.example/contact", "@type": "http://data.europa.eu/m8g/ContactPoint", "http://data.europa.eu/m8g/email": "access@hdab.example"}
+    },
+    "dct:publisher": {
+      "@id": "https://provider.example/", "@type": "http://xmlns.com/foaf/0.1/Agent",
+      "http://xmlns.com/foaf/0.1/name": "Example Hospital",
+      "dct:type": {"@id": "https://hdeu-dcat.data.health.europa.eu/resource/authority/publisher-type/healthcare-providers"},
+      "http://data.europa.eu/m8g/contactPoint": {"@id": "https://provider.example/contact", "@type": "http://data.europa.eu/m8g/ContactPoint", "http://data.europa.eu/m8g/contactPage": {"@id": "https://provider.example/contact"}}
+    },
+    "hasPolicy": [
+      {
+        "@id": "hospital-admissions:offer:until-2030",
+        "@type": "Offer",
+        "permission": [
+          {
+            "action": "use",
+            "constraint": [
+              {
+                "leftOperand": "dateTime",
+                "operator": "lteq",
+                "rightOperand": "2030-12-31"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "@id": "hospital-admissions:offer:eu-processors",
+        "@type": "Offer",
+        "permission": [
+          {
+            "action": "use",
+            "constraint": [
+              {
+                "leftOperand": "DataProcessorCredential.processing",
+                "operator": "eq",
+                "rightOperand": "eu"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "distribution": [
+      {
+        "@id": "https://provider.example/datasets/hospital-admissions/csv",
+        "@type": "Distribution",
+        "format": "HttpData-PULL",
+        "http://data.europa.eu/r5r/applicableLegislation": {"@id": "http://data.europa.eu/eli/reg/2025/327/oj"},
+        "dcat:accessURL": {"@id": "https://provider.example/datasets/hospital-admissions"}
+      }
+    ]
+  },
+  {
+    "@id": "https://provider.example/datasets/cancer-registry-extract",
+    "@type": "Dataset",
+    "portitor:source": "http://data/cancer-registry-extract.csv",
+    "dct:identifier": "cancer-registry-extract",
+    "dct:title": {"@value": "Cancer registry extract", "@language": "en"},
+    "dct:description": {"@value": "Synthetic pseudonymised records of a cancer registry, for members only. Made up for the Portitor demo.", "@language": "en"},
+    "dct:accessRights": {"@id": "http://publications.europa.eu/resource/authority/access-right/RESTRICTED", "@type": "dct:RightsStatement"},
+    "http://data.europa.eu/r5r/applicableLegislation": {"@id": "http://data.europa.eu/eli/reg/2025/327/oj", "@type": "http://data.europa.eu/eli/ontology#LegalResource"},
+    "dcat:theme": {"@id": "http://publications.europa.eu/resource/authority/data-theme/HEAL"},
+    "http://healthdataportal.eu/ns/health#healthCategory": {"@id": "https://hdeu-dcat.data.health.europa.eu/resource/authority/healthcategories/HRAD"},
+    "http://healthdataportal.eu/ns/health#hasStructuredData": false,
+    "http://healthdataportal.eu/ns/health#minTypicalAge": {"@value": "18", "@type": "xsd:nonNegativeInteger"},
+    "http://healthdataportal.eu/ns/health#hdab": {
+      "@id": "https://hdab.example/", "@type": "http://xmlns.com/foaf/0.1/Agent",
+      "http://xmlns.com/foaf/0.1/name": "Example health data access body",
+      "http://data.europa.eu/m8g/contactPoint": {"@id": "https://hdab.example/contact", "@type": "http://data.europa.eu/m8g/ContactPoint", "http://data.europa.eu/m8g/email": "access@hdab.example"}
+    },
+    "dct:publisher": {
+      "@id": "https://provider.example/", "@type": "http://xmlns.com/foaf/0.1/Agent",
+      "http://xmlns.com/foaf/0.1/name": "Example Hospital",
+      "dct:type": {"@id": "https://hdeu-dcat.data.health.europa.eu/resource/authority/publisher-type/healthcare-providers"},
+      "http://data.europa.eu/m8g/contactPoint": {"@id": "https://provider.example/contact", "@type": "http://data.europa.eu/m8g/ContactPoint", "http://data.europa.eu/m8g/contactPage": {"@id": "https://provider.example/contact"}}
+    },
+    "hasPolicy": [
+      {
+        "@id": "cancer-registry-extract:offer:members",
+        "@type": "Offer",
+        "permission": [
+          {
+            "action": "use",
+            "constraint": [
+              {
+                "leftOperand": "MembershipCredential.memberOf",
+                "operator": "eq",
+                "rightOperand": "Portitor interop dataspace"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "@id": "cancer-registry-extract:offer:auditors",
+        "@type": "Offer",
+        "permission": [
+          {
+            "action": "use",
+            "constraint": [
+              {
+                "leftOperand": "MembershipCredential.memberOf",
+                "operator": "eq",
+                "rightOperand": "Portitor interop dataspace"
+              },
+              {
+                "leftOperand": "MembershipCredential.role",
+                "operator": "isAnyOf",
+                "rightOperand": [
+                  "auditor"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "distribution": [
+      {
+        "@id": "https://provider.example/datasets/cancer-registry-extract/csv",
+        "@type": "Distribution",
+        "format": "HttpData-PULL",
+        "http://data.europa.eu/r5r/applicableLegislation": {"@id": "http://data.europa.eu/eli/reg/2025/327/oj"},
+        "dcat:accessURL": {"@id": "https://provider.example/datasets/cancer-registry-extract"}
+      }
+    ]
+  },
+  {
+    "@id": "https://provider.example/datasets/bed-occupancy",
+    "@type": "Dataset",
+    "portitor:source": "http://data/hospital-admissions.csv",
+    "dct:identifier": "bed-occupancy",
+    "dct:title": {"@value": "Bed occupancy (incomplete metadata)", "@language": "en"},
+    "dct:accessRights": {"@id": "http://publications.europa.eu/resource/authority/access-right/PUBLIC", "@type": "dct:RightsStatement"},
+    "dcat:theme": {"@id": "http://publications.europa.eu/resource/authority/data-theme/HEAL"},
+    "hasPolicy": [
+      {
+        "@id": "bed-occupancy:offer:use",
+        "@type": "Offer",
+        "permission": [
+          {
+            "action": "use"
+          }
+        ]
+      }
+    ],
+    "distribution": [
+      {
+        "@id": "https://provider.example/datasets/bed-occupancy/csv",
+        "@type": "Distribution",
+        "format": "HttpData-PULL",
+        "dcat:accessURL": {"@id": "https://provider.example/datasets/bed-occupancy"}
+      }
+    ]
+  }
+]

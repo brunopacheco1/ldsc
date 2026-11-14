@@ -88,6 +88,10 @@ pub struct Ports {
     /// the `data-plane` feature) the connector runs its HTTP pull data
     /// plane and uses it for transfers; `None` keeps `transfers.flows`.
     pub flow_store: Option<AnyFlowStore>,
+    /// The adapters of the dataset harvest (ADR 0020): the store of the
+    /// read copy, and optionally another source than the datasets file and
+    /// a check after the DSP rules.
+    pub harvest: crate::harvest::HarvestPorts,
     /// The credential types that policies may use (ADR 0019): which scopes
     /// to ask for, and grant, for an offer's credential constraints.
     /// [`crate::build`] sets it from [`crate::Config::credential_types`].
@@ -103,7 +107,8 @@ impl std::fmt::Debug for Ports {
 }
 
 impl Ports {
-    /// In-memory stores (tests and development), no caller let in and no
+    /// In-memory stores (tests and development; the harvested datasets
+    /// too), no caller let in and no
     /// tokens to send (set `verifier` and `prover`), no extra message rules,
     /// and the default deciders: as provider, agree to any offer from the
     /// catalog; as consumer, accept offers and verify agreements. With the
@@ -127,14 +132,16 @@ impl Ports {
             consumer_transfers: ConsumerTransferPorts::in_memory(consumer_negotiations.clone()),
             consumer_store: Shared(Arc::new(consumer_negotiations)),
             consumer_decider: default_consumer_decider(),
+            harvest: crate::harvest::HarvestPorts::default(),
             credential_types: CredentialTypes::default(),
         }
     }
 }
 
 impl Ports {
-    /// Keeps negotiations and transfers (as provider and as consumer) and
-    /// the agreements transfers are checked against in one `SQLite` file.
+    /// Keeps negotiations and transfers (as provider and as consumer), the
+    /// agreements transfers are checked against, and the harvested
+    /// datasets in one `SQLite` file.
     pub fn use_sqlite(&mut self, store: &Arc<crate::store::SqliteNegotiations>) {
         // `Arc::clone(store) as _` makes a new pointer to the same store and
         // lets the compiler turn it into the `Arc<dyn Port>` each field needs
@@ -145,9 +152,23 @@ impl Ports {
         self.transfers.agreements = Shared(Arc::clone(store) as _);
         self.consumer_transfers.store = Shared(Arc::clone(store) as _);
         self.consumer_transfers.held = Shared(Arc::clone(store) as _);
+        self.harvest.store = Shared(Arc::clone(store) as _);
         if self.flow_store.is_some() {
             self.flow_store = Some(Shared(Arc::clone(store) as _));
         }
+    }
+}
+
+impl Ports {
+    /// Applies the rules of the dataspace's bundle (ADR 0005), through
+    /// `copy`, which always holds the version in use: the harvest checks
+    /// each dataset against its SHACL shapes after the DSP rules (when it
+    /// has `datasets` shapes), and DSP messages are checked against its
+    /// `messages` shapes in both directions (when it has any). Without a
+    /// call, none of this happens.
+    pub fn use_bundle_rules(&mut self, copy: &crate::bundle_harvest::BundleCopy) {
+        self.harvest.extra_check = Some(Arc::new(copy.clone()) as _);
+        self.guard = Arc::new(copy.clone());
     }
 }
 

@@ -15,19 +15,25 @@
 //! - one signed Bitstring Status List credential per profile, for
 //!   revocation, [`status_lists`];
 //! - a management API on its own port (API key): participants, offers,
-//!   issued credentials, revocation, [`management`].
+//!   issued credentials, revocation, [`management`];
+//! - the schema and vocabulary bundle (ADR 0005): `portitor-issuer bundle
+//!   build` signs one offline, [`bundle_build`]; the bundle key in the DID
+//!   document and serving built bundles, [`bundles`].
 //!
 //! The public routes are in [`router`].
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use axum::Router;
 use axum::routing::{get, post};
 use portitor_dcp::message::IssuerMetadata;
-use portitor_dcp::{JtiCache, SigningKey};
+use portitor_dcp::{JtiCache, Jwk, SigningKey};
 use portitor_runtime::directory::Directory;
 use portitor_runtime::http::Sender;
 
+pub mod bundle_build;
+pub mod bundles;
 pub mod config;
 pub mod definitions;
 pub mod delivery;
@@ -75,6 +81,11 @@ pub struct Issuer {
     status_lists: StatusLists,
     /// Wakes the outbox when a delivery is added.
     outbox: tokio::sync::Notify,
+    /// The folder of built bundles served at `/bundles/...`
+    /// (`PORTITOR_ISSUER_BUNDLE_DIR`), if any.
+    bundle_dir: Option<PathBuf>,
+    /// The parsed manifests of the served bundle versions.
+    bundle_manifests: bundles::ManifestCache,
 }
 
 impl std::fmt::Debug for Issuer {
@@ -132,6 +143,8 @@ impl Issuer {
             used_token_ids: Mutex::new(JtiCache::default()),
             status_lists: StatusLists::default(),
             outbox: tokio::sync::Notify::new(),
+            bundle_dir: config.bundle_dir.clone(),
+            bundle_manifests: bundles::ManifestCache::default(),
         };
         status_lists::sign_all(&issuer)?;
         Ok(issuer)
@@ -149,6 +162,14 @@ impl Issuer {
         &self.kid
     }
 
+    /// Lists the public bundle key in the DID document, as its own
+    /// verification method `<did>#bundle-key` under `assertionMethod`
+    /// (ADR 0005). Called at start when `PORTITOR_ISSUER_BUNDLE_KEY_FILE`
+    /// is set.
+    pub fn add_bundle_key(&mut self, public_key: &Jwk) {
+        bundles::add_bundle_key(&mut self.document, &self.did, public_key);
+    }
+
     /// Who signs: the issuer, with its key.
     fn signer(&self) -> portitor_dcp::Signer<'_> {
         portitor_dcp::Signer {
@@ -159,12 +180,20 @@ impl Issuer {
     }
 }
 
-/// The public HTTP routes: the DID document, and under the path of
+/// The public HTTP routes: the DID document, under the path of
 /// `PORTITOR_ISSUER_SERVICE_URL` the DCP issuer service and the status
-/// lists.
+/// lists, and, with `PORTITOR_ISSUER_BUNDLE_DIR`, the built bundles at
+/// `/bundles/{version}/{path}` and `/bundles/latest.json`.
 pub fn router(issuer: Arc<Issuer>) -> Router {
     let service = issuer.service_path.clone();
-    Router::new()
+    let mut router = Router::new();
+    // with PORTITOR_ISSUER_BUNDLE_DIR only (ADR 0005)
+    if issuer.bundle_dir.is_some() {
+        router = router
+            .route(bundles::ROUTE, get(bundles::serve))
+            .route(bundles::LATEST_ROUTE, get(bundles::serve_latest));
+    }
+    router
         .route(&issuer.did_path, get(did_document::serve))
         .route(&format!("{service}/metadata"), get(requests::metadata))
         .route(&format!("{service}/credentials"), post(requests::create))

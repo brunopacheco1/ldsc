@@ -2,14 +2,152 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Portitor management API",
-    "description": "Starts and follows contract negotiations and transfers in which this connector is the consumer. Served on its own port (PORTITOR_MANAGEMENT_BIND), never on the DSP port. Every call except this description needs the API key.",
+    "description": "Starts and follows contract negotiations and transfers in which this connector is the consumer, and shows the dataset harvest jobs (read only). Served on its own port (PORTITOR_MANAGEMENT_BIND), never on the DSP port. Every call except this description needs the API key.",
     "license": {
       "name": "Apache-2.0",
       "identifier": "Apache-2.0"
     },
-    "version": "0.6.0"
+    "version": "0.7.0"
   },
   "paths": {
+    "/v1/harvest-jobs": {
+      "get": {
+        "tags": [
+          "Harvest"
+        ],
+        "summary": "The dataset harvest runs, newest first, a page at a time. The last\n100 runs are kept.",
+        "operationId": "list_harvest_jobs",
+        "parameters": [
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Return jobs older than the job with this id.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "How many to return, 1 to 100 (default 100).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HarvestJobPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong API key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/v1/harvest-jobs/{id}": {
+      "get": {
+        "tags": [
+          "Harvest"
+        ],
+        "summary": "One dataset harvest run, with the entries it rejected and why. A job\nstores at most the first 1000 entry errors, so the answer has no pages.",
+        "operationId": "one_harvest_job",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The job id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The job",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HarvestJobDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The id is not a number",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong API key",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown job (or deleted: only the last 100 are kept)",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
     "/v1/negotiations": {
       "get": {
         "tags": [
@@ -503,6 +641,215 @@
   },
   "components": {
     "schemas": {
+      "HarvestCountsView": {
+        "type": "object",
+        "description": "What a harvest run did, counted.",
+        "required": [
+          "seen",
+          "added",
+          "updated",
+          "unchanged",
+          "withdrawn",
+          "rejected"
+        ],
+        "properties": {
+          "added": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Datasets that entered the catalog (new, or back after a withdrawal).",
+            "minimum": 0
+          },
+          "rejected": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Entries that failed a check; the previous version, if any, stays.",
+            "minimum": 0
+          },
+          "seen": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Entries in the snapshot (or stored datasets checked again).",
+            "minimum": 0
+          },
+          "unchanged": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Datasets that passed with the same content.",
+            "minimum": 0
+          },
+          "updated": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Datasets whose content or state changed.",
+            "minimum": 0
+          },
+          "withdrawn": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Datasets no longer in the source: out of the catalog, kept for\ntransfers under agreements already made.",
+            "minimum": 0
+          }
+        }
+      },
+      "HarvestErrorView": {
+        "type": "object",
+        "description": "Why one entry was rejected.",
+        "required": [
+          "check",
+          "message"
+        ],
+        "properties": {
+          "check": {
+            "type": "string",
+            "description": "The check that failed: `json`, `dsp`, `odrl` or `shacl`.",
+            "example": "odrl"
+          },
+          "datasetId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The dataset's `@id`, if it could be read."
+          },
+          "message": {
+            "type": "string",
+            "description": "What is wrong."
+          },
+          "position": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The entry's position in the source, from 0; absent for a stored\ndataset checked again (`bundle` job).",
+            "minimum": 0
+          },
+          "report": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "The report of the check, for example a SHACL validation report. A\nSHACL report keeps its first 50 results; `resultsNotStored` says\nhow many more there were."
+          }
+        }
+      },
+      "HarvestJobDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/HarvestJobView",
+            "description": "The job."
+          },
+          {
+            "type": "object",
+            "required": [
+              "errors"
+            ],
+            "properties": {
+              "errors": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/HarvestErrorView"
+                },
+                "description": "The entries it rejected, in the order it found them: at most the\nfirst 1000 (`counts.rejected` has the total, and the summary says\nwhen some were not stored)."
+              }
+            }
+          }
+        ],
+        "description": "A harvest job with its entry errors."
+      },
+      "HarvestJobPage": {
+        "type": "object",
+        "description": "One page of harvest jobs.",
+        "required": [
+          "jobs"
+        ],
+        "properties": {
+          "jobs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HarvestJobView"
+            },
+            "description": "The jobs, newest first."
+          },
+          "next": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Pass as `after` to get the next (older) page; absent on the last page.",
+            "minimum": 0
+          }
+        }
+      },
+      "HarvestJobView": {
+        "type": "object",
+        "description": "A harvest run: of the datasets, or of the authority's bundle.",
+        "required": [
+          "id",
+          "kind",
+          "startedAt",
+          "finishedAt",
+          "trigger",
+          "source",
+          "outcome",
+          "counts",
+          "summary"
+        ],
+        "properties": {
+          "counts": {
+            "$ref": "#/components/schemas/HarvestCountsView",
+            "description": "What the run did."
+          },
+          "finishedAt": {
+            "type": "string",
+            "description": "When it ended (UTC)."
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The job id; a newer job has a higher id.",
+            "example": 42,
+            "minimum": 0
+          },
+          "kind": {
+            "type": "string",
+            "description": "What it harvested: `datasets`, or `bundle` (a check for a new\nversion of the authority's schema and vocabulary bundle; its\ncounts are all 0, and its summary says which version is in use).",
+            "example": "datasets"
+          },
+          "outcome": {
+            "type": "string",
+            "description": "`succeeded` (nothing rejected; for a bundle, a new version is in\nuse), `partial` (some entries rejected), `unchanged` (same snapshot\nas the last run; for a bundle, no newer version) or `failed` (the\nsource could not be read, or a new bundle version was refused; the\ncatalog and the rules were left as they were).",
+            "example": "succeeded"
+          },
+          "snapshotSha256": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "SHA-256 of the snapshot (for a bundle, of the new version's\n`manifest.json`), hex; absent when the source failed, nothing new\nwas fetched, or the stored datasets were checked again."
+          },
+          "source": {
+            "type": "string",
+            "description": "The source's name, for example `file:/etc/portitor/datasets.json`,\nor the bundles' URL."
+          },
+          "startedAt": {
+            "type": "string",
+            "description": "When it started (UTC).",
+            "example": "2026-11-14T10:00:00Z"
+          },
+          "summary": {
+            "type": "string",
+            "description": "One line for people.",
+            "example": "3 seen, 1 added, 0 updated, 2 unchanged, 0 withdrawn, 0 rejected"
+          },
+          "trigger": {
+            "type": "string",
+            "description": "What started it: `start`, `interval`, or `bundle` (a new bundle\nversion came in, so the stored datasets were checked again).",
+            "example": "interval"
+          }
+        }
+      },
       "NegotiationPage": {
         "type": "object",
         "description": "One page of negotiations.",
@@ -746,6 +1093,10 @@
     {
       "name": "Transfers",
       "description": "Transfer processes as consumer (DSP 2025-1), pull only"
+    },
+    {
+      "name": "Harvest",
+      "description": "Dataset harvest runs: datasets come from the source into the catalog (ADR 0020). Read only."
     }
   ]
 }

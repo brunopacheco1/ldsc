@@ -74,12 +74,19 @@ Configuration (environment variables):
 | `PORTITOR_BIND` | `0.0.0.0:8080` | Address to listen on |
 | `PORTITOR_PARTICIPANT_ID` | `did:web:localhost%3A8080` | Participant id (a DID) |
 | `PORTITOR_PUBLIC_URL` | `http://localhost:8080` | Public base URL; the DSP endpoint is this plus `/dsp/2025-1`, the consumer callback address this plus `/dsp/2025-1/callback` |
-| `PORTITOR_DATASETS_FILE` | none (empty catalog) | JSON file with the datasets to offer |
+| `PORTITOR_DATASETS_FILE` | none (empty catalog) | JSON file with the datasets to offer, harvested into a read copy at start and at each run ([ADR 0020](docs/adr/0020-dataset-harvest.md)) |
+| `PORTITOR_HARVEST_INTERVAL_SECONDS` | `3600` | Seconds between two harvest runs; `0` harvests only at start; at most `31536000` (one year) |
+| `PORTITOR_BUNDLE_URL` | none (no SHACL checks) | `https://` URL of the authority's folder of signed schema and vocabulary bundles, one folder per version and `latest.json` ([ADR 0005](docs/adr/0005-schema-and-vocabulary-registry.md)); `http://` only with `PORTITOR_ALLOW_HTTP_CALLBACKS` |
+| `PORTITOR_BUNDLE_DIR` | none | A local bundles folder instead of the URL (development and tests) |
+| `PORTITOR_BUNDLE_VERSION` | `latest` | `latest` follows the newest version without a restart (never an older one); or one fixed version |
+| `PORTITOR_BUNDLE_REFRESH_SECONDS` | `3600` | Seconds between two looks at `latest.json`; `0` only at start; at most `31536000` (one year) |
+| `PORTITOR_BUNDLE_AUTHORITY` | none (**required** with a bundle) | The authority's `did:web` DID; its DID document lists the bundle key |
+| `PORTITOR_BUNDLE_CACHE_DIR` | `bundle-cache` next to `PORTITOR_DB_FILE` (`/data/bundle-cache` in the image) | Where the verified bundle and the version in use are kept; the bundle is used only when the authority's host or DID document cannot be reached |
 | `PORTITOR_DB_FILE` | `portitor.db` (`/data/portitor.db` in the image) | SQLite file that keeps negotiations; one connector per file |
 | `PORTITOR_MANAGEMENT_API_KEY_FILE` | none (management API off) | File with the management API key (at least 32 characters, for example `openssl rand -hex 32`) |
 | `PORTITOR_MANAGEMENT_BIND` | `127.0.0.1:8081` | Address of the management API |
 | `PORTITOR_ALLOW_HTTP_CALLBACKS` | `false` | `true` allows plain `http://` for consumers' callbacks, providers, partners' `did:web` DIDs and credential services, status lists and the STS; development and tests only |
-| `PORTITOR_DATA_TOKEN_SECONDS` | `3600` | How long a data access token is valid after the transfer starts |
+| `PORTITOR_DATA_TOKEN_SECONDS` | `3600` | How long a data access token is valid after the transfer starts; `1` to `31536000` (one year) |
 | `PORTITOR_STS_URL` | none (**required**) | Token endpoint of the participant's STS (`portitor-identity`: `<base URL>/sts/token`); every DSP request is authenticated with DCP (ADR 0016) |
 | `PORTITOR_STS_ALLOW_HTTP` | unset | `true` allows a plain-HTTP `PORTITOR_STS_URL` (the STS on an internal network), and nothing else |
 | `PORTITOR_STS_CLIENT_ID` | `PORTITOR_PARTICIPANT_ID` | Client id at the STS |
@@ -128,8 +135,8 @@ Policies (minimal ODRL, [ADR 0009](docs/adr/0009-minimal-odrl-policies.md),
     true; a missing claim never grants access.
 
   `and`, `andSequence`, `or` and `xone` combine them.
-- Anything else is refused (fail closed): a datasets file that uses it
-  stops the connector at start.
+- Anything else is refused (fail closed): a dataset whose offer uses it
+  is rejected by the harvest and left out of the catalog.
 - As provider, the connector agrees only if the requested offer has the
   same terms as the catalog offer with that `@id`, and its constraints
   hold now for the consumer's credentials. For credential constraints it
@@ -169,6 +176,8 @@ is set. Every call needs `Authorization: Bearer <key>`.
 | `GET /v1/transfers?after=&limit=` | Lists transfers, up to 100 at a time |
 | `POST /v1/transfers/{consumerPid}/completion` | Completes a started transfer (you have the data) |
 | `POST /v1/transfers/{consumerPid}/termination` | Ends a transfer |
+| `GET /v1/harvest-jobs?after=&limit=` | Lists the dataset harvest runs, newest first, up to 100 at a time (read only) |
+| `GET /v1/harvest-jobs/{id}` | Returns one harvest run with the error of each rejected dataset |
 | `GET /v1/openapi.json` | The OpenAPI description (no key needed); also in [docs/api/management-openapi.json](docs/api/management-openapi.json) |
 | `GET /health` | Answers `ok` (no key needed) |
 
@@ -226,12 +235,35 @@ Known gaps in this version:
 The datasets file is a JSON array of DSP 2025-1 `Dataset` objects, as the
 catalog serves them, without `@context`. Each dataset needs at least one
 offer (`hasPolicy`) and one distribution with a `format`. Leave
-`accessService` out: the connector sets it to its own data service. A file
-that breaks these rules stops the start with an error. Other properties,
-such as `dct:title` or `dcat:keyword`, are kept and served as written (the
-DSP context defines the `dct`, `dcat` and `odrl` prefixes); Portitor does not
-validate them yet. See
-[examples/datasets.json](examples/datasets.json).
+`accessService` out: the connector sets it to its own data service. Other
+properties, such as `dct:title` or `dcat:keyword`, are kept and served as
+written (the DSP context defines the `dct`, `dcat` and `odrl` prefixes).
+See [examples/datasets.json](examples/datasets.json).
+
+The connector harvests the file into a read copy at start and every
+`PORTITOR_HARVEST_INTERVAL_SECONDS` ([ADR 0020](docs/adr/0020-dataset-harvest.md)).
+Each dataset is checked on its own; one that breaks a rule is rejected
+and logged, its previous good version stays, and the connector keeps
+running. A dataset removed from the file leaves the catalog, while
+transfers under agreements already made still work. Each run is stored
+and shown at `GET /v1/harvest-jobs`.
+
+With the authority's signed schema and vocabulary bundle
+(`PORTITOR_BUNDLE_*`, [ADR 0005](docs/adr/0005-schema-and-vocabulary-registry.md)),
+each dataset is also checked against the SHACL shapes for its
+`dct:accessRights` value, with Portitor's own SHACL Core engine
+(`portitor-shacl`); a dataset that passes is served with
+`"dct:conformsTo": {"@id": "<the bundle's profile>", "@type": "dct:Standard"}`.
+Its `@id` must then be an absolute IRI, and every term outside the DSP
+context's prefixes must be a full IRI (for example
+`http://healthdataportal.eu/ns/health#healthCategory`): the catalog's
+`@context` is always the DSP context alone. If the bundle has message
+shapes, DSP negotiation and transfer messages are checked against them
+too. HealthDCAT-AP release 8 is the baseline:
+[examples/bundle/healthdcat-ap-r8](examples/bundle/healthdcat-ap-r8) holds
+the sources of a demo bundle, `scripts/demo-bundle.sh` builds and signs
+it, and [examples/healthdcat-datasets.json](examples/healthdcat-datasets.json)
+has datasets written for it. See [DEPLOYING](docs/DEPLOYING.md#schema-and-vocabulary-bundle).
 
 To see two participants agree a contract and transfer a file, run the demo
 in Docker Compose (needs Docker, `curl`, `jq` and `openssl`):
@@ -243,14 +275,20 @@ scripts/demo-compose.sh
 It starts the data space's issuer (`portitor-issuer`), a provider and a
 consumer, each a connector with its identity component, and a small web
 server that holds the provider's data ([examples/compose](examples/compose)).
+The issuer also serves the HealthDCAT-AP demo bundle, which the script
+builds and signs first; the provider pins it and offers
+[examples/healthdcat-datasets.json](examples/healthdcat-datasets.json).
 The script registers both participants at the issuer, and each identity
 asks it for its credentials. Then it checks that the provider refuses a catalog request
 without a DCP token, reads the catalog with a token from the consumer's
-STS, agrees a contract, checks that changed terms are refused, checks
-offers that ask for credential claims, transfers
-[examples/data/air-quality.csv](examples/data/air-quality.csv), fetches it
-with the token and completes the transfer; last, once the issuer revokes
-the consumer's `DataProcessorCredential`, a new transfer that needs it is
+STS (the two valid datasets with `dct:conformsTo`; `bed-occupancy` is
+missing, and the provider's harvest job shows its SHACL report), agrees a
+contract, checks that changed terms are refused, checks offers that ask
+for credential claims, transfers
+[examples/data/hospital-admissions.csv](examples/data/hospital-admissions.csv),
+fetches it with the token and completes the transfer, transfers the
+restricted dataset to a member; last, once the issuer revokes the
+consumer's `DataProcessorCredential`, a new transfer that needs it is
 refused. It stops everything at the end;
 `KEEP=1` leaves it running. `scripts/demo.sh` does the same without Docker
 (needs Python 3 as well).

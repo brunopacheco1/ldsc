@@ -6,8 +6,9 @@ SPDX-License-Identifier: Apache-2.0
 
 # ADR 0005: Schema and vocabulary registry
 
-- Status: **Proposed**
-- Date: 2026-11-12
+- Status: **Proposed** (engine decided 2026-11-14; bundle format proposed
+  for 0.7)
+- Date: 2026-11-12, updated 2026-11-14
 - Build: release 0.7 (planned for 0.6 with the authority image on
   2026-11-12; moved to 0.7 by the maintainer, 2026-11-14)
 
@@ -106,12 +107,12 @@ example the EU Interoperability Test Bed SHACL validator, or Apache Jena.
     changes no state; an outbound rejection is not sent, and the
     negotiation or transfer is terminated with the reason logged. The
     default adapter, `AllowAll`, accepts everything.
-  - `ShapeSource`: where shapes, vocabularies and JSON-LD contexts come
+  - `BundleSource`: where shapes, vocabularies and JSON-LD contexts come
     from. Adapters: a local folder (development and tests), the signed
     bundle below, later a Gaia-X or Simpl-Open registry if one is
     standardised.
   - `ShapeValidator`: the SHACL engine (see "Validation engine").
-- JSON-LD contexts used for validation come from the `ShapeSource`
+- JSON-LD contexts used for validation come from the `BundleSource`
   only; the validator never fetches a `@context` from the network, so a
   counter-party cannot point it at a hostile context.
 - Distribution: **Option A**, a signed static bundle.
@@ -119,14 +120,117 @@ example the EU Interoperability Test Bed SHACL validator, or Apache Jena.
   adapter, if a spike at the start of 0.6 shows that it validates
   HealthDCAT-AP release 7 sample data correctly. Option 2 is the
   fallback.
-- In 0.6:
-  - The connector refuses to publish a dataset that fails the shapes of
-    the pinned bundle version. A dataset that passes is published with
-    the profile's `dct:conformsTo`.
-  - Checking other participants' catalogs is optional, and only produces
-    warnings.
-  - The SHACL `MessageGuard` adapter checks negotiation and transfer
-    messages against the bundle's shapes for each message `@type`.
+- In 0.7 (updated 2026-11-14 for the maintainer's decisions on dataset
+  harvest, ADR 0020):
+  - Each harvested dataset is checked against the shapes of the pinned
+    bundle for its `dct:accessRights` level. A dataset that fails is not
+    published, and the error is stored with the harvest job; the
+    connector keeps running. A dataset that passes is published with the
+    bundle's profile as `dct:conformsTo`.
+  - Checking other participants' catalogs is not in 0.7.
+  - The SHACL `MessageGuard` adapter checks DSP messages against the
+    bundle's `messages` shapes.
+
+### Bundle format (proposed for 0.7)
+
+Facts checked 2026-11-14: HealthDCAT-AP release 8 publishes its SHACL
+shapes in section 15 of its specification
+([release 8](https://data.health.europa.eu/healthdcat-ap/releases/release-8/),
+CC-BY 4.0). There are shapes and recommended-property shapes for each of
+three access levels (public, restricted, non-public), vocabulary shapes,
+and `owl:imports` of the DCAT-AP 3.0.0 shapes, ontologies and code
+lists, some only as RDF/XML. Only SHACL Core is used, plus two terms
+outside it: `sh:extends` (release 8) and `sh:shape` (DCAT-AP 3.0.0,
+SHACL 1.2 draft).
+
+- A bundle is a folder: the files, `manifest.json` and
+  `manifest.jws`.
+- `manifest.json` (JSON Schema in `docs/schemas/bundle-manifest.schema.json`)
+  holds: the bundle version (`dcat:version`), when it was issued
+  (`dcterms:issued`, an `xsd:dateTime` in UTC to the second), the
+  authority's DID, the profile
+  IRI used as `dct:conformsTo`, and one entry per file with its path,
+  SHA-256, media type (`text/turtle`, `application/n-triples` or
+  `application/ld+json`) and role:
+  - `datasets`: shapes for dataset metadata, with the `dct:accessRights`
+    values they apply to;
+  - `messages`: shapes for DSP messages;
+  - `vocabulary`: ontologies and code lists, as data for `sh:class`
+    checks;
+  - `context`: a JSON-LD context, with the URL it stands for. It is used
+    only to read DSP messages whose `@context` names that URL (the
+    message check); it is never served, and never fetched. A bundle file
+    for the DSP 2025-1 context URLs is not used: the connector's own copy
+    wins.
+- The catalog `@context` stays the DSP 2025-1 context URL alone, with or
+  without a bundle (maintainer, 2026-11-14): the DSP JSON Schema
+  (`context-schema.json`) allows only URL strings in `@context`, and EDC
+  RC7 does not fetch remote contexts by default
+  (`edc.jsonld.http.enabled` and `edc.jsonld.https.enabled` are `false`).
+  So datasets write every term outside the DSP context's prefixes
+  (`dct`, `dcat`, `odrl`, `xsd`, `dspace`) as a full IRI, for example
+  `http://healthdataportal.eu/ns/health#healthCategory`, and the SHACL
+  check reads each dataset with the DSP context only, as the catalog
+  serves it.
+- `manifest.jws` is a compact JWS (ES256) over the bytes of
+  `manifest.json`, signed with a **bundle key** of the authority: its own
+  verification method in the authority's `did:web` document, separate
+  from the credential signing key (maintainer, 2026-11-14). Enforced:
+  the JWS `kid` must be `<authority>#bundle-key` and its `alg` ES256; a
+  connector refuses a bundle signed with any other key of the
+  authority, the credential key included (it is also under
+  `assertionMethod`), and `bundle build` refuses any other `--kid`.
+- Code lists travel as reduced N-Triples (`rdf:type` and
+  `skos:inScheme` triples only). The build tool accepts only Turtle,
+  N-Triples and JSON-LD contexts, so no Portitor binary parses RDF/XML.
+- `portitor-issuer bundle build` signs a folder offline; the issuer can
+  also serve a bundle folder on its public port.
+- The authority is the source of truth; the connector keeps a read copy,
+  the same way it harvests datasets (ADR 0020), and **pulls** new
+  versions (maintainer, 2026-11-14). Pull, not push: the connector
+  already reaches the authority for its DID document, the authority
+  needs no list of connectors, and a connector that was down catches up
+  on its next check.
+- The bundles folder holds one folder per version and `latest.json`
+  (`{"version": "..."}`), the newest version. `bundle build` writes it
+  (unless `--not-latest`) and never points it at a version issued before
+  the one it names. It is not signed: the connector still checks the
+  signature of the version it names.
+- The connector follows `latest.json` by default
+  (`PORTITOR_BUNDLE_VERSION=latest`), at start and every
+  `PORTITOR_BUNDLE_REFRESH_SECONDS` (default 3600, 0 only at start), or
+  keeps one fixed version. It verifies the signature against the
+  authority's DID document and every digest, and keeps the verified
+  bundle in a disk cache, so a restart works while the authority's host
+  is down.
+- A new version is put in use without a restart. The rules are swapped
+  at once; checks going on finish with the old rules. Then the stored
+  datasets are checked again and the source is harvested again.
+- No rollback: the connector remembers the version in use (in the cache)
+  and never takes a version issued before it. A version that cannot be
+  taken (unreachable, refused, older) leaves the version in use, and the
+  run says why. The order is that of `issued`, the field W3C DCAT 3
+  uses for a version's release date (section 11.2, "Version
+  information"); we do not define our own version order (maintainer,
+  2026-11-14: no new standards). It is a date and time (maintainer,
+  2026-11-14), so versions issued on the same day keep their order;
+  `bundle build` writes the time of the build by default.
+- Compared with Simpl-Open (checked 2026-11-14): its Governance
+  Authority's schema-manager numbers versions itself and marks them
+  published or revoked; a provider's schema-sync-adapter pulls them over
+  REST, is also told by webhook, and syncs again every 900 s. Schemas
+  are not signed there. Its version rules ("no gaps, no duplicate
+  numbers") are still Proposed requirements.
+- Each check is a run in the harvest job log, with the kind `bundle`
+  (ADR 0020).
+- Technical debt (maintainer, 2026-11-14): how schemas are collected and
+  stored is to be investigated further, so that Portitor follows an
+  existing standard rather than its own; see "Technical debt" in
+  `docs/ROADMAP.md`. The bundle source and store are in their own crate,
+  `portitor-bundle`, so they can be reused by other services or
+  replaced as a whole.
+- The engine ignores `sh:extends` and `sh:shape` with a warning when the
+  bundle is loaded, and refuses any other term it does not implement.
 
 ## Spike result (2026-11-14)
 
@@ -189,9 +293,9 @@ distribution) stays Proposed until 0.7.
   which is not a DSP message exchange.
 - 0.2 to 0.5 keep dataset metadata as JSON-LD and don't interpret it.
   `ldsc_dsp::Metadata` already does this (0.2).
-- The catalog `@context` must accept extra entries (prefix definitions as
-  objects, not only URLs) before a profile such as HealthDCAT-AP can be
-  served. Planned for 0.6.
+- A profile such as HealthDCAT-AP is served with full IRIs for its terms
+  under the plain DSP `@context` (decided 2026-11-14, see "Bundle
+  format"); prefix definitions in the catalog `@context` are not used.
 - A JSON-LD processor and possibly an RDF library become dependencies.
   Each needs its own justification and a licence check in the 0.6 pull
   requests.

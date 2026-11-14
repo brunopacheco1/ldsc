@@ -1,0 +1,32 @@
+# A small sample of the EU code lists, reduced to rdf:type and skos:inScheme as
+# a bundle carries them (ADR 0005). Triples copied from the Publications Office
+# authority tables and the HealthDCAT-AP code lists (CC-BY 4.0), see REUSE.toml.
+<http://publications.europa.eu/resource/authority/access-right/NON_PUBLIC> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/2004/02/skos/core#Concept> .
+<http://publications.europa.eu/resource/authority/access-right/NON_PUBLIC> <http://www.w3.org/2004/02/skos/core#inScheme> <http://publications.europa.eu/resource/authority/access-right> .
+<http://publications.europa.eu/resource/authority/access-right/PUBLIC> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/2004/02/skos/core#Concept> .
+<http://publications.europa.eu/resource/authority/access-right/PUBLIC> <http://www.w3.org/2004/02/skos/core#inScheme> <http://publications.europa.eu/resource/authority/access-right> .
+<http://publications.europa.eu/resource/authority/access-right/RESTRICTED> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/2004/02/skos/core#Concept> .
+<http://publications.europa.eu/resource/authority/access-right/RESTRICTED> <http://www.w3.org/2004/02/skos/core#inScheme> <http://publications.europa.eu/resource/authority/access-right> .
+<http://publications.europa.eu/resource/authority/access-right> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/2004/02/skos/core#ConceptScheme> .
+<http://publications.europa.eu/resource/authority/data-theme/HEAL> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/2004/02/skos/core#Concept> .
+<http://publications.europa.eu/resource/authority/data-theme/HEAL> <http://www.w3.org/2004/02/skos/core#inScheme> <http://publications.europa.eu/resource/authority/data-theme> .
+<http://publications.europa.eu/resource/authority/data-theme> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/2004/02/skos/core#ConceptScheme> .
+<http://publications.europa.eu/resource/authority/file-type/CSV> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/2004/02/skos/core#Concept> .
+<http://publications.europa.eu/resource/authority/file-type/CSV> <http://www.w3.org/2004/02/skos/core#inScheme> <http://publications.europa.eu/resource/authority/file-type> .
+<http://publications.europa.eu/resource/authority/file-type> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/2004/02/skos/core#ConceptScheme> .
+<http://publications.europa.eu/resource/authority/frequency/ANNUAL> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/2004/02/skos/core#Concept> .
+<http://publications.europa.eu/resource/authority/frequency/ANNUAL> <http://www.w3.org/2004/02/skos/core#inScheme> <http://publications.europa.eu/resource/authority/frequency> .
+<http://publications.europa.eu/resource/authority/frequency> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/2004/02/skos/core#ConceptScheme> .
+<http://publications.europa.eu/resource/authority/language/ENG> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/2004/02/skos/core#Concept> .
+<http://publications.europa.eu/resource/authority/language/ENG> <http://www.w3.org/2004/02/skos/core#inScheme> <http://publications.europa.eu/resource/authority/language/0001> .
+<http://publications.europa.eu/resource/authority/language/ENG> <http://www.w3.org/2004/02/skos/core#inScheme> <http://publications.europa.eu/resource/authority/language/0002> .
+<http://publications.europa.eu/resource/authority/language/ENG> <http://www.w3.org/2004/02/skos/core#inScheme> <http://publications.europa.eu/resource/authority/language> .
+<http://publications.europa.eu/resource/authority/language> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/2004/02/skos/core#ConceptScheme> .
+<https://hdeu-dcat.data.health.europa.eu/resource/authority/healthcategories/EHRS> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/2004/02/skos/core#Concept> .
+<https://hdeu-dcat.data.health.europa.eu/resource/authority/healthcategories/EHRS> <http://www.w3.org/2004/02/skos/core#inScheme> <https://hdeu-dcat.data.health.europa.eu/resource/authority/healthcategories> .
+<https://hdeu-dcat.data.health.europa.eu/resource/authority/healthcategories/HRAD> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/2004/02/skos/core#Concept> .
+<https://hdeu-dcat.data.health.europa.eu/resource/authority/healthcategories/HRAD> <http://www.w3.org/2004/02/skos/core#inScheme> <https://hdeu-dcat.data.health.europa.eu/resource/authority/healthcategories> .
+<https://hdeu-dcat.data.health.europa.eu/resource/authority/healthcategories> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/2004/02/skos/core#ConceptScheme> .
+<https://hdeu-dcat.data.health.europa.eu/resource/authority/publisher-type/healthcare-providers> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/2004/02/skos/core#Concept> .
+<https://hdeu-dcat.data.health.europa.eu/resource/authority/publisher-type/healthcare-providers> <http://www.w3.org/2004/02/skos/core#inScheme> <https://hdeu-dcat.data.health.europa.eu/resource/authority/publisher-type> .
+<https://hdeu-dcat.data.health.europa.eu/resource/authority/publisher-type> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/2004/02/skos/core#ConceptScheme> .

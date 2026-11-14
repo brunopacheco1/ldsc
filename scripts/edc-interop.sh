@@ -8,8 +8,10 @@
 # a data space whose authority runs portitor-issuer. Exits non-zero at the
 # first failed check, then removes everything.
 #
-#  1. The keys and secrets (interop/edc/run/), and the key set of the
-#     tokens for the IdentityHub's Identity API.
+#  1. The keys and secrets (interop/edc/run/), the key set of the
+#     tokens for the IdentityHub's Identity API, and the HealthDCAT-AP demo
+#     bundle (scripts/demo-bundle.sh, with the issuer image), which the
+#     issuer serves and the Portitor connector pins.
 #  2. Docker Compose up; the EDC IdentityHub gets a participant, the EDC
 #     control plane an asset and an offer.
 #  3. The issuer registers both participants. Each identity asks the
@@ -21,8 +23,10 @@
 #  4. With Portitor's identity, the EDC provider's catalog: EDC checks
 #     Portitor's ID token and its credential (DCP presentation query).
 #  5. Portitor consumer, EDC provider: negotiation, PULL transfer, fetch.
-#  6. EDC consumer, Portitor provider: catalog, negotiation, PULL
-#     transfer, fetch through the EDC data plane.
+#  6. EDC consumer, Portitor provider: catalog (a HealthDCAT-AP dataset
+#     checked against the bundle, with dct:conformsTo and full-IRI
+#     metadata), negotiation, PULL transfer, fetch through the EDC data
+#     plane.
 #  7. Revocation: once the issuer revokes a participant's credential
 #     (POST /v1/credentials/{id}/revoke), the other refuses it (both ways).
 #
@@ -48,6 +52,9 @@ if [[ ${1:-} == --no-build ]]; then UP_FLAGS=(--no-build); fi
 AUTHORITY=did:web:issuer%3A8070
 CREDENTIAL_ID=membership-vc20 # config/issuer-credentials.json
 PORTITOR_DID=did:web:portitor-identity%3A8090
+# config/portitor-datasets.json, and the profile scripts/demo-bundle.sh signs
+PORTITOR_DATASET=https://portitor.example/datasets/portitor-interop
+PROFILE=https://data.health.europa.eu/healthdcat-ap/releases/release-8/
 EDC_DID=did:web:edc-identityhub%3A7083:edc
 EDC_CONTEXT=edc
 SCOPE=org.eclipse.dspace.dcp.vc.type:MembershipCredential:read
@@ -167,6 +174,20 @@ cleanup() {
   exit "$status"
 }
 trap cleanup EXIT
+
+step "Build and sign the HealthDCAT-AP demo bundle with the issuer image"
+# `portitor-issuer bundle build`, run in the issuer's image with this
+# folder mounted at the same path
+cat >"$RUN/issuer-command" <<SCRIPT
+#!/bin/sh
+exec ${COMPOSE[*]} run --rm --no-deps -q --user "$(id -u):$(id -g)" \\
+  -v "$PWD:$PWD" -w "$PWD" issuer "\$@"
+SCRIPT
+chmod +x "$RUN/issuer-command"
+mkdir -p "$RUN/issuer/bundle/bundles" # before Docker makes the mount point, as root
+AUTHORITY=$AUTHORITY scripts/demo-bundle.sh "$RUN/issuer/bundle" "$RUN/issuer-command" >/dev/null ||
+  fail "build the demo bundle"
+chmod -R a+rX "$RUN/issuer/bundle"
 
 # --- 2. start, and set up the EDC participant ------------------------------
 
@@ -407,20 +428,29 @@ CATALOG=$(edc_management POST /v4/catalog/request "$(jq -nc --argjson c "$CONTEX
   "@context": $c, "@type": "CatalogRequest",
   counterPartyAddress: $addr, counterPartyId: $id, protocol: $p}')") ||
   fail "EDC catalog request: $CATALOG"
-PORTITOR_OFFER=$(jq -c '[.["dcat:dataset"] // .dataset] | flatten | .[]
-  | select(.["@id"] == "portitor-interop") | [.["odrl:hasPolicy"] // .hasPolicy] | flatten | .[0]' \
-  <<<"$CATALOG")
-[[ -n $PORTITOR_OFFER && $PORTITOR_OFFER != null ]] || fail "no portitor-interop offer: $CATALOG"
+PORTITOR_ENTRY=$(jq -c --arg id "$PORTITOR_DATASET" '[.["dcat:dataset"] // .dataset] | flatten | .[]
+  | select(.["@id"] == $id)' <<<"$CATALOG")
+[[ -n $PORTITOR_ENTRY ]] || fail "no $PORTITOR_DATASET in the catalog: $CATALOG"
+PORTITOR_OFFER=$(jq -c '[.["odrl:hasPolicy"] // .hasPolicy] | flatten | .[0]' <<<"$PORTITOR_ENTRY")
+[[ -n $PORTITOR_OFFER && $PORTITOR_OFFER != null ]] || fail "no $PORTITOR_DATASET offer: $CATALOG"
 echo "Portitor offers: $PORTITOR_OFFER"
+# EDC read the HealthDCAT-AP metadata (full IRIs) and the bundle's profile
+echo "as EDC read it: $(jq -c '{conformsTo: (.["dct:conformsTo"] // .["http://purl.org/dc/terms/conformsTo"]),
+  healthCategory: .["http://healthdataportal.eu/ns/health#healthCategory"]}' <<<"$PORTITOR_ENTRY")"
+jq -e --arg p "$PROFILE" '[.["dct:conformsTo"] // .["http://purl.org/dc/terms/conformsTo"]] | flatten
+  | any(.["@id"] == $p)' <<<"$PORTITOR_ENTRY" >/dev/null ||
+  fail "EDC did not read dct:conformsTo $PROFILE: $PORTITOR_ENTRY"
+jq -e '.["http://healthdataportal.eu/ns/health#healthCategory"] != null' <<<"$PORTITOR_ENTRY" \
+  >/dev/null || fail "EDC did not read the HealthDCAT-AP metadata: $PORTITOR_ENTRY"
 
 edc_negotiate() { # prints the ended EDC negotiation for the Portitor offer
   local id
   id=$(edc_management POST /v4/contractnegotiations "$(jq -nc --argjson c "$CONTEXT" \
     --arg addr "$PORTITOR_DSP_INSIDE" --arg p "$EDC_PROTOCOL" --arg id "$PORTITOR_DID" \
-    --argjson offer "$PORTITOR_OFFER" '{
+    --argjson offer "$PORTITOR_OFFER" --arg dataset "$PORTITOR_DATASET" '{
     "@context": $c, "@type": "ContractRequest", providerId: $id,
     counterPartyAddress: $addr, protocol: $p,
-    policy: ($offer + {assigner: $id, target: "portitor-interop"})}')" | jq -r '.["@id"]') ||
+    policy: ($offer + {assigner: $id, target: $dataset})}')" | jq -r '.["@id"]') ||
     fail "start the EDC negotiation"
   until_state edc_management "/v4/contractnegotiations/$id" 'FINALIZED|TERMINATED'
 }

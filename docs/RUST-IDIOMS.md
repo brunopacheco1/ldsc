@@ -226,6 +226,8 @@ Closures are often passed to helpers on `Option` and `Result`:
 | `x.ok_or_else(\|\| err)` | Turn `None` into the error `err`. |
 | `x.unwrap_or_default()` | The value, or the empty default (`""`, `0`, ...). |
 | `x.unwrap_or_else(\|\| ...)` | The value, or compute a replacement. |
+| `x.map_or(default, \|v\| ...)` | Change the value, or give `default` when there is none: `previous.map_or(now, \|p\| p.first_seen)` (`harvest/run.rs`). |
+| `x.map_or_else(\|\| ..., \|v\| ...)` | The same, with the default computed only when needed (`db_file` in the connector's `lib.rs`). |
 | `x.is_some_and(\|v\| ...)` | There is a value, and the test holds for it. |
 | `x.is_none_or(\|v\| ...)` | There is no value, or the test holds for it. |
 | `x.filter(\|v\| ...)` | Keep the value only if the test holds. |
@@ -259,6 +261,15 @@ anything, so a position is used only if the credentials are written
 (`portitor-issuer/src/store.rs`). `dyn` because the store is a port: it
 takes any such function, chosen while the program runs.
 
+```rust
+fn named<T>(what: &str, text: &str, from_name: fn(&str) -> Option<T>) -> Result<T, StoreError>
+```
+
+`fn(&str) -> Option<T>` (small `fn`) is a *function pointer*: a plain,
+named function passed as a value, such as `DatasetState::from_name`.
+Unlike `impl Fn(...)` it cannot capture variables, so it is a simple,
+fixed type (`portitor-connector/src/store/harvest.rs`).
+
 Never write `.unwrap()` outside tests. It stops the program when the
 value is missing, and the linter refuses it.
 
@@ -271,7 +282,7 @@ SqliteNegotiations`).
 
 ```rust
 pub struct ProviderService<S, D, C, E> { /* ... */ }
-impl<S: NegotiationStore, D: Decider, C: DatasetStore, E: Environment> ProviderService<S, D, C, E>
+impl<S: NegotiationStore, D: Decider, C: CatalogDatasets, E: Environment> ProviderService<S, D, C, E>
 ```
 
 The service is *generic*. `S` is "some type that implements
@@ -336,6 +347,33 @@ trait's methods when the trait is in scope.
 the same store. `as _` lets the compiler turn it into the `dyn` type the
 field expects.
 
+```rust
+#[cfg(test)]
+impl UpstreamSources for BTreeMap<String, String> {
+    fn upstream_of(&self, dataset_id: &str) -> Option<String> {
+        self.get(dataset_id).cloned()
+    }
+}
+```
+
+A crate may implement its own trait for a type it did not write, even a
+standard one: here a plain map of dataset id to URL becomes an adapter
+of the data plane's `UpstreamSources` port, so unit tests need no fake
+type (`portitor-connector/src/data_plane.rs`). The reverse, someone
+else's trait for someone else's type, is not allowed.
+
+```rust
+let triples: Box<dyn Iterator<Item = Result<Triple, String>>> = match document.format {
+    Format::Turtle => Box::new(/* a Turtle parser */),
+    Format::NTriples => Box::new(/* an N-Triples parser */),
+    /* ... */
+};
+```
+
+The arms of a `match` must give one type, and each parser is its own
+iterator type. `Box<dyn Iterator<Item = X>>` is "some iterator of `X`,
+on the heap", one type that holds either (`portitor-shacl/src/graph.rs`).
+
 ## Sharing between threads: `Arc` and `Mutex`
 
 - `Arc<T>` is a pointer that many owners share. `Arc::clone` copies the
@@ -353,6 +391,40 @@ field expects.
   `_` in a name keeps the value, the bare `_` does not.
 - `Send` and `Sync` in a type mean "safe to move to, or share with,
   another thread". The web server needs them.
+- `mutex.try_lock()` takes the lock only if it is free, and does not
+  wait. `let Ok(_running) = self.busy.try_lock() else { ... return }`
+  skips a harvest run when another one is going on (`DatasetHarvester::run` in
+  `portitor-connector/src/harvest.rs`): a timer tick that comes during a
+  long run is dropped, not queued.
+
+### A snapshot swapped as a whole: `RwLock<Arc<View>>`
+
+```rust
+pub struct DatasetCopy(Arc<RwLock<Arc<View>>>);
+
+fn view(&self) -> Arc<View> {
+    Arc::clone(&self.0.read().unwrap_or_else(PoisonError::into_inner))
+}
+```
+
+`RwLock` lets many readers in at once, or one writer. The value inside
+is itself an `Arc`, so a reader holds the lock only to copy that
+pointer, then works on its own snapshot without any lock. A harvest run
+builds a whole new `View` and swaps the pointer in one write
+(`DatasetCopy::replace` in `portitor-connector/src/harvest/copy.rs`). A
+request never sees half a run, and a slow catalog request never blocks
+the next run. The old snapshot is freed when its last reader drops it.
+
+```rust
+*self.0.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(view);
+```
+
+`self.0` is the first (here the only) field of a *tuple struct*, a
+struct whose fields have no names: `DatasetCopy(Arc<...>)`. `StartError(e.0)`
+and `Shared(Arc::clone(store) as _)` in the connector use the same
+form. `write()` returns a guard; `*guard = value` replaces the value the
+guard protects, and the guard is dropped (the lock freed) at the end of
+the line (`DatasetCopy::replace`).
 
 ## `SQLite` transactions
 
@@ -395,6 +467,22 @@ It prints the fields named and `..` for the rest
 (`auth/dcp.rs`; `SigningKey` in `portitor-dcp/src/keys.rs` prints only
 its public key's thumbprint).
 
+## Log fields: `tracing`
+
+```rust
+tracing::warn!(%pid, %error, job = id, check = error.kind.name(), "harvest: dataset rejected");
+tracing::info!(?access_rights, "dataset checked");
+```
+
+Each name before the message is a field of the log line. `job = id`
+logs a number or text as it is. `%error` is short for `error = %error`
+and logs the value with `Display` (the text meant for people); `?value`
+logs it with `Debug` (the developer's view, for example a list or a
+struct). A bare name like `outcome` logs the variable `outcome` with its
+own name. The harvest's log lines use all three
+(`portitor-connector/src/harvest.rs`; `access_rights = ?access_rights` in
+`shacl.rs`).
+
 ## `async`, `.await` and background tasks
 
 `async fn` returns a task that runs when someone `.await`s it. While it
@@ -434,6 +522,39 @@ A function can take a task as an argument: `impl Future<Output = X>` is
 the helper does not care what the task produces. Here it runs `work`
 with a time limit (`tokio::time::timeout`), and the connector wraps
 every caller check in it (`auth/dcp.rs`).
+
+```rust
+let exchange = async {
+    let response = self.client.request(request).await?;
+    /* ... read the body ... */
+};
+match tokio::time::timeout(DOWNLOAD_TIMEOUT, exchange).await { /* ... */ }
+```
+
+An `async { ... }` block is a task written in place, not started yet. Kept
+in a variable, it runs only when awaited, here inside `timeout`, which
+stops it when the time is up (`UrlSource::get` in
+`portitor-bundle/src/source.rs`).
+
+```rust
+pub fn schedule(self: &Arc<Self>, every: Duration) -> Option<JoinHandle<()>> {
+    let harvester = Arc::clone(self);
+    Some(tokio::spawn(async move {
+        /* ... */
+        let ran = tokio::task::spawn_blocking(move || runner.run(Trigger::Interval));
+    }))
+}
+```
+
+`self: &Arc<Self>` is a method that can be called only on a value kept in
+an `Arc`. It needs that, as the background task keeps its own pointer
+(`Arc::clone(self)`) after the method returns.
+
+`tokio::task::spawn_blocking(move || ...)` runs work that blocks the
+thread (reading a file, `SQLite`, a long computation) on a separate pool
+of threads, so the async threads stay free for requests. Awaiting it
+gives the closure's result, or an error if it panicked
+(`DatasetHarvester::schedule` in `portitor-connector/src/harvest.rs`).
 
 ```rust
 tokio::select! {
@@ -476,6 +597,16 @@ carries a whole DSP error message, and boxing it keeps every `Result`
 small. Clippy's `result_large_err` lint asks for this. Read
 `Box<Failure>` as `Failure`.
 
+```rust
+) -> Result<JsonLdRemoteDocument, Box<dyn std::error::Error + Send + Sync>> {
+    Err(format!("context {url} is not among the local contexts").into())
+```
+
+`Box<dyn std::error::Error + Send + Sync>` is "any error type", the type
+a library asks for when it accepts errors of every kind (here oxjsonld's
+context loader). `.into()` turns a `String` into such a boxed error
+(`portitor-shacl/src/jsonld.rs`).
+
 ## Attributes and `derive`
 
 - `#[derive(Debug, Clone, PartialEq)]` asks the compiler to write the
@@ -500,6 +631,16 @@ small. Clippy's `result_large_err` lint asks for this. Read
 - `#[serde(deserialize_with = "one_audience")]`: read this field with
   the named function instead of the default (`Claims::aud` in
   `id_token.rs` accepts a string or a list of one).
+- `Messages {}` instead of `Messages` in an enum read by serde:
+  `deny_unknown_fields` refuses extra fields only in variants written
+  with braces, so `{"type": "messages", "extra": 1}` is an error
+  (`Role` in `portitor-dcp/src/bundle.rs`). The empty braces are on
+  purpose.
+- `serde_json::value::RawValue`: JSON kept as the exact text it was read
+  from, and written out unchanged. `sign_manifest` in
+  `portitor-dcp/src/bundle.rs` signs the manifest's bytes this way, so
+  the signature covers exactly the file that is published, not a copy
+  that serde wrote again (with other spaces or field order).
 - `#[must_use]`: the caller should use the return value.
 - `#[cfg(test)]`: compiled only for tests. `#[cfg(feature = "tck")]`:
   compiled only in the DSP TCK build.
@@ -516,6 +657,12 @@ defines four: `type_tag!`, `pid_message!` and `process_ack!` in
 types without copying the same fields into each one. Each has a comment
 with an example of what it writes. (A few test files define small macros
 of their own, for example `schema!`.)
+
+`include_str!("../contexts/dspace.jsonld")` puts the text of a file into
+the program when it is built, as a `&'static str`: the DSP context ships
+inside the binary, and nothing is read at run time
+(`portitor-connector/src/shacl.rs`). The path is relative to the source
+file.
 
 Some macros are written as attributes, `#[name]` or `#[name(...)]`, and
 rewrite the item below them:
@@ -565,7 +712,36 @@ API needs (here the STS error list, `portitor-identity/src/sts.rs`).
   read when the program is built (the `OpenAPI` documents).
 - `!` on an integer flips every bit, it is not "not": `!0u32` is
   `0xFFFF_FFFF` (CRC-32 in `gzip.rs`). On a `bool`, `!` is "not".
+- `static BOOLEAN: LazyLock<Option<Regex>> = LazyLock::new(|| ...)`: a
+  value built the first time it is used, then shared by every thread for
+  the rest of the program (the XSD patterns in
+  `portitor-shacl/src/lexical.rs`). A regular expression is compiled
+  once, not on every check.
+- `list.sort_by_cached_key(f)` sorts by `f(item)` but calls `f` only
+  once per item; `sort_by_key` may call it many times. Worth it when the
+  key is costly to make, such as the text of an RDF term
+  (`portitor-shacl/src/validate.rs`, which sorts so that reports come
+  out in the same order every time).
 - `Option` values can be compared, and `None` counts as smaller than any
   `Some`, so `a.max(b)` of two `Option`s picks a `Some` over a `None`.
   That is easy to misread, so Portitor spells it out with a `match`
   (`later` and `earlier` in `credential.rs`).
+- `map.entry(key).or_default()` gives the value under `key`, first
+  inserting an empty default when there is none; `or_insert_with(|| ...)`
+  computes the value to insert (`portitor-shacl/src/graph.rs`).
+- `usize::from(flag)` is 1 for `true` and 0 for `false`. Adding three of
+  them counts how many of three conditions hold
+  (`portitor-shacl/src/load.rs`).
+- `b"<?xml"` is a *byte string*: bytes, not text, compared with the
+  bytes of a file. `bytes.strip_prefix(b"\xEF\xBB\xBF")` drops a UTF-8
+  byte order mark if there is one (`portitor-issuer/src/bundle_build.rs`).
+- `x as u64` converts a number. Portitor uses `as` only where nothing can
+  be lost, such as a `usize` length into a `u64` (`max_bytes as u64` in
+  `portitor-bundle/src/source.rs`). Where a value may not fit, it writes
+  `u64::try_from(x)`, which gives an error instead of a wrong number,
+  and says what to do then (`.unwrap_or(u64::MAX)`, or an error).
+- `const fn` is a function that may also run while the program is
+  built, so its result can fill a `const` (`sh()` in
+  `portitor-shacl/src/vocab.rs`; `as_str` in
+  `portitor-dcp/src/bundle.rs`). Called at run time, it is an ordinary
+  function.

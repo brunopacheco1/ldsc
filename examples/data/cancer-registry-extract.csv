@@ -1,0 +1,5 @@
+pseudonym,year_of_diagnosis,icd10,stage
+p-0001,2021,C50,II
+p-0002,2022,C18,III
+p-0003,2022,C34,I
+p-0004,2023,C61,II

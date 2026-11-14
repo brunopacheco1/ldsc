@@ -3,7 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! The management API: what the operator's own systems use to start and
-//! follow negotiations and transfers as consumer. It is not part of DSP, so it is served
+//! follow negotiations and transfers as consumer, and to read the dataset
+//! harvest jobs (read only, ADR 0020). It is not part of DSP, so it is served
 //! on its own port (`PORTITOR_MANAGEMENT_BIND`), never on the DSP port, and
 //! every call needs the API key (`Authorization: Bearer <key>`).
 //!
@@ -31,6 +32,8 @@ use serde_json::Value;
 use utoipa::{IntoParams, OpenApi, ToSchema};
 
 use crate::Negotiator;
+use crate::harvest::{EntryError, HarvestJob};
+use crate::system::xsd_date_time;
 pub use portitor_runtime::api_key::{ApiKey, MIN_KEY_LEN, Problem, problem, require_key};
 use portitor_runtime::api_key::{BearerKey, internal_error};
 
@@ -501,6 +504,238 @@ fn act(
     }
 }
 
+/// What a harvest run did, counted.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HarvestCountsView {
+    /// Entries in the snapshot (or stored datasets checked again).
+    seen: u64,
+    /// Datasets that entered the catalog (new, or back after a withdrawal).
+    added: u64,
+    /// Datasets whose content or state changed.
+    updated: u64,
+    /// Datasets that passed with the same content.
+    unchanged: u64,
+    /// Datasets no longer in the source: out of the catalog, kept for
+    /// transfers under agreements already made.
+    withdrawn: u64,
+    /// Entries that failed a check; the previous version, if any, stays.
+    rejected: u64,
+}
+
+/// A harvest run: of the datasets, or of the authority's bundle.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HarvestJobView {
+    /// The job id; a newer job has a higher id.
+    #[schema(example = 42)]
+    id: u64,
+    /// What it harvested: `datasets`, or `bundle` (a check for a new
+    /// version of the authority's schema and vocabulary bundle; its
+    /// counts are all 0, and its summary says which version is in use).
+    #[schema(example = "datasets")]
+    kind: String,
+    /// When it started (UTC).
+    #[schema(example = "2026-11-14T10:00:00Z")]
+    started_at: String,
+    /// When it ended (UTC).
+    finished_at: String,
+    /// What started it: `start`, `interval`, or `bundle` (a new bundle
+    /// version came in, so the stored datasets were checked again).
+    #[schema(example = "interval")]
+    trigger: String,
+    /// The source's name, for example `file:/etc/portitor/datasets.json`,
+    /// or the bundles' URL.
+    source: String,
+    /// SHA-256 of the snapshot (for a bundle, of the new version's
+    /// `manifest.json`), hex; absent when the source failed, nothing new
+    /// was fetched, or the stored datasets were checked again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    snapshot_sha256: Option<String>,
+    /// `succeeded` (nothing rejected; for a bundle, a new version is in
+    /// use), `partial` (some entries rejected), `unchanged` (same snapshot
+    /// as the last run; for a bundle, no newer version) or `failed` (the
+    /// source could not be read, or a new bundle version was refused; the
+    /// catalog and the rules were left as they were).
+    #[schema(example = "succeeded")]
+    outcome: String,
+    /// What the run did.
+    counts: HarvestCountsView,
+    /// One line for people.
+    #[schema(example = "3 seen, 1 added, 0 updated, 2 unchanged, 0 withdrawn, 0 rejected")]
+    summary: String,
+}
+
+impl From<HarvestJob> for HarvestJobView {
+    fn from(job: HarvestJob) -> Self {
+        let record = job.record;
+        let counts = record.counts;
+        Self {
+            id: job.id,
+            kind: record.kind.name().to_owned(),
+            started_at: xsd_date_time(record.started_at),
+            finished_at: xsd_date_time(record.finished_at),
+            trigger: record.trigger.name().to_owned(),
+            source: record.source,
+            snapshot_sha256: record.snapshot_sha256,
+            outcome: record.outcome.name().to_owned(),
+            counts: HarvestCountsView {
+                seen: counts.seen,
+                added: counts.added,
+                updated: counts.updated,
+                unchanged: counts.unchanged,
+                withdrawn: counts.withdrawn,
+                rejected: counts.rejected,
+            },
+            summary: record.summary,
+        }
+    }
+}
+
+/// Why one entry was rejected.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HarvestErrorView {
+    /// The entry's position in the source, from 0; absent for a stored
+    /// dataset checked again (`bundle` job).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    position: Option<u64>,
+    /// The dataset's `@id`, if it could be read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dataset_id: Option<String>,
+    /// The check that failed: `json`, `dsp`, `odrl` or `shacl`.
+    #[schema(example = "odrl")]
+    check: String,
+    /// What is wrong.
+    message: String,
+    /// The report of the check, for example a SHACL validation report. A
+    /// SHACL report keeps its first 50 results; `resultsNotStored` says
+    /// how many more there were.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
+    report: Option<Value>,
+}
+
+impl From<EntryError> for HarvestErrorView {
+    fn from(error: EntryError) -> Self {
+        Self {
+            position: error.position,
+            dataset_id: error.dataset_id,
+            check: error.kind.name().to_owned(),
+            message: error.message,
+            report: error.report,
+        }
+    }
+}
+
+/// A harvest job with its entry errors.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HarvestJobDetail {
+    /// The job.
+    #[serde(flatten)]
+    job: HarvestJobView,
+    /// The entries it rejected, in the order it found them: at most the
+    /// first 1000 (`counts.rejected` has the total, and the summary says
+    /// when some were not stored).
+    errors: Vec<HarvestErrorView>,
+}
+
+/// One page of harvest jobs.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HarvestJobPage {
+    /// The jobs, newest first.
+    jobs: Vec<HarvestJobView>,
+    /// Pass as `after` to get the next (older) page; absent on the last page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next: Option<u64>,
+}
+
+/// Paging for the harvest jobs.
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct JobPageQuery {
+    /// Return jobs older than the job with this id.
+    after: Option<u64>,
+    /// How many to return, 1 to 100 (default 100).
+    limit: Option<usize>,
+}
+
+/// The dataset harvest runs, newest first, a page at a time. The last
+/// 100 runs are kept.
+#[utoipa::path(
+    get,
+    path = "/v1/harvest-jobs",
+    params(JobPageQuery),
+    responses(
+        (status = 200, description = "One page", body = HarvestJobPage),
+        (status = 400, description = "Invalid query", body = Problem, content_type = "application/problem+json"),
+        (status = 401, description = "Missing or wrong API key", body = Problem, content_type = "application/problem+json"),
+    ),
+    security(("api_key" = [])),
+    tag = "Harvest"
+)]
+async fn list_harvest_jobs(
+    State(negotiator): State<Negotiator>,
+    query: Result<Query<JobPageQuery>, axum::extract::rejection::QueryRejection>,
+) -> Response {
+    let Query(q) = match query {
+        Ok(q) => q,
+        Err(e) => return problem(StatusCode::BAD_REQUEST, &e.body_text()),
+    };
+    let limit = q.limit.unwrap_or(MAX_PAGE).clamp(1, MAX_PAGE);
+    match negotiator.harvest_jobs(q.after, limit) {
+        Ok(found) => {
+            let next = if found.len() == limit {
+                found.last().map(|job| job.id)
+            } else {
+                None
+            };
+            Json(HarvestJobPage {
+                jobs: found.into_iter().map(HarvestJobView::from).collect(),
+                next,
+            })
+            .into_response()
+        }
+        Err(e) => internal_error("harvest store", &e),
+    }
+}
+
+/// One dataset harvest run, with the entries it rejected and why. A job
+/// stores at most the first 1000 entry errors, so the answer has no pages.
+#[utoipa::path(
+    get,
+    path = "/v1/harvest-jobs/{id}",
+    params(("id" = u64, Path, description = "The job id")),
+    responses(
+        (status = 200, description = "The job", body = HarvestJobDetail),
+        (status = 400, description = "The id is not a number", body = Problem, content_type = "application/problem+json"),
+        (status = 401, description = "Missing or wrong API key", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "Unknown job (or deleted: only the last 100 are kept)", body = Problem, content_type = "application/problem+json"),
+    ),
+    security(("api_key" = [])),
+    tag = "Harvest"
+)]
+async fn one_harvest_job(
+    State(negotiator): State<Negotiator>,
+    id: Result<Path<u64>, axum::extract::rejection::PathRejection>,
+) -> Response {
+    let Path(id) = match id {
+        Ok(id) => id,
+        Err(e) => return problem(StatusCode::BAD_REQUEST, &e.body_text()),
+    };
+    match negotiator.harvest_job(id) {
+        Ok(Some((job, errors))) => Json(HarvestJobDetail {
+            job: HarvestJobView::from(job),
+            errors: errors.into_iter().map(HarvestErrorView::from).collect(),
+        })
+        .into_response(),
+        Ok(None) => problem(StatusCode::NOT_FOUND, "no such harvest job"),
+        Err(e) => internal_error("harvest store", &e),
+    }
+}
+
 /// The `after` value for the next page: the last key of a full page.
 fn next_after<T>(found: &[T], limit: usize, key: impl Fn(&T) -> &String) -> Option<String> {
     (found.len() == limit)
@@ -513,7 +748,7 @@ fn next_after<T>(found: &[T], limit: usize, key: impl Fn(&T) -> &String) -> Opti
 #[openapi(
     info(
         title = "Portitor management API",
-        description = "Starts and follows contract negotiations and transfers in which this connector is the consumer. Served on its own port (PORTITOR_MANAGEMENT_BIND), never on the DSP port. Every call except this description needs the API key.",
+        description = "Starts and follows contract negotiations and transfers in which this connector is the consumer, and shows the dataset harvest jobs (read only). Served on its own port (PORTITOR_MANAGEMENT_BIND), never on the DSP port. Every call except this description needs the API key.",
         license(name = "Apache-2.0", identifier = "Apache-2.0"),
     ),
     paths(
@@ -524,7 +759,9 @@ fn next_after<T>(found: &[T], limit: usize, key: impl Fn(&T) -> &String) -> Opti
         one_transfer,
         list_transfers,
         complete_transfer,
-        terminate_transfer
+        terminate_transfer,
+        list_harvest_jobs,
+        one_harvest_job
     ),
     components(schemas(
         StartNegotiation,
@@ -533,12 +770,18 @@ fn next_after<T>(found: &[T], limit: usize, key: impl Fn(&T) -> &String) -> Opti
         StartTransfer,
         TransferView,
         TransferPage,
+        HarvestCountsView,
+        HarvestJobView,
+        HarvestErrorView,
+        HarvestJobDetail,
+        HarvestJobPage,
         Problem
     )),
     modifiers(&BearerKey),
     tags(
         (name = "Negotiations", description = "Contract negotiations as consumer (DSP 2025-1)"),
-        (name = "Transfers", description = "Transfer processes as consumer (DSP 2025-1), pull only")
+        (name = "Transfers", description = "Transfer processes as consumer (DSP 2025-1), pull only"),
+        (name = "Harvest", description = "Dataset harvest runs: datasets come from the source into the catalog (ADR 0020). Read only.")
     )
 )]
 pub struct ManagementApi;
@@ -568,6 +811,8 @@ pub fn router(negotiator: Negotiator, key: ApiKey) -> Router {
             "/v1/transfers/{consumerPid}/termination",
             post(terminate_transfer),
         )
+        .route("/v1/harvest-jobs", get(list_harvest_jobs))
+        .route("/v1/harvest-jobs/{id}", get(one_harvest_job))
         .route_layer(middleware::from_fn_with_state(key, require_key))
         .with_state(negotiator);
     let spec = openapi_json();

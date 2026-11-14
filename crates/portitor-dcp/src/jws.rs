@@ -85,6 +85,13 @@ impl<'a> Jws<'a> {
         })
     }
 
+    /// The `alg` header: ES256 or PS256 (any other is refused by
+    /// [`Jws::parse`]).
+    #[must_use]
+    pub fn alg(&self) -> Alg {
+        self.alg
+    }
+
     /// The `kid` header, if any.
     #[must_use]
     pub fn kid(&self) -> Option<&str> {

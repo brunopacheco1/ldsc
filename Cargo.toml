@@ -4,10 +4,10 @@
 
 [workspace]
 resolver = "3"
-members = ["crates/portitor-dsp", "crates/portitor-dcp", "crates/portitor-dps", "crates/portitor-time", "crates/portitor-runtime", "crates/portitor-connector", "crates/portitor-identity", "crates/portitor-issuer"]
+members = ["crates/portitor-dsp", "crates/portitor-dcp", "crates/portitor-dps", "crates/portitor-time", "crates/portitor-runtime", "crates/portitor-bundle", "crates/portitor-connector", "crates/portitor-identity", "crates/portitor-issuer", "crates/portitor-shacl"]
 
 [workspace.package]
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/brunopacheco1/portitor"
@@ -28,6 +28,14 @@ http-body-util = "0.1"
 hyper = { version = "1", default-features = false, features = ["client", "http1"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "tls12", "ring", "native-tokio", "logging"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "http1", "tokio"] }
+# RDF terms and graphs, Turtle/N-Triples and JSON-LD parsers for the SHACL engine
+# (portitor-shacl, ADR 0005). No default features. JSON-LD has no network code: remote
+# contexts load only through our callback. Never oxrdfxml (open quick-xml advisories).
+oxjsonld = { version = "0.2.7", default-features = false }
+oxrdf = { version = "0.3.5", default-features = false }
+oxttl = { version = "0.2.5", default-features = false }
+# sh:pattern and XSD lexical forms in the SHACL engine; already in the lock through other crates
+regex = { version = "1.13", default-features = false, features = ["std", "unicode", "perf"] }
 ring = "0.17"
 # SQLite compiled in (bundled), so the static musl binary needs no system library
 rusqlite = { version = "0.42", features = ["bundled"] }

@@ -14,7 +14,6 @@ path = [
     "crates/*/tests/fixtures/**",
     # JSON has no comments
     "examples/*.json",
-    "examples/compose/*.json",
     # made-up demo data (CSV has no comments)
     "examples/data/*",
     "tck/*.json",
@@ -56,3 +55,93 @@ path = ["crates/portitor-dps/tests/schemas/*.json", "crates/portitor-dps/tests/e
 precedence = "override"
 SPDX-FileCopyrightText = "Eclipse Data Plane Signaling contributors (https://github.com/eclipse-dataplane-signaling/dataplane-signaling)"
 SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+# SHACL engine tests: datasets written for Portitor (JSON has no comments)
+path = ["crates/portitor-shacl/tests/data/samples/*.jsonld", "crates/portitor-shacl/tests/data/spike/*.jsonld"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "Portitor contributors"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+# HealthDCAT-AP release 8 SHACL files, copied unchanged from
+# https://data.health.europa.eu/healthdcat-ap/releases/release-8/html/shacl/HealthDCAT-AP_validator/config/rdf-validator/ehds/
+# (shapes/, recommended/, ranges/, controlled-vocabularies/, imports/), fetched 2026-11-14
+path = "crates/portitor-shacl/tests/data/healthdcat-ap-r8/*.ttl"
+precedence = "override"
+SPDX-FileCopyrightText = "European Union (HealthDCAT-AP, https://data.health.europa.eu/healthdcat-ap/releases/release-8/)"
+SPDX-License-Identifier = "CC-BY-4.0"
+
+[[annotations]]
+# DCAT-AP 3.0.0 SHACL files, copied unchanged from https://github.com/SEMICeu/DCAT-AP,
+# releases/3.0.0/html/shacl/, commit 4470b8ea907b7eb9ec55ab22befd1ecd2210ff32
+path = "crates/portitor-shacl/tests/data/dcat-ap-3.0.0/*.ttl"
+precedence = "override"
+SPDX-FileCopyrightText = "SEMIC, European Commission (DCAT-AP, https://github.com/SEMICeu/DCAT-AP)"
+SPDX-License-Identifier = "CC-BY-4.0"
+
+[[annotations]]
+# A few code-list triples (rdf:type, skos:inScheme) of the EU authority tables
+# (https://op.europa.eu/en/web/eu-vocabularies) and the HealthDCAT-AP code lists
+path = "crates/portitor-shacl/tests/data/samples/codelists-sample.nt"
+precedence = "override"
+SPDX-FileCopyrightText = "European Union"
+SPDX-License-Identifier = "CC-BY-4.0"
+
+[[annotations]]
+# DSP 2025-1 JSON-LD contexts, copied unchanged from the Eclipse Dataspace Protocol, tag 2025-1
+# (artifacts/src/main/resources/context/dspace.jsonld and odrl.jsonld); the connector's
+# embedded copies are the same files at tag 2025-1-err2 (commit d7d810b276f5f5710ff7a53bff630e2845cc0105)
+path = ["crates/portitor-shacl/tests/data/dsp-2025-1/*.jsonld", "crates/portitor-connector/contexts/*.jsonld"]
+precedence = "override"
+SPDX-FileCopyrightText = "Eclipse Dataspace Protocol contributors (https://github.com/eclipse-dataspace-protocol-base/DataspaceProtocol)"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+# W3C SHACL test suite (core), copied unchanged from https://github.com/w3c/data-shapes,
+# data-shapes-test-suite/tests/core/, commit 752769264137d192b3d603075162819466c46690
+path = "crates/portitor-shacl/tests/w3c/**"
+precedence = "override"
+SPDX-FileCopyrightText = "W3C (MIT, ERCIM, Keio, Beihang) and the RDF Data Shapes Working Group"
+SPDX-License-Identifier = "W3C-20150513"
+
+[[annotations]]
+# Demo schema and vocabulary bundle (scripts/demo-bundle.sh): the input
+# description, written for Portitor (JSON has no comments)
+path = ["examples/bundle/*/bundle.json"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "Portitor contributors"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+# Demo bundle: HealthDCAT-AP release 8 SHACL files, the same files as
+# crates/portitor-shacl/tests/data/healthdcat-ap-r8/ (copied unchanged)
+path = "examples/bundle/healthdcat-ap-r8/shapes/healthdcat-ap-r8/*.ttl"
+precedence = "override"
+SPDX-FileCopyrightText = "European Union (HealthDCAT-AP, https://data.health.europa.eu/healthdcat-ap/releases/release-8/)"
+SPDX-License-Identifier = "CC-BY-4.0"
+
+[[annotations]]
+# Demo bundle: DCAT-AP 3.0.0 SHACL files, the same files as
+# crates/portitor-shacl/tests/data/dcat-ap-3.0.0/ (copied unchanged)
+path = "examples/bundle/healthdcat-ap-r8/shapes/dcat-ap-3.0.0/*.ttl"
+precedence = "override"
+SPDX-FileCopyrightText = "SEMIC, European Commission (DCAT-AP, https://github.com/SEMICeu/DCAT-AP)"
+SPDX-License-Identifier = "CC-BY-4.0"
+
+[[annotations]]
+# Demo bundle: rdf:type, skos:inScheme and rdfs:subClassOf triples taken
+# from the EU authority tables, the HealthData@EU code lists and the
+# ontologies the HealthDCAT-AP release 8 validator imports, made by
+# scripts/reduce_code_lists.py, which lists each source and its licence
+path = "examples/bundle/healthdcat-ap-r8/vocabulary/code-lists.nt"
+precedence = "override"
+SPDX-FileCopyrightText = [
+    "European Union",
+    "W3C",
+    "Dublin Core Metadata Initiative",
+    "FOAF project (Dan Brickley, Libby Miller)",
+    "SPDX project, Linux Foundation",
+    "SEMIC, European Commission",
+]
+SPDX-License-Identifier = "CC-BY-4.0 AND W3C-20150513 AND CC-BY-1.0 AND CC-BY-3.0"

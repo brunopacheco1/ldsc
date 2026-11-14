@@ -8,18 +8,24 @@
 # caller shows a MembershipCredential from a trusted issuer, here the data
 # space's portitor-issuer (did:web:issuer%3A8070). Not a production setup:
 # plain HTTP between the containers (PORTITOR_ALLOW_HTTP_CALLBACKS), and
-# the issuer next to the participants.
+# the issuer next to the participants. The issuer also serves the data
+# space's HealthDCAT-AP demo bundle (scripts/demo-bundle.sh), which the
+# provider pins and checks its datasets (../healthdcat-datasets.json)
+# against.
 #
 #   scripts/demo-compose.sh
 #
-# writes the keys and secrets into run/, starts everything, registers both
+# writes the keys and secrets into run/, builds and signs the demo bundle
+# into run/issuer/bundle/ (with the issuer image), starts everything, registers both
 # participants at the issuer, has each identity ask it for its credentials
 # and runs the demo checks (scripts/demo-steps.sh). KEEP=1 leaves it
 # running: then use the consumer's management API on
 # http://127.0.0.1:18091 (see the README), with the key in
 # run/consumer/management.key, and negotiate with the provider at
 # http://provider:8080/dsp/2025-1. The issuer's management API is on
-# http://127.0.0.1:18071, with the key in run/issuer/management.key.
+# http://127.0.0.1:18071, with the key in run/issuer/management.key; the
+# provider's (harvest jobs) on http://127.0.0.1:18081, with the key in
+# run/provider/management.key.
 # PORTITOR_IMAGE, PORTITOR_IDENTITY_IMAGE and PORTITOR_ISSUER_IMAGE pick
 # other images, for example local builds.
 
@@ -27,17 +33,17 @@ name: portitor-demo
 
 # shared by both participants
 x-identity: &identity
-  image: ${PORTITOR_IDENTITY_IMAGE:-ghcr.io/brunopacheco1/portitor-identity:0.6.0}
+  image: ${PORTITOR_IDENTITY_IMAGE:-ghcr.io/brunopacheco1/portitor-identity:0.7.0}
   depends_on: [issuer]
 x-connector: &connector
-  image: ${PORTITOR_IMAGE:-ghcr.io/brunopacheco1/portitor-connector:0.6.0}
+  image: ${PORTITOR_IMAGE:-ghcr.io/brunopacheco1/portitor-connector:0.7.0}
 
 services:
   # The data space's authority: did:web:issuer%3A8070, its issuer service
   # (credential requests, status lists) and its management API, where
   # scripts/demo-compose.sh registers the participants.
   issuer:
-    image: ${PORTITOR_ISSUER_IMAGE:-ghcr.io/brunopacheco1/portitor-issuer:0.6.0}
+    image: ${PORTITOR_ISSUER_IMAGE:-ghcr.io/brunopacheco1/portitor-issuer:0.7.0}
     environment:
       PORTITOR_PARTICIPANT_ID: did:web:issuer%3A8070
       PORTITOR_ISSUER_SERVICE_URL: http://issuer:8070/issuer
@@ -48,11 +54,18 @@ services:
       PORTITOR_MANAGEMENT_BIND: 0.0.0.0:8071
       PORTITOR_MANAGEMENT_API_KEY_FILE: /run/secrets/issuer-management-key
       PORTITOR_ALLOW_HTTP_CALLBACKS: "true"
+      # the demo bundle: its public key in the DID document
+      # (did:web:issuer%3A8070#bundle-key), the signed versions served at
+      # http://issuer:8070/bundles/<version>/, the newest named in
+      # http://issuer:8070/bundles/latest.json
+      PORTITOR_ISSUER_BUNDLE_KEY_FILE: /config/bundle/bundle-key.jwk
+      PORTITOR_ISSUER_BUNDLE_DIR: /config/bundle/bundles
     secrets:
       - issuer-key
       - issuer-management-key
     volumes:
       - ../issuer-credentials.json:/config/issuer-credentials.json:ro
+      - ./run/issuer/bundle:/config/bundle:ro
       - issuer-data:/data
     ports:
       - 127.0.0.1:18071:8071 # management API
@@ -100,18 +113,30 @@ services:
       # data from there (the consumer reaches the provider as
       # http://provider:8080, the address given when negotiating)
       PORTITOR_PUBLIC_URL: http://127.0.0.1:18080
+      # HealthDCAT-AP datasets, checked against the data space's bundle
       PORTITOR_DATASETS_FILE: /config/datasets.json
-      # the processing-records offer checks a DataProcessorCredential claim (ADR 0019)
+      # the newest version (latest.json), looked for every hour
+      PORTITOR_BUNDLE_URL: http://issuer:8070/bundles/
+      PORTITOR_BUNDLE_AUTHORITY: did:web:issuer%3A8070
+      # the offer for EU processors checks a DataProcessorCredential claim (ADR 0019)
       PORTITOR_POLICY_CREDENTIALS: DataProcessorCredential
       PORTITOR_ALLOW_HTTP_CALLBACKS: "true"
+      # the harvest jobs (GET /v1/harvest-jobs)
+      PORTITOR_MANAGEMENT_BIND: 0.0.0.0:8081
+      PORTITOR_MANAGEMENT_API_KEY_FILE: /run/secrets/provider-management-key
     secrets:
       - provider-sts-secret
+      - provider-management-key
     volumes:
-      - ./datasets.json:/config/datasets.json:ro
+      - ../healthdcat-datasets.json:/config/datasets.json:ro
       - provider-data:/data
     ports:
       - 127.0.0.1:18080:8080
-    depends_on: [provider-identity, data]
+      - 127.0.0.1:18081:8081
+    depends_on: [provider-identity, data, issuer]
+    # the bundle and the DID documents are read at start; until the issuer
+    # and the identity answer, the start fails and is tried again
+    restart: on-failure
 
   # --- the consumer ---------------------------------------------------------
 
@@ -171,6 +196,8 @@ secrets:
     file: ./run/provider/sts-client-secret
   provider-identity-management-key:
     file: ./run/provider/identity-management.key
+  provider-management-key:
+    file: ./run/provider/management.key
   consumer-identity-key:
     file: ./run/consumer/identity-key.pem
   consumer-sts-secret:

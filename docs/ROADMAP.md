@@ -261,19 +261,61 @@ registry moved to 0.7, so each release has one main risk (maintainer,
   deletes the revoked one (DEPLOYING). The SHACL spike is done; the
   maintainer chose an own SHACL Core subset for 0.7 (ADR 0005).
 
-## 0.7 Schema and vocabulary registry
+## 0.7 Schema and vocabulary registry, dataset harvest
+
+Plan approved by the maintainer on 2026-11-14.
 
 - Schema and vocabulary registry ([ADR 0005](adr/0005-schema-and-vocabulary-registry.md)):
-  the authority builds and signs a bundle of SHACL shapes and SKOS
-  vocabularies (for example HealthDCAT-AP); the connector fetches and
-  verifies it. The connector's own datasets file (dataset metadata and
-  offer policies) is checked against the shapes at start, like every DSP
-  message in and out, before anything is published (maintainer,
-  2026-11-12). Uses the engine chosen by the 0.6 spike.
-- The catalog `@context` accepts extra prefixes (for example
-  HealthDCAT-AP's).
-- Exit: a dataset that breaks the authority's shapes is not published; a
-  DSP message that breaks them is refused.
+  the authority builds and signs a bundle of SHACL shapes, vocabularies
+  and JSON-LD contexts with `portitor-issuer bundle build`, signed with a
+  separate bundle key under its `did:web`; the issuer can serve it. The
+  connector pulls the newest version (or a fixed one), verifies it,
+  caches it on disk and puts a new version in use without a restart.
+  How schemas are collected and stored stays open: see
+  [Technical debt](#technical-debt).
+  HealthDCAT-AP release 8 is the baseline.
+- Our own SHACL Core engine, `portitor-shacl` (maintainer, 2026-11-14):
+  shapes that use anything it does not implement are refused.
+- Datasets are harvested into a read copy ([ADR 0020](adr/0020-dataset-harvest.md)):
+  the source of truth lives outside the connector; the first source is
+  the existing datasets file; harvest at start and every hour
+  (`PORTITOR_HARVEST_INTERVAL_SECONDS`); each dataset is checked on its
+  own (DSP, ODRL, SHACL for its `dct:accessRights` level); a bad dataset
+  is rejected and never stops the connector; every run is stored with
+  its errors and a summary, readable at `GET /v1/harvest-jobs`. Policies
+  live with the datasets; no API writes datasets or policies.
+- The SHACL `MessageGuard` adapter checks DSP messages in and out.
+- Datasets that passed carry `dct:conformsTo`. The catalog `@context`
+  stays the DSP context alone; metadata terms outside it are full IRIs
+  (maintainer, 2026-11-14).
+- Reviews before the release: engineering and testing, readability
+  (`docs/RUST-IDIOMS.md`), documentation (C4 diagrams, OpenAPI, website,
+  DEPLOYING).
+- Exit: a dataset that breaks the authority's shapes is not published,
+  its error is in the harvest job, and the connector keeps running; a
+  dataset removed from the source stops new negotiations while a
+  transfer under an existing agreement still works; a DSP message that
+  breaks the shapes is refused; a changed or wrongly signed bundle is
+  refused; the engine agrees with the EU ITB validator on our release 8
+  samples; the DSP TCK, the DCP TCK and the EDC interop test stay green.
+
+- Result (2026-11-14): met, run locally. A HealthDCAT-AP release 8 bundle
+  (with the DCAT-AP 3.0.0 shapes and reduced code lists) is built and
+  signed with the issuer's bundle key and pinned by the provider; in the
+  demo two valid datasets are served with `dct:conformsTo` and one is
+  rejected with its 7 SHACL violations in `GET /v1/harvest-jobs`, while
+  the connector keeps running. A dataset removed from the source stops new
+  negotiations while a transfer under an existing agreement still works
+  (tests). A DSP message that breaks the shapes is refused (400 inbound,
+  not sent outbound). A changed or wrongly signed bundle, or one signed
+  with any key other than the bundle key, is refused. The engine gives
+  the same 7 results as the EU ITB validator on the spike samples and
+  passes the vendored W3C SHACL tests for its components. The DSP TCK
+  passes its 65 required tests, the DCP TCK 41 issuer (also with a bundle
+  key), 54 credential service and 22 verifier tests, and the EDC interop
+  test (EDC v1.0.0-RC7) passes with the bundle on. The catalog `@context`
+  stays the DSP context alone; datasets use full IRIs (maintainer,
+  2026-11-14).
 
 ## 0.8 Gaia-X Trust Framework (Danube)
 
@@ -335,3 +377,37 @@ registry moved to 0.7, so each release has one main risk (maintainer,
   gateway, with a small login adapter ([ADR 0017](adr/0017-simpl-open.md)).
   Parked until the maintainer sets up a Simpl-Open sandbox to test
   against (maintainer, 2026-11-13).
+- Revise agreements when the scope of the data changes, for example a
+  data subject objects to a use, or the consumer asks to change the
+  scope of the first agreement (maintainer, 2026-11-14). Until then an
+  agreement keeps working after its dataset leaves the source.
+- More harvest sources for datasets ([ADR 0020](adr/0020-dataset-harvest.md)),
+  such as a DCAT-AP endpoint or CKAN; which catalogues to support is
+  decided later (maintainer, 2026-11-14).
+- A dataspace-wide registry or federated catalogue, run by the
+  authority, only if needed (maintainer, 2026-11-14): it would pull the
+  participants' DSP catalogs, check them with the same bundle and offer
+  search (SPARQL), with its own ADR.
+- Check other participants' catalogs against the bundle (warnings only,
+  ADR 0005); bundle expiry and bundle key rotation.
+
+## Technical debt
+
+Known open questions, kept here until they are investigated and
+decided. Each names what is in place now.
+
+- **How schemas and vocabularies are collected and stored**
+  (maintainer, 2026-11-14: to be investigated further). In 0.7 the
+  authority publishes a signed bundle in a format Portitor defines
+  (`manifest.json`, `manifest.jws`, `latest.json`; [ADR 0005](adr/0005-schema-and-vocabulary-registry.md)),
+  and the connector pulls it into a disk cache (`portitor-bundle`).
+  Only its version fields come from a standard (W3C DCAT 3
+  `dcat:version` and `dcterms:issued`). No data space specification we
+  follow defines how an authority publishes schemas: Simpl-Open has its
+  own schema-manager API (versions numbered by the authority, pulled by
+  a sync adapter, not signed), and its versioning requirements are still
+  Proposed. Portitor must not invent a new standard, so the format may
+  change when this is decided. To investigate: how Simpl-Open, Gaia-X
+  and HealthData@EU authorities publish schemas, whether a DCAT catalogue
+  of schema distributions can replace `latest.json`, and where the
+  connector should keep them.

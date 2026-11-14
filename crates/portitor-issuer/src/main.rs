@@ -4,6 +4,7 @@
 
 //! Portitor issuer component binary.
 
+use std::ffi::OsString;
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -18,8 +19,40 @@ use portitor_runtime::serve::{
     MAX_CONCURRENT_REQUESTS, REQUEST_TIMEOUT, bind_management, init_logging, serve, with_limits,
 };
 
+/// Without arguments, runs the issuer. `portitor-issuer bundle build
+/// ...` builds and signs a schema and vocabulary bundle offline instead
+/// (see `portitor_issuer::bundle_build`), and exits.
+fn main() -> ExitCode {
+    let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    match args.split_first() {
+        None => serve_issuer(),
+        Some((command, rest)) if command == "bundle" => bundle_command(rest),
+        Some(_) => {
+            eprintln!(
+                "portitor-issuer takes no arguments, except for: {}",
+                portitor_issuer::bundle_build::USAGE
+            );
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// `portitor-issuer bundle ...`: prints the result or the error.
+fn bundle_command(args: &[OsString]) -> ExitCode {
+    match portitor_issuer::bundle_build::run(args) {
+        Ok(report) => {
+            println!("{report}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 #[tokio::main]
-async fn main() -> ExitCode {
+async fn serve_issuer() -> ExitCode {
     init_logging();
     match run().await {
         Ok(()) => ExitCode::SUCCESS,
@@ -44,7 +77,20 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         directory: Arc::new(WebDirectory::new(config.allow_http)?),
         sender: Arc::new(HttpSender::new(config.allow_http)?),
     };
-    let issuer = Arc::new(Issuer::new(&config, key, definitions, ports)?);
+    let credential_key = key.public_jwk();
+    let mut issuer = Issuer::new(&config, key, definitions, ports)?;
+    if let Some(file) = &config.bundle_key_file {
+        let bundle_key = portitor_issuer::bundles::read_public_key(file)?;
+        if bundle_key == credential_key {
+            return Err("PORTITOR_ISSUER_BUNDLE_KEY_FILE: the bundle key must not be the credential signing key".into());
+        }
+        issuer.add_bundle_key(&bundle_key);
+        tracing::info!(kid = %portitor_issuer::bundles::bundle_kid(issuer.did()), "bundle key listed in the DID document");
+    }
+    if let Some(folder) = &config.bundle_dir {
+        tracing::info!(folder = %folder.display(), "serving bundles at /bundles/");
+    }
+    let issuer = Arc::new(issuer);
     let listener = tokio::net::TcpListener::bind(&config.bind).await?;
 
     let management = if let Some(settings) = &config.management {

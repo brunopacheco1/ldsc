@@ -16,10 +16,14 @@ publish = false
 axum.workspace = true
 # base64url of the data plane's access tokens
 base64.workspace = true
+# the authority's signed bundle: source and read copy (ADR 0005)
+portitor-bundle = { path = "../portitor-bundle" }
 portitor-dcp = { path = "../portitor-dcp" }
 portitor-dsp = { path = "../portitor-dsp" }
 portitor-dps = { path = "../portitor-dps" }
 portitor-runtime = { path = "../portitor-runtime" }
+# the SHACL engine for the bundle's rules (ADR 0005)
+portitor-shacl = { path = "../portitor-shacl" }
 http-body-util.workspace = true
 hyper.workspace = true
 ring.workspace = true
@@ -32,8 +36,14 @@ utoipa.workspace = true
 
 [dev-dependencies]
 jsonschema.workspace = true
+# builds and serves a signed bundle for the bundle tests (tests/bundle_source.rs,
+# tests/bundle_cache.rs)
+portitor-issuer = { path = "../portitor-issuer" }
 tower = { version = "0.5", features = ["util"] }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# test-util: a paused clock for the harvest schedule test (src/harvest/tests.rs)
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+# reads the log lines a test expects (src/outbox.rs)
+tracing-subscriber.workspace = true
 
 [features]
 default = ["data-plane"]

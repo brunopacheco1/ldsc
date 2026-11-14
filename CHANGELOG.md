@@ -12,16 +12,193 @@ versions may change behaviour and configuration.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-14
+
+### Added
+
+- Dataset harvest into a read copy (ADR 0020). The connector reads its
+  datasets from a source, today the datasets file
+  (`PORTITOR_DATASETS_FILE`, same format), at start and every
+  `PORTITOR_HARVEST_INTERVAL_SECONDS` (default 3600; `0`: only at start),
+  one run at a time. Each dataset is checked on its own (JSON, DSP
+  `Dataset` form, catalog rules, ODRL constraints, `portitor:source`); a
+  dataset that passes is added or updated, one that fails is rejected and
+  its previous good version stays. A dataset no longer in the source is
+  withdrawn: out of the catalog, new contract requests refused, transfers
+  under agreements already made still work. When the rules change, stored
+  datasets are checked again at start and those that fail are hidden.
+  Each run commits in one transaction; the last 100 runs are kept.
+- Management API: `GET /v1/harvest-jobs` and `GET /v1/harvest-jobs/{id}`
+  (read only): each run's trigger, outcome, counts, summary and the
+  error of each rejected dataset.
+- `portitor-shacl`, our own SHACL Core subset on Oxigraph's RDF crates
+  (ADR 0005): `sh:class`, `sh:datatype`, `sh:nodeKind`, `sh:minCount`,
+  `sh:maxCount`, `sh:hasValue`, `sh:node`, `sh:or`, `sh:pattern`,
+  `sh:property`; class and node targets; property, inverse, sequence and
+  alternative paths. Any other SHACL term is refused when shapes are
+  loaded; `sh:extends` and `sh:shape` are ignored with a warning. JSON-LD
+  to RDF with contexts from a given map only. Tested with 42 W3C SHACL
+  core tests, the HealthDCAT-AP release 8 and DCAT-AP 3.0.0 shapes, and
+  against the EU ITB validator on the 0.6 spike samples.
+- Signed schema and vocabulary bundle (ADR 0005, "Bundle format"):
+  `portitor-issuer bundle build` builds and signs a bundle offline
+  (`manifest.json`, compact JWS ES256 `manifest.jws`, typ
+  `portitor-bundle+jws`); JSON Schema in
+  `docs/schemas/bundle-manifest.schema.json`. The issuer lists the bundle
+  key as `<did>#bundle-key` (`PORTITOR_ISSUER_BUNDLE_KEY_FILE`) and serves
+  built bundles read only at `GET /bundles/{version}/{path}`
+  (`PORTITOR_ISSUER_BUNDLE_DIR`). `bundle build` also writes
+  `latest.json`, the newest version (unless `--not-latest`; never back to
+  an older `issued`), served at `GET /bundles/latest.json` with
+  `Cache-Control: no-cache`.
+- The connector pulls the authority's bundle (`PORTITOR_BUNDLE_URL` or
+  `PORTITOR_BUNDLE_DIR`, the bundles folder; `PORTITOR_BUNDLE_AUTHORITY`),
+  verifies it against the authority's DID document and every digest, and
+  keeps it in a disk cache (`PORTITOR_BUNDLE_CACHE_DIR`) used only when
+  the source cannot be reached. It follows the newest version
+  (`PORTITOR_BUNDLE_VERSION=latest`, the default; or one fixed version),
+  looked for every `PORTITOR_BUNDLE_REFRESH_SECONDS` (default 3600; `0`:
+  only at start). A new version is put in use without a restart, then
+  the stored datasets are checked again and the source harvested again.
+  It never goes back to a version issued before the one in use. Each
+  check is in the harvest job log with `"kind": "bundle"` (migration to
+  schema version 8).
+- New crate `portitor-bundle`: the bundle source (`BundleSource`,
+  `UrlSource`, `FolderSource`) and read copy (`BundleStore`,
+  `CacheFolder`), so other services can reuse them. The manifest's
+  `issued` is a UTC date and time (`YYYY-MM-DDThh:mm:ssZ`, DCAT 3
+  `dcterms:issued`). How schemas are collected and stored is recorded as
+  technical debt in `docs/ROADMAP.md`.
+- With a bundle, each harvested dataset is checked against the SHACL
+  shapes for its `dct:accessRights` value (read with the DSP context only;
+  its `@id` must be an absolute IRI); a dataset with violations is
+  rejected with the SHACL report in its harvest job, one that passes is
+  served with `"dct:conformsTo": {"@id": <profile>, "@type": "dct:Standard"}`.
+  With message shapes, DSP negotiation and transfer messages are checked
+  in and out (SHACL `MessageGuard`): an inbound one that fails is answered
+  400, an outbound one is not sent and its process ends (logged as a
+  rule breach, not as an unreachable counter-party). The catalog
+  `@context` stays the DSP context alone: write metadata terms outside it
+  as full IRIs. A bundle's `context` files serve only to read messages
+  whose `@context` names them. A bundle that cannot be loaded, or whose
+  shapes the engine refuses, stops the start.
+- Demo bundle sources for HealthDCAT-AP release 8
+  (`examples/bundle/healthdcat-ap-r8`: release 8 and DCAT-AP 3.0.0
+  shapes, reduced code lists), `scripts/demo-bundle.sh` to build and
+  sign it, `scripts/reduce_code_lists.py` to make the reduced code lists,
+  and `examples/healthdcat-datasets.json` (full IRIs; two datasets that
+  pass, `bed-occupancy` with 7 violations).
+- The demos (`scripts/demo.sh`, `scripts/demo-compose.sh`) run with the
+  demo bundle: the issuer builds and serves it, the provider follows it and
+  offers the HealthDCAT-AP datasets (the catalog shows `dct:conformsTo`,
+  the harvest job the SHACL report of `bed-occupancy`); the restricted
+  dataset is transferred under its `MembershipCredential` constraint.
+  The provider follows the issuer's `latest.json`.
+  The EDC interop test runs with the bundle too: EDC reads a
+  HealthDCAT-AP dataset with full-IRI metadata, negotiates and transfers
+  it. `scripts/dcp-issuer-tck.sh` has a `BUNDLE_KEY=1` variant (the DID
+  document lists `#bundle-key`), run in CI as well.
+- New fuzz targets: `shacl_load`, `shacl_jsonld`, `bundle_manifest`.
+- ADR 0020 (datasets harvested into a read copy) proposed, and ADR 0005
+  updated with the bundle format for 0.7; ROADMAP 0.7 rewritten for the
+  approved plan.
+
 ### Changed
 
+- A distribution in the catalog keeps its own metadata (`@id`,
+  `dcat:accessURL`, DCAT-AP properties); before, only `@type`, `format`
+  and `accessService` were served.
+- The Compose demo and `scripts/demo.sh` use
+  `examples/healthdcat-datasets.json` instead of `examples/datasets.json`
+  and `examples/compose/datasets.json` (removed); its offers cover the
+  same checks (changed terms, member and auditor offers, the
+  `DataProcessorCredential` offer and its revocation). The provider's
+  management API is on `127.0.0.1:18081` in the Compose demo.
+- **Behaviour change:** a datasets file that cannot be read, or a dataset
+  that breaks a rule (including a credential constraint on a type not in
+  `PORTITOR_POLICY_CREDENTIALS`, or a `portitor:source` that is not an
+  HTTP(S) URL), no longer stops the connector at start. The dataset is
+  rejected and logged, and the connector starts without it. To keep a
+  strict start, check `GET /v1/harvest-jobs` in a start-up probe.
+- Datasets live in the connector's SQLite database (migration to schema
+  version 7: read copy, harvest jobs and errors); the catalog and the
+  data plane read the copy in memory, replaced as a whole after a run
+  that changed it.
+- The log warning about a dataset without `portitor:source` now comes
+  from the harvest (`harvest: dataset has no portitor:source; its
+  transfers will be refused`); the 0.6 start warnings are gone.
 - ADR 0018 (issuer component, with its amendment from the 0.6 review) and
   ADR 0019 (credential constraints) accepted by the maintainer.
+- `PORTITOR_HARVEST_INTERVAL_SECONDS` and `PORTITOR_DATA_TOKEN_SECONDS`
+  above `31536000` (one year) are refused at start. Before, a huge
+  harvest interval aborted the connector right after start.
+- The harvest's rules version names the Portitor version
+  (`dsp(...; portitor <version>)`), so after an upgrade the stored
+  datasets are checked again at start (a `bundle` job), and the start run
+  checks every entry.
+- Harvest limits: a datasets file larger than 256 MiB fails the run; a
+  job stores at most the first 1000 entry errors (the summary says when
+  more were rejected); a stored SHACL report keeps its first 50 results
+  and says how many more in `resultsNotStored`.
+- The bundle cache removes the `.partial-*` and `.old-*` folders a
+  failed or stopped write left behind, and a failed swap puts the old
+  copy back.
+
+### Security
+
+- The bundle is signed with its own bundle key, separate from the
+  issuer's credential key; the issuer refuses to start if they are the
+  same, and needs only the public key. The connector accepts only the
+  configured version, signed (ES256 only) by the bundle key
+  `<authority>#bundle-key` that the authority's `did:web` document lists
+  under `assertionMethod`; a bundle signed with any other key of the
+  authority, such as its credential key, is refused, and `bundle build`
+  refuses any other `--kid`. Every file's SHA-256 must match; a
+  bundle that fails a check is never replaced by the cache, and never
+  replaces the version in use. `latest.json` is not signed, so the
+  connector refuses a version issued before the one in use (no
+  rollback, by the manifest's `issued`, the DCAT 3 `dcterms:issued`, a
+  UTC date and time; `bundle build` writes the time of the build by
+  default). Limits: manifest 1 MiB, 64 MiB per file, 256 MiB in all, 120 s
+  per download.
+- No JSON-LD context is fetched from the network: `portitor-shacl` reads
+  contexts only from a map the caller fills (the bundle's and the DSP
+  contexts). No Portitor binary parses RDF/XML: `bundle build` refuses it,
+  and code lists travel as N-Triples.
+- `portitor-shacl` refuses shapes that use a SHACL term it does not
+  implement, so nothing passes silently.
+- `portitor-shacl` checks each node against a shape about once, also
+  with recursive shapes on data with loops (a layered graph that took 79 s
+  now takes milliseconds), and one validation makes at most 1,000,000
+  checks (`MAX_CHECKS`): past that, the report has a Violation
+  (`urn:portitor:shacl:WorkLimit`), never a pass.
+- `portitor-shacl` refuses a `sh:pattern` that Rust's `regex` would read
+  differently from `XPath`: a `[` inside a character class (`XPath` class
+  subtraction such as `[a-z-[aeiou]]`), and with the `x` flag a `#` or
+  white space inside a class.
+- The issuer's public bundle route sends a file in 64 KiB pieces as it
+  reads it, with its `Content-Length`, instead of reading the whole file
+  into memory for each request, and keeps each version's parsed manifest
+  (read again only when the file changes).
 
 ### Documentation
 
 - Four more C4 level 4 diagrams (transfer, DSP caller authentication with
   DCP, issuance, presentation), and corrections from a review of the docs,
   the website and the diagrams against the 0.6 code.
+- Two new C4 level 4 diagrams (dataset harvest; bundle publish and load);
+  C1, C2 and C3 diagrams show the harvest, the read copy, the shape
+  source, the SHACL checks and the issuer's bundles.
+- DEPLOYING: dataset harvest, schema and vocabulary bundle (connector and
+  issuer), new settings and log messages, upgrade note "From 0.6 to 0.7".
+  README, ARCHITECTURE, TESTING, SECURITY-ASSURANCE, RUST-IDIOMS and the
+  website updated for 0.7.
+- RUST-IDIOMS: log fields (`%`, `?`), `self: &Arc<Self>`,
+  `spawn_blocking`, an `async` block passed to `timeout`, `Box<dyn
+  Iterator>` and boxed errors, `map_or`, `entry().or_default()`, function
+  pointers, a crate's trait for a standard type, tuple-struct `.0` and
+  `*guard =`, `usize::from(bool)`, byte strings, `include_str!`, `as`
+  against `try_from`, and `const fn`.
 
 ## [0.6.0] - 2026-11-14
 
