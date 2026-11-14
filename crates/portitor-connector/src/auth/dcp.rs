@@ -54,6 +54,7 @@ use std::time::Duration;
 
 use portitor_dcp::credential::{Credential, Presentation};
 use portitor_dcp::message::{PresentationQueryMessage, PresentationResponseMessage};
+use portitor_dcp::scope::merge_scopes;
 use portitor_dcp::status_list::{self, Status, StatusEntry};
 use portitor_dcp::{Claims, DidDocument, JtiCache, unverified_claims, validate_self_issued};
 use portitor_dsp::policy::HeldCredential;
@@ -245,7 +246,7 @@ impl DcpVerifier {
         let is_member = checked_credentials
             .verified
             .iter()
-            .any(|credential| credential.types.iter().any(|t| t == MEMBERSHIP));
+            .any(|credential| credential.has_type(MEMBERSHIP));
         if !is_member {
             return Err(no_membership(&checked_credentials.left_out));
         }
@@ -269,12 +270,7 @@ impl DcpVerifier {
             .ok_or("the caller sent no access token")?;
         let doc = self.resolver.resolve(&caller.id).await?;
         let checked = CheckedToken { doc, access_token };
-        let mut scopes = self.scopes.clone();
-        for scope in extra {
-            if !scopes.contains(scope) {
-                scopes.push(scope.clone());
-            }
-        }
+        let scopes = merge_scopes(&self.scopes, extra);
         let presentations = self.query(&checked, &scopes).await?;
         let checked_credentials = self
             .check_presentations(&caller.id, &checked.doc, &presentations)

@@ -119,10 +119,10 @@ pub(crate) trait Outbox: Send + Sync + 'static {
     fn link(&self) -> &Link;
 
     /// The scopes, beyond the configured ones, that the counter-party may
-    /// read with the token sent with `out`: those an offer's credential
-    /// constraints need (ADR 0019). None by default.
-    fn scopes(&self, out: &Self::Out) -> Vec<String> {
-        let _ = out;
+    /// read with the token sent with the message: those an offer's
+    /// credential constraints need (ADR 0019). None by default, so the
+    /// default does not look at the message (`_out`).
+    fn scopes(&self, _out: &Self::Out) -> Vec<String> {
         Vec::new()
     }
 
@@ -145,15 +145,14 @@ pub(crate) trait Outbox: Send + Sync + 'static {
         answer: Option<&Value>,
     ) -> Result<Option<Self::Out>, Self::Failure>;
 
-    /// `out`, a first message, never arrived: end the process here. Only
-    /// a consumer sends first messages, so by default there is nothing to
-    /// do.
+    /// The message, a first message, never arrived: end the process here.
+    /// Only a consumer sends first messages, so by default there is
+    /// nothing to do (and the default does not look at `_out`).
     ///
     /// # Errors
     ///
     /// The store failed.
-    fn not_started(&self, out: &Self::Out) -> Result<(), Self::Failure> {
-        let _ = out;
+    fn not_started(&self, _out: &Self::Out) -> Result<(), Self::Failure> {
         Ok(())
     }
 

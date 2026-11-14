@@ -298,20 +298,34 @@ pub(crate) async fn event(
             Ok(m) => m,
             Err(e) => return bad_request(*e),
         };
-    // an acceptance may lead to an agreement: the offer's credentials
-    let offer = match msg.event_type {
-        NegotiationEvent::Accepted => provider
-            .service
-            .offer_under_negotiation(&pid, &caller.id)
-            .ok(),
-        NegotiationEvent::Finalized => None,
-    };
-    let credentials = match offer {
-        Some(offer) => provider.credentials(&caller, &offer).await,
-        None => CallerCredentials::default(),
-    };
+    let credentials = credentials_for_event(&provider, &caller, &pid, msg.event_type).await;
     let handled = provider.service.event(&pid, &msg, &caller.id, &credentials);
     finish(&provider, handled, StatusCode::OK)
+}
+
+/// The caller's credentials that an event on negotiation `pid` needs.
+/// Only an acceptance may lead to an agreement, so only then are the
+/// credentials of the offer's constraints asked for (ADR 0019).
+///
+/// When the offer cannot be read (an unknown negotiation, another
+/// consumer's, or a store failure), the answer is "no credentials":
+/// `service.event` then reads the negotiation itself and answers that
+/// error, and with no credentials a credential constraint can only fail
+/// (fail closed).
+async fn credentials_for_event(
+    provider: &Provider,
+    caller: &Caller,
+    pid: &str,
+    event: NegotiationEvent,
+) -> CallerCredentials {
+    match event {
+        NegotiationEvent::Accepted => {}
+        NegotiationEvent::Finalized => return CallerCredentials::default(),
+    }
+    match provider.service.offer_under_negotiation(pid, &caller.id) {
+        Ok(offer) => provider.credentials(caller, &offer).await,
+        Err(_) => CallerCredentials::default(),
+    }
 }
 
 /// `POST /negotiations/{providerPid}/agreement/verification`.

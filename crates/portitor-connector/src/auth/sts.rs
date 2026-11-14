@@ -21,6 +21,7 @@
 use std::fmt::Write as _;
 use std::sync::Arc;
 
+use portitor_dcp::scope::merge_scopes;
 use portitor_runtime::http::HttpSender;
 use serde_json::Value;
 
@@ -176,12 +177,7 @@ impl Prover for StsProver {
         scopes: &'a [String],
     ) -> BoxFuture<'a, Result<String, String>> {
         Box::pin(async move {
-            let mut granted = self.scopes.clone();
-            for scope in scopes {
-                if !granted.contains(scope) {
-                    granted.push(scope.clone());
-                }
-            }
+            let granted = merge_scopes(&self.scopes, scopes);
             let request = TokenRequest {
                 audience,
                 scopes: &granted,

@@ -61,15 +61,15 @@ pub trait Sender: Send + Sync {
 
     /// Like [`Sender::post`], with the header `Authorization:
     /// <authorization>` (a DSP request carries the caller's DCP token,
-    /// ADR 0016). The default leaves the header out: only senders that do
+    /// ADR 0016). The default leaves the header out (`_authorization`
+    /// is not used): only senders that do
     /// not speak HTTP (test fakes) keep it; [`HttpSender`] sends it.
     fn post_authorized<'a>(
         &'a self,
         url: &'a str,
         body: &'a Value,
-        authorization: &'a str,
+        _authorization: &'a str,
     ) -> BoxFuture<'a, Result<Value, String>> {
-        let _ = authorization;
         self.post(url, body)
     }
 
@@ -79,9 +79,8 @@ pub trait Sender: Send + Sync {
     fn get_authorized<'a>(
         &'a self,
         url: &'a str,
-        authorization: &'a str,
+        _authorization: &'a str,
     ) -> BoxFuture<'a, Result<Value, String>> {
-        let _ = authorization;
         self.get(url)
     }
 }

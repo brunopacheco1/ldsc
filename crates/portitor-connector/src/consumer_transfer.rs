@@ -349,10 +349,10 @@ type Consumer = State<Arc<TransferConsumer>>;
 /// `GET <callback>/transfers/{consumerPid}`.
 pub(crate) async fn get(
     State(consumer): Consumer,
-    Extension(Caller { id: caller, .. }): Extension<Caller>,
+    Extension(caller): Extension<Caller>,
     Path(cpid): Path<String>,
 ) -> Response {
-    if let Some(refused) = consumer.refusal(&cpid, &caller) {
+    if let Some(refused) = consumer.refusal(&cpid, &caller.id) {
         return refused;
     }
     match consumer.service.get(&cpid) {
@@ -364,11 +364,11 @@ pub(crate) async fn get(
 /// `POST <callback>/transfers/{consumerPid}/start`.
 pub(crate) async fn start(
     State(consumer): Consumer,
-    Extension(Caller { id: caller, .. }): Extension<Caller>,
+    Extension(caller): Extension<Caller>,
     Path(cpid): Path<String>,
     body: Body,
 ) -> Response {
-    if let Some(refused) = consumer.refusal(&cpid, &caller) {
+    if let Some(refused) = consumer.refusal(&cpid, &caller.id) {
         return refused;
     }
     let msg: TransferStartMessage = match consumer.read(body, "TransferStartMessage", &cpid) {
@@ -381,11 +381,11 @@ pub(crate) async fn start(
 /// `POST <callback>/transfers/{consumerPid}/suspension`.
 pub(crate) async fn suspension(
     State(consumer): Consumer,
-    Extension(Caller { id: caller, .. }): Extension<Caller>,
+    Extension(caller): Extension<Caller>,
     Path(cpid): Path<String>,
     body: Body,
 ) -> Response {
-    if let Some(refused) = consumer.refusal(&cpid, &caller) {
+    if let Some(refused) = consumer.refusal(&cpid, &caller.id) {
         return refused;
     }
     let msg: TransferSuspensionMessage =
@@ -404,11 +404,11 @@ pub(crate) async fn suspension(
 /// `POST <callback>/transfers/{consumerPid}/completion`.
 pub(crate) async fn completion(
     State(consumer): Consumer,
-    Extension(Caller { id: caller, .. }): Extension<Caller>,
+    Extension(caller): Extension<Caller>,
     Path(cpid): Path<String>,
     body: Body,
 ) -> Response {
-    if let Some(refused) = consumer.refusal(&cpid, &caller) {
+    if let Some(refused) = consumer.refusal(&cpid, &caller.id) {
         return refused;
     }
     let msg: TransferCompletionMessage =
@@ -427,11 +427,11 @@ pub(crate) async fn completion(
 /// `POST <callback>/transfers/{consumerPid}/termination`.
 pub(crate) async fn termination(
     State(consumer): Consumer,
-    Extension(Caller { id: caller, .. }): Extension<Caller>,
+    Extension(caller): Extension<Caller>,
     Path(cpid): Path<String>,
     body: Body,
 ) -> Response {
-    if let Some(refused) = consumer.refusal(&cpid, &caller) {
+    if let Some(refused) = consumer.refusal(&cpid, &caller.id) {
         return refused;
     }
     let msg: TransferTerminationMessage =

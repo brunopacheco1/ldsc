@@ -82,6 +82,14 @@ pub struct HeldCredential {
     pub subjects: Vec<Map<String, Value>>,
 }
 
+impl HeldCredential {
+    /// Whether `credential_type` is one of its types.
+    #[must_use]
+    pub fn has_type(&self, credential_type: &str) -> bool {
+        self.types.iter().any(|t| t == credential_type)
+    }
+}
+
 /// What the provider knows about a caller's credentials while it decides
 /// on one request: which types policies may use, and the caller's
 /// verified credentials. The default understands [`MEMBERSHIP`] and holds
@@ -188,11 +196,7 @@ fn texts(value: &Value) -> Option<Vec<&str>> {
 /// access (ADR 0019).
 pub(super) fn holds(constraint: &CredentialConstraint<'_>, held: &[HeldCredential]) -> bool {
     for credential in held {
-        if !credential
-            .types
-            .iter()
-            .any(|t| t == constraint.credential_type)
-        {
+        if !credential.has_type(constraint.credential_type) {
             continue;
         }
         for subject in &credential.subjects {

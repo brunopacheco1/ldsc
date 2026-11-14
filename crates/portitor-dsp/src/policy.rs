@@ -74,8 +74,8 @@ impl std::error::Error for PolicyError {}
 ///
 /// The first constraint that is not understood.
 pub fn validate(offer: &Offer, types: &CredentialTypes) -> Result<(), PolicyError> {
-    for c in offer.permission.iter().flat_map(|r| &r.constraint) {
-        check(c, &Mode::Validate(types))?;
+    for constraint in offer.permission.iter().flat_map(|rule| &rule.constraint) {
+        check(constraint, &Mode::Validate(types))?;
     }
     Ok(())
 }
@@ -97,10 +97,13 @@ pub fn permissions_hold<'a>(
     let now = parse_time(now)
         .ok_or_else(|| PolicyError::Unsupported(format!("current time {now:?}")))?
         .start;
-    let mode = Mode::Evaluate { now, credentials };
-    for c in terms.permission.iter().flat_map(|r| &r.constraint) {
-        if !check(c, &mode)? {
-            return Err(PolicyError::NotSatisfied(describe(c)));
+    let mode = Mode::Evaluate {
+        now,
+        caller: credentials,
+    };
+    for constraint in terms.permission.iter().flat_map(|rule| &rule.constraint) {
+        if !check(constraint, &mode)? {
+            return Err(PolicyError::NotSatisfied(describe(constraint)));
         }
     }
     Ok(())
@@ -116,27 +119,28 @@ pub fn permissions_hold<'a>(
 pub fn credential_scopes<'a>(policy: impl Into<Terms<'a>>, types: &CredentialTypes) -> Vec<String> {
     let terms = policy.into();
     let mut scopes = Vec::new();
-    for c in terms.permission.iter().flat_map(|r| &r.constraint) {
-        collect_scopes(c, types, &mut scopes);
+    for constraint in terms.permission.iter().flat_map(|rule| &rule.constraint) {
+        collect_scopes(constraint, types, &mut scopes);
     }
     scopes
 }
 
-fn collect_scopes(c: &Constraint, types: &CredentialTypes, scopes: &mut Vec<String>) {
-    match c {
-        Constraint::Atomic(a) => {
-            let Some((credential_type, _)) = credentials::split_left_operand(&a.left_operand)
+fn collect_scopes(constraint: &Constraint, types: &CredentialTypes, scopes: &mut Vec<String>) {
+    match constraint {
+        Constraint::Atomic(atomic) => {
+            let Some((credential_type, _)) = credentials::split_left_operand(&atomic.left_operand)
             else {
                 return;
             };
             if let Some(scope) = types.scope(credential_type)
-                && !scopes.iter().any(|s| s == scope)
+                && !scopes.iter().any(|known| known == scope)
             {
                 scopes.push(scope.to_owned());
             }
         }
-        Constraint::Logical(l) => {
-            for part in logical_parts(l).1 {
+        Constraint::Logical(logical) => {
+            let (_name, parts) = logical_parts(logical);
+            for part in parts {
                 collect_scopes(part, types, scopes);
             }
         }
@@ -154,23 +158,23 @@ pub struct Terms<'a> {
 }
 
 impl<'a> From<&'a Offer> for Terms<'a> {
-    fn from(o: &'a Offer) -> Self {
+    fn from(offer: &'a Offer) -> Self {
         Self {
-            permission: &o.permission,
-            prohibition: &o.prohibition,
-            obligation: &o.obligation,
-            profile: o.profile.as_ref(),
+            permission: &offer.permission,
+            prohibition: &offer.prohibition,
+            obligation: &offer.obligation,
+            profile: offer.profile.as_ref(),
         }
     }
 }
 
 impl<'a> From<&'a Agreement> for Terms<'a> {
-    fn from(a: &'a Agreement) -> Self {
+    fn from(agreement: &'a Agreement) -> Self {
         Self {
-            permission: &a.permission,
-            prohibition: &a.prohibition,
-            obligation: &a.obligation,
-            profile: a.profile.as_ref(),
+            permission: &agreement.permission,
+            prohibition: &agreement.prohibition,
+            obligation: &agreement.obligation,
+            profile: agreement.profile.as_ref(),
         }
     }
 }
@@ -201,10 +205,10 @@ enum Mode<'a> {
     /// one of these types.
     Validate(&'a CredentialTypes),
     /// Evaluate it at `now` (nanoseconds, as [`portitor_time::Span`]) for
-    /// a caller with `credentials`.
+    /// a caller with these credentials.
     Evaluate {
         now: i128,
-        credentials: &'a CallerCredentials,
+        caller: &'a CallerCredentials,
     },
 }
 
@@ -213,42 +217,42 @@ impl Mode<'_> {
     fn understood(&self) -> &CredentialTypes {
         match self {
             Self::Validate(types) => types,
-            Self::Evaluate { credentials, .. } => &credentials.understood,
+            Self::Evaluate { caller, .. } => &caller.understood,
         }
     }
 }
 
 /// The name and the parts of a logical constraint.
-fn logical_parts(l: &LogicalConstraint) -> (&'static str, &[Constraint]) {
-    match l {
-        LogicalConstraint::And(p) => ("and", p),
-        LogicalConstraint::AndSequence(p) => ("andSequence", p),
-        LogicalConstraint::Or(p) => ("or", p),
-        LogicalConstraint::Xone(p) => ("xone", p),
+fn logical_parts(logical: &LogicalConstraint) -> (&'static str, &[Constraint]) {
+    match logical {
+        LogicalConstraint::And(parts) => ("and", parts),
+        LogicalConstraint::AndSequence(parts) => ("andSequence", parts),
+        LogicalConstraint::Or(parts) => ("or", parts),
+        LogicalConstraint::Xone(parts) => ("xone", parts),
     }
 }
 
 /// Checks, or evaluates, one constraint (see [`Mode`]). When only
 /// checking, returns `true` for every understood constraint.
-fn check(c: &Constraint, mode: &Mode<'_>) -> Result<bool, PolicyError> {
-    match c {
-        Constraint::Atomic(a) => atomic(a, mode),
-        Constraint::Logical(l) => {
-            let (kind, parts) = logical_parts(l);
+fn check(constraint: &Constraint, mode: &Mode<'_>) -> Result<bool, PolicyError> {
+    match constraint {
+        Constraint::Atomic(atomic) => check_atomic(atomic, mode),
+        Constraint::Logical(logical) => {
+            let (kind, parts) = logical_parts(logical);
             if parts.is_empty() {
                 return Err(PolicyError::Unsupported(format!("empty {kind}")));
             }
             // evaluate every part, so an unsupported one is never skipped
             let mut held = 0;
-            for p in parts {
-                if check(p, mode)? {
+            for part in parts {
+                if check(part, mode)? {
                     held += 1;
                 }
             }
             if matches!(mode, Mode::Validate(_)) {
                 return Ok(true);
             }
-            Ok(match l {
+            Ok(match logical {
                 LogicalConstraint::And(_) | LogicalConstraint::AndSequence(_) => {
                     held == parts.len()
                 }
@@ -259,20 +263,20 @@ fn check(c: &Constraint, mode: &Mode<'_>) -> Result<bool, PolicyError> {
     }
 }
 
-fn atomic(a: &AtomicConstraint, mode: &Mode<'_>) -> Result<bool, PolicyError> {
-    if short(&a.left_operand) == Some("dateTime") {
-        return date_time(a, mode);
+fn check_atomic(atomic: &AtomicConstraint, mode: &Mode<'_>) -> Result<bool, PolicyError> {
+    if short(&atomic.left_operand) == Some("dateTime") {
+        return date_time(atomic, mode);
     }
-    if credentials::split_left_operand(&a.left_operand).is_some() {
-        return credential(a, mode);
+    if credentials::split_left_operand(&atomic.left_operand).is_some() {
+        return credential(atomic, mode);
     }
-    Err(PolicyError::Unsupported(describe_atomic(a)))
+    Err(PolicyError::Unsupported(describe_atomic(atomic)))
 }
 
 /// A `dateTime` constraint (ADR 0009).
-fn date_time(a: &AtomicConstraint, mode: &Mode<'_>) -> Result<bool, PolicyError> {
-    let unsupported = || PolicyError::Unsupported(describe_atomic(a));
-    let right = match &a.right_operand {
+fn date_time(atomic: &AtomicConstraint, mode: &Mode<'_>) -> Result<bool, PolicyError> {
+    let unsupported = || PolicyError::Unsupported(describe_atomic(atomic));
+    let right = match &atomic.right_operand {
         serde_json::Value::String(s) => s.as_str(),
         serde_json::Value::Object(o) => o
             .get("@value")
@@ -281,7 +285,7 @@ fn date_time(a: &AtomicConstraint, mode: &Mode<'_>) -> Result<bool, PolicyError>
         _ => return Err(unsupported()),
     };
     let span = parse_time(right).ok_or_else(unsupported)?;
-    let compare: fn(i128, Span) -> bool = match short(&a.operator).unwrap_or_default() {
+    let compare: fn(i128, Span) -> bool = match short(&atomic.operator).unwrap_or_default() {
         "eq" => |t, s| s.start <= t && t < s.end,
         "neq" => |t, s| t < s.start || s.end <= t,
         "lt" => |t, s| t < s.start,
@@ -297,19 +301,21 @@ fn date_time(a: &AtomicConstraint, mode: &Mode<'_>) -> Result<bool, PolicyError>
 }
 
 /// A credential constraint (ADR 0019).
-fn credential(a: &AtomicConstraint, mode: &Mode<'_>) -> Result<bool, PolicyError> {
-    let unsupported = || PolicyError::Unsupported(describe_atomic(a));
-    let Some((credential_type, path)) = credentials::split_left_operand(&a.left_operand) else {
+fn credential(atomic: &AtomicConstraint, mode: &Mode<'_>) -> Result<bool, PolicyError> {
+    let unsupported = || PolicyError::Unsupported(describe_atomic(atomic));
+    let Some((credential_type, path)) = credentials::split_left_operand(&atomic.left_operand)
+    else {
         return Err(unsupported());
     };
     if mode.understood().scope(credential_type).is_none() {
         return Err(PolicyError::Unsupported(format!(
             "{}: the credential type {credential_type} is not configured",
-            describe_atomic(a)
+            describe_atomic(atomic)
         )));
     }
-    let operator = short(&a.operator).unwrap_or_default();
-    let comparison = credentials::comparison(operator, &a.right_operand).ok_or_else(unsupported)?;
+    let operator = short(&atomic.operator).unwrap_or_default();
+    let comparison =
+        credentials::comparison(operator, &atomic.right_operand).ok_or_else(unsupported)?;
     let constraint = credentials::CredentialConstraint {
         credential_type,
         path,
@@ -317,10 +323,7 @@ fn credential(a: &AtomicConstraint, mode: &Mode<'_>) -> Result<bool, PolicyError
     };
     match mode {
         Mode::Validate(_) => Ok(true),
-        Mode::Evaluate {
-            credentials: caller,
-            ..
-        } => Ok(credentials::holds(&constraint, &caller.held)),
+        Mode::Evaluate { caller, .. } => Ok(credentials::holds(&constraint, &caller.held)),
     }
 }
 
@@ -335,15 +338,18 @@ fn short(term: &str) -> Option<&str> {
     (!s.is_empty() && !s.contains([':', '/'])).then_some(s)
 }
 
-fn describe(c: &Constraint) -> String {
-    match c {
-        Constraint::Atomic(a) => describe_atomic(a),
+fn describe(constraint: &Constraint) -> String {
+    match constraint {
+        Constraint::Atomic(atomic) => describe_atomic(atomic),
         Constraint::Logical(_) => "a logical constraint".to_owned(),
     }
 }
 
-fn describe_atomic(a: &AtomicConstraint) -> String {
-    format!("{} {} {}", a.left_operand, a.operator, a.right_operand)
+fn describe_atomic(atomic: &AtomicConstraint) -> String {
+    format!(
+        "{} {} {}",
+        atomic.left_operand, atomic.operator, atomic.right_operand
+    )
 }
 
 #[cfg(test)]

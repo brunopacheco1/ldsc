@@ -297,16 +297,8 @@ pub fn policy_credentials(
     let mut types = CredentialTypes::new(&membership_scope);
     let mut listed: Vec<String> = Vec::new();
     for entry in comma_list(&text("PORTITOR_POLICY_CREDENTIALS").unwrap_or_default()) {
-        let (credential_type, scope) = match entry.split_once('=') {
-            Some((credential_type, scope)) => (credential_type.trim(), scope.trim().to_owned()),
-            None => (entry.as_str(), format!("{VC_TYPE_PREFIX}{entry}:read")),
-        };
-        let odd = |c: char| c == '.' || c == ':' || c == '/' || c.is_whitespace();
-        if credential_type.is_empty() || credential_type.contains(odd) {
-            return Err(format!(
-                "PORTITOR_POLICY_CREDENTIALS: {entry:?} is not Type or Type=scope"
-            ));
-        }
+        let (credential_type, scope) = parse_policy_entry(&entry)?;
+        let credential_type = credential_type.as_str();
         if listed.iter().any(|t| t == credential_type) {
             return Err(format!(
                 "PORTITOR_POLICY_CREDENTIALS lists {credential_type} twice"
@@ -321,6 +313,33 @@ pub fn policy_credentials(
         listed.push(credential_type.to_owned());
     }
     Ok(types)
+}
+
+/// One entry of `PORTITOR_POLICY_CREDENTIALS`: `Type` or `Type=scope`,
+/// read as the type and its scope (for `Type` alone,
+/// `org.eclipse.dspace.dcp.vc.type:<Type>:read`). Whether the scope fits
+/// the type is checked by the caller.
+///
+/// # Errors
+/// The type is empty or has a character a type name cannot have.
+fn parse_policy_entry(entry: &str) -> Result<(String, String), String> {
+    let (credential_type, scope) = match entry.split_once('=') {
+        Some((credential_type, scope)) => (credential_type.trim(), scope.trim().to_owned()),
+        None => (entry, format!("{VC_TYPE_PREFIX}{entry}:read")),
+    };
+    if credential_type.is_empty() || credential_type.contains(not_in_type_name) {
+        return Err(format!(
+            "PORTITOR_POLICY_CREDENTIALS: {entry:?} is not Type or Type=scope"
+        ));
+    }
+    Ok((credential_type.to_owned(), scope))
+}
+
+/// Whether `c` cannot be part of a credential type name here: `.` and
+/// `/` would make the left operand `<Type>.<claim>` ambiguous, `:` would
+/// break the scope, and spaces are a typo.
+fn not_in_type_name(c: char) -> bool {
+    c == '.' || c == ':' || c == '/' || c.is_whitespace()
 }
 
 /// The credential type a DCP "by type" scope asks for; `None` for any

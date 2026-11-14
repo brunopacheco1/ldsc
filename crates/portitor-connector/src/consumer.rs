@@ -315,10 +315,10 @@ impl Outbox for Consumer {
 /// `GET <callback>/negotiations/{consumerPid}`.
 pub(crate) async fn get(
     State(consumer): State<Arc<Consumer>>,
-    Extension(Caller { id: caller, .. }): Extension<Caller>,
+    Extension(caller): Extension<Caller>,
     Path(cpid): Path<String>,
 ) -> Response {
-    if let Some(refused) = consumer.refusal(&cpid, &caller) {
+    if let Some(refused) = consumer.refusal(&cpid, &caller.id) {
         return refused;
     }
     match consumer.service.get(&cpid) {
@@ -330,11 +330,11 @@ pub(crate) async fn get(
 /// `POST <callback>/negotiations/{consumerPid}/offers`.
 pub(crate) async fn offer(
     State(consumer): State<Arc<Consumer>>,
-    Extension(Caller { id: caller, .. }): Extension<Caller>,
+    Extension(caller): Extension<Caller>,
     Path(cpid): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
-    if let Some(refused) = consumer.refusal(&cpid, &caller) {
+    if let Some(refused) = consumer.refusal(&cpid, &caller.id) {
         return refused;
     }
     let msg: ContractOfferMessage = match consumer.read(body, "ContractOfferMessage", &cpid) {
@@ -347,11 +347,11 @@ pub(crate) async fn offer(
 /// `POST <callback>/negotiations/{consumerPid}/agreement`.
 pub(crate) async fn agreement(
     State(consumer): State<Arc<Consumer>>,
-    Extension(Caller { id: caller, .. }): Extension<Caller>,
+    Extension(caller): Extension<Caller>,
     Path(cpid): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
-    if let Some(refused) = consumer.refusal(&cpid, &caller) {
+    if let Some(refused) = consumer.refusal(&cpid, &caller.id) {
         return refused;
     }
     let msg: ContractAgreementMessage = match consumer.read(body, "ContractAgreementMessage", &cpid)
@@ -365,11 +365,11 @@ pub(crate) async fn agreement(
 /// `POST <callback>/negotiations/{consumerPid}/events`.
 pub(crate) async fn event(
     State(consumer): State<Arc<Consumer>>,
-    Extension(Caller { id: caller, .. }): Extension<Caller>,
+    Extension(caller): Extension<Caller>,
     Path(cpid): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
-    if let Some(refused) = consumer.refusal(&cpid, &caller) {
+    if let Some(refused) = consumer.refusal(&cpid, &caller.id) {
         return refused;
     }
     let msg: ContractNegotiationEventMessage =
@@ -383,11 +383,11 @@ pub(crate) async fn event(
 /// `POST <callback>/negotiations/{consumerPid}/termination`.
 pub(crate) async fn terminate(
     State(consumer): State<Arc<Consumer>>,
-    Extension(Caller { id: caller, .. }): Extension<Caller>,
+    Extension(caller): Extension<Caller>,
     Path(cpid): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
-    if let Some(refused) = consumer.refusal(&cpid, &caller) {
+    if let Some(refused) = consumer.refusal(&cpid, &caller.id) {
         return refused;
     }
     let msg: ContractNegotiationTerminationMessage =
