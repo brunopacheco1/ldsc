@@ -118,11 +118,6 @@ pub struct Config {
     pub credential_types: CredentialTypes,
 }
 
-/// The key, in a dataset of the datasets file, that names the upstream
-/// URL of its data. Removed before the dataset is checked, so it never
-/// reaches the catalog.
-pub const SOURCE_KEY: &str = harvest::SOURCE_KEY;
-
 /// Default lifetime of a data access token: one hour.
 pub const DEFAULT_DATA_TOKEN_SECONDS: u64 = 3_600;
 
@@ -402,7 +397,7 @@ impl Negotiator {
         &self,
         before: Option<u64>,
         limit: usize,
-    ) -> Result<Vec<harvest::HarvestJob>, portitor_dsp::negotiation::provider::StoreError> {
+    ) -> Result<Vec<harvest::HarvestJob>, harvest::StoreError> {
         self.harvester.store().jobs(before, limit)
     }
 
@@ -414,10 +409,7 @@ impl Negotiator {
     pub fn harvest_job(
         &self,
         id: u64,
-    ) -> Result<
-        Option<(harvest::HarvestJob, Vec<harvest::EntryError>)>,
-        portitor_dsp::negotiation::provider::StoreError,
-    > {
+    ) -> Result<Option<harvest::JobWithErrors>, harvest::StoreError> {
         self.harvester.store().job(id)
     }
 
@@ -663,7 +655,8 @@ fn start_harvest(
         Some(extra) => Arc::new(harvest::BothChecks::new(dsp, Arc::clone(extra))),
         None => dsp,
     };
-    let harvester = harvest::Harvester::new(source, check, Arc::clone(&ports.store));
+    // `.0`: the `Arc` inside the `Shared` wrapper
+    let harvester = harvest::Harvester::new(source, check, Arc::clone(&ports.store.0));
     harvester.start().map_err(|e| StartError(e.0))?;
     Ok(harvester)
 }

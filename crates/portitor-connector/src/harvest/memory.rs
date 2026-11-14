@@ -8,16 +8,15 @@
 use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use portitor_dsp::negotiation::provider::StoreError;
-
 use super::{
-    Commit, EntryError, HarvestJob, HarvestStatus, HarvestStore, KEPT_JOBS, StoredDataset,
+    Commit, HarvestJob, HarvestStatus, HarvestStore, JobWithErrors, KEPT_JOBS, StoreError,
+    StoredDataset,
 };
 
 #[derive(Debug, Default)]
 struct Kept {
     datasets: BTreeMap<String, StoredDataset>,
-    jobs: BTreeMap<u64, (HarvestJob, Vec<EntryError>)>,
+    jobs: BTreeMap<u64, JobWithErrors>,
     status: HarvestStatus,
 }
 
@@ -43,6 +42,7 @@ impl HarvestStore for InMemoryHarvestStore {
 
     fn commit(&self, commit: &Commit) -> Result<u64, StoreError> {
         let mut kept = self.kept();
+        // the highest job id so far (the keys are sorted), 0 for none
         let newest = kept.jobs.keys().next_back().copied().unwrap_or(0);
         let id = newest + 1;
         for dataset in &commit.writes {
@@ -57,6 +57,7 @@ impl HarvestStore for InMemoryHarvestStore {
             record: commit.job.clone(),
         };
         kept.jobs.insert(id, (job, commit.errors.clone()));
+        // keep the last KEPT_JOBS jobs: ids id - KEPT_JOBS + 1 to id
         kept.jobs.retain(|job_id, _| job_id + KEPT_JOBS > id);
         kept.status = commit.status.clone();
         Ok(id)
@@ -77,7 +78,7 @@ impl HarvestStore for InMemoryHarvestStore {
         Ok(found)
     }
 
-    fn job(&self, id: u64) -> Result<Option<(HarvestJob, Vec<EntryError>)>, StoreError> {
+    fn job(&self, id: u64) -> Result<Option<JobWithErrors>, StoreError> {
         Ok(self.kept().jobs.get(&id).cloned())
     }
 }

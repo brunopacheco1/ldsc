@@ -34,6 +34,10 @@ pub enum CheckKind {
 }
 
 impl CheckKind {
+    /// Every value, for [`CheckKind::from_name`]; the names are in
+    /// [`CheckKind::name`] only.
+    const ALL: [Self; 4] = [Self::Json, Self::Dsp, Self::Odrl, Self::Shacl];
+
     /// The name stored and shown: `json`, `dsp`, `odrl` or `shacl`.
     #[must_use]
     pub fn name(self) -> &'static str {
@@ -48,13 +52,7 @@ impl CheckKind {
     /// The kind with this name.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "json" => Some(Self::Json),
-            "dsp" => Some(Self::Dsp),
-            "odrl" => Some(Self::Odrl),
-            "shacl" => Some(Self::Shacl),
-            _ => None,
-        }
+        Self::ALL.into_iter().find(|value| value.name() == name)
     }
 }
 
@@ -182,7 +180,7 @@ fn definition_failure(error: &DatasetDefinitionError) -> EntryFailure {
 #[derive(Clone)]
 pub struct BothChecks {
     first: Arc<dyn DatasetCheck>,
-    then: Arc<dyn DatasetCheck>,
+    second: Arc<dyn DatasetCheck>,
 }
 
 impl std::fmt::Debug for BothChecks {
@@ -192,10 +190,10 @@ impl std::fmt::Debug for BothChecks {
 }
 
 impl BothChecks {
-    /// `first`, then `then` on the same entry.
+    /// `first`, then `second` on the same entry.
     #[must_use]
-    pub fn new(first: Arc<dyn DatasetCheck>, then: Arc<dyn DatasetCheck>) -> Self {
-        Self { first, then }
+    pub fn new(first: Arc<dyn DatasetCheck>, second: Arc<dyn DatasetCheck>) -> Self {
+        Self { first, second }
     }
 }
 
@@ -204,16 +202,16 @@ impl DatasetCheck for BothChecks {
         format!(
             "{}+{}",
             self.first.rules_version(),
-            self.then.rules_version()
+            self.second.rules_version()
         )
     }
 
     fn check(&self, entry: &serde_json::Value) -> Result<CheckedDataset, EntryFailure> {
         let first = self.first.check(entry)?;
-        let then = self.then.check(entry)?;
+        let second = self.second.check(entry)?;
         Ok(CheckedDataset {
             dataset: first.dataset,
-            conforms_to: then.conforms_to.or(first.conforms_to),
+            conforms_to: second.conforms_to.or(first.conforms_to),
         })
     }
 }
@@ -235,6 +233,14 @@ mod tests {
 
     fn dsp() -> DspCheck {
         DspCheck::new("https://p.example/dsp/2025-1", &CredentialTypes::default())
+    }
+
+    #[test]
+    fn every_check_name_reads_back() {
+        for kind in CheckKind::ALL {
+            assert_eq!(CheckKind::from_name(kind.name()), Some(kind));
+        }
+        assert_eq!(CheckKind::from_name("SHACL"), None);
     }
 
     #[test]

@@ -537,6 +537,21 @@ fn a_stored_report_keeps_only_the_first_results() {
 }
 
 #[test]
+fn every_stored_name_reads_back() {
+    for state in DatasetState::ALL {
+        assert_eq!(DatasetState::from_name(state.name()), Some(state));
+    }
+    for trigger in Trigger::ALL {
+        assert_eq!(Trigger::from_name(trigger.name()), Some(trigger));
+    }
+    for outcome in JobOutcome::ALL {
+        assert_eq!(JobOutcome::from_name(outcome.name()), Some(outcome));
+    }
+    assert_eq!(DatasetState::from_name("Active"), None);
+    assert_eq!(JobOutcome::from_name(""), None);
+}
+
+#[test]
 fn only_the_last_jobs_are_kept() {
     let store = memory();
     let source = Source::with(vec![broken("x")]);

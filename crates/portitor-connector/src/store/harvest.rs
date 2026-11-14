@@ -10,7 +10,7 @@ use rusqlite::{OptionalExtension as _, Row, Transaction, params};
 use super::{SqliteNegotiations, StoreError, col, err, json, parsed};
 use crate::harvest::{
     CheckKind, Commit, Counts, DatasetState, EntryError, HarvestJob, HarvestStatus, HarvestStore,
-    JobOutcome, JobRecord, KEPT_JOBS, StoredDataset, Trigger,
+    JobOutcome, JobRecord, JobWithErrors, KEPT_JOBS, StoredDataset, Trigger, count,
 };
 
 /// A number as `SQLite` stores it.
@@ -23,7 +23,9 @@ fn uint(n: i64) -> Result<u64, StoreError> {
     u64::try_from(n).map_err(|_| StoreError(format!("stored number {n} out of range")))
 }
 
-/// A stored name back, with `from_name` of its type.
+/// A stored name back, with `from_name` of its type. `from_name` is a
+/// function pointer (`fn(&str) -> Option<T>`): a plain function passed as
+/// a value, such as `DatasetState::from_name`.
 fn named<T>(what: &str, text: &str, from_name: fn(&str) -> Option<T>) -> Result<T, StoreError> {
     from_name(text).ok_or_else(|| StoreError(format!("stored {what} {text:?}")))
 }
@@ -90,19 +92,23 @@ fn error_from_row(row: &Row<'_>) -> Result<EntryError, StoreError> {
 
 /// Writes one dataset: an update of its row, or a new row. (Two plain
 /// statements rather than an upsert, so the SQL stays portable.)
-fn write_dataset(tx: &Transaction<'_>, d: &StoredDataset, job_id: i64) -> Result<(), StoreError> {
-    let entry = json(&d.entry)?;
-    let content = json(&d.content)?;
-    let first_seen = int(d.first_seen)?;
-    let last_changed = int(d.last_changed)?;
+fn write_dataset(
+    tx: &Transaction<'_>,
+    dataset: &StoredDataset,
+    job_id: i64,
+) -> Result<(), StoreError> {
+    let entry = json(&dataset.entry)?;
+    let content = json(&dataset.content)?;
+    let first_seen = int(dataset.first_seen)?;
+    let last_changed = int(dataset.last_changed)?;
     let values = params![
-        d.id,
+        dataset.id,
         entry,
         content,
-        d.upstream,
-        d.content_sha256,
-        d.state.name(),
-        d.conforms_to,
+        dataset.upstream,
+        dataset.content_sha256,
+        dataset.state.name(),
+        dataset.conforms_to,
         first_seen,
         last_changed,
         job_id,
@@ -130,7 +136,7 @@ fn insert_job(tx: &Transaction<'_>, id: i64, job: &JobRecord) -> Result<(), Stor
         "INSERT INTO harvest_job ({JOB_COLUMNS})
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)"
     );
-    let c = &job.counts;
+    let counts = &job.counts;
     tx.execute(
         &sql,
         params![
@@ -141,12 +147,12 @@ fn insert_job(tx: &Transaction<'_>, id: i64, job: &JobRecord) -> Result<(), Stor
             job.source,
             job.snapshot_sha256,
             job.outcome.name(),
-            int(c.seen)?,
-            int(c.added)?,
-            int(c.updated)?,
-            int(c.unchanged)?,
-            int(c.withdrawn)?,
-            int(c.rejected)?,
+            int(counts.seen)?,
+            int(counts.added)?,
+            int(counts.updated)?,
+            int(counts.unchanged)?,
+            int(counts.withdrawn)?,
+            int(counts.rejected)?,
             job.summary,
         ],
     )
@@ -158,7 +164,7 @@ fn insert_error(
     tx: &Transaction<'_>,
     job_id: i64,
     seq: usize,
-    e: &EntryError,
+    error: &EntryError,
 ) -> Result<(), StoreError> {
     tx.execute(
         "INSERT INTO harvest_error
@@ -166,12 +172,12 @@ fn insert_error(
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
             job_id,
-            int(u64::try_from(seq).unwrap_or(u64::MAX))?,
-            e.position.map(int).transpose()?,
-            e.dataset_id,
-            e.kind.name(),
-            e.message,
-            e.report.as_ref().map(json).transpose()?,
+            int(count(seq))?,
+            error.position.map(int).transpose()?,
+            error.dataset_id,
+            error.kind.name(),
+            error.message,
+            error.report.as_ref().map(json).transpose()?,
         ],
     )
     .map_err(err)?;
@@ -186,7 +192,8 @@ impl HarvestStore for SqliteNegotiations {
 
     fn status(&self) -> Result<HarvestStatus, StoreError> {
         let conn = self.conn();
-        let found = conn
+        // the one row of harvest_state: both columns may be NULL
+        let found: Option<(Option<String>, Option<String>)> = conn
             .query_row(
                 "SELECT rules_version, snapshot_sha256 FROM harvest_state WHERE id = 1",
                 [],
@@ -194,7 +201,8 @@ impl HarvestStore for SqliteNegotiations {
             )
             .optional()
             .map_err(err)?;
-        let (rules_version, snapshot_sha256) = found.unwrap_or_default();
+        // no row (cannot happen after the migration): nothing known yet
+        let (rules_version, snapshot_sha256) = found.unwrap_or((None, None));
         Ok(HarvestStatus {
             rules_version,
             snapshot_sha256,
@@ -251,7 +259,7 @@ impl HarvestStore for SqliteNegotiations {
         self.query(&sql, params![before, limit], job_from_row)
     }
 
-    fn job(&self, id: u64) -> Result<Option<(HarvestJob, Vec<EntryError>)>, StoreError> {
+    fn job(&self, id: u64) -> Result<Option<JobWithErrors>, StoreError> {
         let id = int(id)?;
         let sql = format!("SELECT {JOB_COLUMNS} FROM harvest_job WHERE id = ?1");
         let Some(job) = self

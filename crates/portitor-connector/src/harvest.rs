@@ -24,7 +24,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use portitor_dsp::Dataset;
-use portitor_dsp::negotiation::provider::StoreError;
+/// The error of every store port. The harvest keeps its read copy in the
+/// same `SQLite` file as the negotiations, so it reuses their store error
+/// (named after negotiations, but it means "the store failed").
+pub use portitor_dsp::negotiation::provider::StoreError;
 
 mod check;
 mod copy;
@@ -37,12 +40,14 @@ pub use check::{
 };
 pub use copy::ReadCopy;
 pub use memory::InMemoryHarvestStore;
+pub(crate) use run::count;
 pub use run::{MAX_REPORT_RESULTS, MAX_STORED_ERRORS, SOURCE_KEY};
 pub use source::{
     EmptySource, FileSource, FixedSource, HarvestSource, MAX_DATASETS_FILE_BYTES, Snapshot,
     SourceError,
 };
 
+use crate::ports::Shared;
 use crate::system::now_secs;
 
 /// How many jobs are kept; older ones are deleted with their errors.
@@ -65,6 +70,10 @@ pub enum DatasetState {
 }
 
 impl DatasetState {
+    /// Every value, for [`DatasetState::from_name`]; the names are in
+    /// [`DatasetState::name`] only.
+    const ALL: [Self; 3] = [Self::Active, Self::Withdrawn, Self::Hidden];
+
     /// The name stored and shown: `active`, `withdrawn` or `hidden`.
     #[must_use]
     pub fn name(self) -> &'static str {
@@ -78,12 +87,7 @@ impl DatasetState {
     /// The state with this name.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "active" => Some(Self::Active),
-            "withdrawn" => Some(Self::Withdrawn),
-            "hidden" => Some(Self::Hidden),
-            _ => None,
-        }
+        Self::ALL.into_iter().find(|value| value.name() == name)
     }
 }
 
@@ -127,6 +131,10 @@ pub enum Trigger {
 }
 
 impl Trigger {
+    /// Every value, for [`Trigger::from_name`]; the names are in
+    /// [`Trigger::name`] only.
+    const ALL: [Self; 3] = [Self::Start, Self::Interval, Self::Bundle];
+
     /// The name stored and shown: `start`, `interval` or `bundle`.
     #[must_use]
     pub fn name(self) -> &'static str {
@@ -140,12 +148,7 @@ impl Trigger {
     /// The trigger with this name.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "start" => Some(Self::Start),
-            "interval" => Some(Self::Interval),
-            "bundle" => Some(Self::Bundle),
-            _ => None,
-        }
+        Self::ALL.into_iter().find(|value| value.name() == name)
     }
 }
 
@@ -163,6 +166,15 @@ pub enum JobOutcome {
 }
 
 impl JobOutcome {
+    /// Every value, for [`JobOutcome::from_name`]; the names are in
+    /// [`JobOutcome::name`] only.
+    const ALL: [Self; 4] = [
+        Self::Succeeded,
+        Self::Partial,
+        Self::Unchanged,
+        Self::Failed,
+    ];
+
     /// The name stored and shown.
     #[must_use]
     pub fn name(self) -> &'static str {
@@ -177,13 +189,7 @@ impl JobOutcome {
     /// The outcome with this name.
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "succeeded" => Some(Self::Succeeded),
-            "partial" => Some(Self::Partial),
-            "unchanged" => Some(Self::Unchanged),
-            "failed" => Some(Self::Failed),
-            _ => None,
-        }
+        Self::ALL.into_iter().find(|value| value.name() == name)
     }
 }
 
@@ -251,6 +257,9 @@ pub struct EntryError {
     pub report: Option<serde_json::Value>,
 }
 
+/// A stored job with its entry errors, in the order the run found them.
+pub type JobWithErrors = (HarvestJob, Vec<EntryError>);
+
 /// What the store keeps besides the datasets and jobs.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HarvestStatus {
@@ -313,14 +322,17 @@ pub trait HarvestStore: Send + Sync {
     /// # Errors
     ///
     /// The store cannot be read.
-    fn job(&self, id: u64) -> Result<Option<(HarvestJob, Vec<EntryError>)>, StoreError>;
+    fn job(&self, id: u64) -> Result<Option<JobWithErrors>, StoreError>;
 }
+
+/// The harvest store chosen at start (see [`Shared`]).
+pub type AnyHarvestStore = Shared<dyn HarvestStore>;
 
 /// The adapters behind the harvest (part of [`crate::Ports`]).
 #[derive(Clone)]
 pub struct HarvestPorts {
     /// Where the read copy and the jobs are kept.
-    pub store: Arc<dyn HarvestStore>,
+    pub store: AnyHarvestStore,
     /// Where the datasets come from. `None`: the datasets file of
     /// [`crate::Config::datasets_file`], or no datasets without one.
     pub source: Option<Arc<dyn HarvestSource>>,
@@ -339,7 +351,7 @@ impl Default for HarvestPorts {
     /// The copy in memory, the source from the configuration, DSP rules only.
     fn default() -> Self {
         Self {
-            store: Arc::new(InMemoryHarvestStore::default()),
+            store: Shared(Arc::new(InMemoryHarvestStore::default())),
             source: None,
             extra_check: None,
         }
@@ -423,7 +435,10 @@ impl Harvester {
         // new rules: every entry of the source is checked again, even if
         // the snapshot is the same, as some rejected before may pass now
         if let Err(e) = self.run_now(Trigger::Start, rules_changed) {
-            tracing::error!(error = %e, "harvest: cannot store the run; the catalog keeps the stored datasets");
+            tracing::error!(
+                error = %e,
+                "harvest: cannot store the run; the catalog keeps the stored datasets"
+            );
         }
         tracing::info!(datasets = self.copy.active_count(), "catalog ready");
         Ok(())
@@ -443,7 +458,10 @@ impl Harvester {
         match self.run_now(trigger, false) {
             Ok(job) => RunResult::Done(job),
             Err(e) => {
-                tracing::error!(error = %e, "harvest: cannot store the run; the catalog is unchanged");
+                tracing::error!(
+                    error = %e,
+                    "harvest: cannot store the run; the catalog is unchanged"
+                );
                 RunResult::StoreFailed(e)
             }
         }
@@ -488,58 +506,52 @@ impl Harvester {
     fn run_now(&self, trigger: Trigger, full: bool) -> Result<HarvestJob, StoreError> {
         let started_at = now_secs();
         let status = self.store.status()?;
-        let source = self.source.name();
+        // the job record of this run: only how it ended differs
+        let job = |snapshot_sha256, outcome, counts, summary| JobRecord {
+            started_at,
+            finished_at: now_secs(),
+            trigger,
+            source: self.source.name(),
+            snapshot_sha256,
+            outcome,
+            counts,
+            summary,
+        };
         let snapshot = match self.source.snapshot() {
             Ok(snapshot) => snapshot,
             Err(e) => {
                 let summary = format!("source failed: {e}; the copy is unchanged");
-                let job = JobRecord {
-                    started_at,
-                    finished_at: now_secs(),
-                    trigger,
-                    source,
-                    snapshot_sha256: None,
-                    outcome: JobOutcome::Failed,
-                    counts: Counts::default(),
-                    summary,
-                };
-                return self.commit(job, run::Plan::default(), status);
+                let failed = job(None, JobOutcome::Failed, Counts::default(), summary);
+                return self.commit(failed, run::Plan::default(), status);
             }
         };
         if !full && status.snapshot_sha256.as_deref() == Some(snapshot.sha256.as_str()) {
             let counts = Counts {
-                seen: u64::try_from(snapshot.entries.len()).unwrap_or(u64::MAX),
+                seen: run::count(snapshot.entries.len()),
                 ..Counts::default()
             };
-            let job = JobRecord {
-                started_at,
-                finished_at: now_secs(),
-                trigger,
-                source,
-                snapshot_sha256: Some(snapshot.sha256),
-                outcome: JobOutcome::Unchanged,
+            let summary = "the snapshot is unchanged".to_owned();
+            let unchanged = job(
+                Some(snapshot.sha256),
+                JobOutcome::Unchanged,
                 counts,
-                summary: "the snapshot is unchanged".to_owned(),
-            };
-            return self.commit(job, run::Plan::default(), status);
+                summary,
+            );
+            return self.commit(unchanged, run::Plan::default(), status);
         }
         let stored = self.stored_by_id()?;
         let plan = run::plan_harvest(&stored, snapshot.entries, self.check.as_ref(), started_at);
-        let job = JobRecord {
-            started_at,
-            finished_at: now_secs(),
-            trigger,
-            source,
-            snapshot_sha256: Some(snapshot.sha256.clone()),
-            outcome: run::outcome_of(&plan.counts),
-            counts: plan.counts,
-            summary: run::summary(&plan.counts),
-        };
+        let done = job(
+            Some(snapshot.sha256.clone()),
+            run::outcome_of(&plan.counts),
+            plan.counts,
+            run::summary(&plan.counts),
+        );
         let after = HarvestStatus {
             rules_version: Some(self.check.rules_version()),
             snapshot_sha256: Some(snapshot.sha256),
         };
-        self.commit(job, plan, after)
+        self.commit(done, plan, after)
     }
 
     /// Checks the stored active and hidden datasets again with the rules
@@ -632,7 +644,14 @@ fn log_run(id: u64, commit: &Commit) {
     let counts = &job.counts;
     let outcome = job.outcome.name();
     if job.outcome == JobOutcome::Failed {
-        tracing::warn!(job = id, trigger = job.trigger.name(), source = %job.source, outcome, summary = %job.summary, "harvest run");
+        tracing::warn!(
+            job = id,
+            trigger = job.trigger.name(),
+            source = %job.source,
+            outcome,
+            summary = %job.summary,
+            "harvest run"
+        );
         return;
     }
     tracing::info!(
