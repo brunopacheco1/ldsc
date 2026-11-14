@@ -452,6 +452,11 @@ pub fn router(config: &Config, ports: Ports) -> Result<Router, StartError> {
 /// returns, so the catalog is ready when the router serves; a source or a
 /// dataset that fails does not stop it (ADR 0020).
 ///
+/// That first run is blocking work (it reads the source, checks every
+/// entry, writes `SQLite`) done on the calling thread, also when called
+/// from async code. That is acceptable once at start, before anything is
+/// served; the scheduled runs use `spawn_blocking`.
+///
 /// # Errors
 ///
 /// The stored datasets cannot be read.
