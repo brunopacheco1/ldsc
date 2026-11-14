@@ -56,3 +56,51 @@ path = ["crates/portitor-dps/tests/schemas/*.json", "crates/portitor-dps/tests/e
 precedence = "override"
 SPDX-FileCopyrightText = "Eclipse Data Plane Signaling contributors (https://github.com/eclipse-dataplane-signaling/dataplane-signaling)"
 SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+# SHACL engine tests: datasets written for Portitor (JSON has no comments)
+path = ["crates/portitor-shacl/tests/data/samples/*.jsonld", "crates/portitor-shacl/tests/data/spike/*.jsonld"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "Portitor contributors"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+# HealthDCAT-AP release 8 SHACL files, copied unchanged from
+# https://data.health.europa.eu/healthdcat-ap/releases/release-8/html/shacl/HealthDCAT-AP_validator/config/rdf-validator/ehds/
+# (shapes/, recommended/, ranges/, controlled-vocabularies/, imports/), fetched 2026-11-14
+path = "crates/portitor-shacl/tests/data/healthdcat-ap-r8/*.ttl"
+precedence = "override"
+SPDX-FileCopyrightText = "European Union (HealthDCAT-AP, https://data.health.europa.eu/healthdcat-ap/releases/release-8/)"
+SPDX-License-Identifier = "CC-BY-4.0"
+
+[[annotations]]
+# DCAT-AP 3.0.0 SHACL files, copied unchanged from https://github.com/SEMICeu/DCAT-AP,
+# releases/3.0.0/html/shacl/, commit 4470b8ea907b7eb9ec55ab22befd1ecd2210ff32
+path = "crates/portitor-shacl/tests/data/dcat-ap-3.0.0/*.ttl"
+precedence = "override"
+SPDX-FileCopyrightText = "SEMIC, European Commission (DCAT-AP, https://github.com/SEMICeu/DCAT-AP)"
+SPDX-License-Identifier = "CC-BY-4.0"
+
+[[annotations]]
+# A few code-list triples (rdf:type, skos:inScheme) of the EU authority tables
+# (https://op.europa.eu/en/web/eu-vocabularies) and the HealthDCAT-AP code lists
+path = "crates/portitor-shacl/tests/data/samples/codelists-sample.nt"
+precedence = "override"
+SPDX-FileCopyrightText = "European Union"
+SPDX-License-Identifier = "CC-BY-4.0"
+
+[[annotations]]
+# DSP 2025-1 JSON-LD contexts, copied unchanged from the Eclipse Dataspace Protocol, tag 2025-1
+# (artifacts/src/main/resources/context/dspace.jsonld and odrl.jsonld)
+path = "crates/portitor-shacl/tests/data/dsp-2025-1/*.jsonld"
+precedence = "override"
+SPDX-FileCopyrightText = "Eclipse Dataspace Protocol contributors (https://github.com/eclipse-dataspace-protocol-base/DataspaceProtocol)"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+# W3C SHACL test suite (core), copied unchanged from https://github.com/w3c/data-shapes,
+# data-shapes-test-suite/tests/core/, commit 752769264137d192b3d603075162819466c46690
+path = "crates/portitor-shacl/tests/w3c/**"
+precedence = "override"
+SPDX-FileCopyrightText = "W3C (MIT, ERCIM, Keio, Beihang) and the RDF Data Shapes Working Group"
+SPDX-License-Identifier = "W3C-20150513"
