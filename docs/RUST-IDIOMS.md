@@ -353,6 +353,29 @@ field expects.
   `_` in a name keeps the value, the bare `_` does not.
 - `Send` and `Sync` in a type mean "safe to move to, or share with,
   another thread". The web server needs them.
+- `mutex.try_lock()` takes the lock only if it is free, and does not
+  wait. `let Ok(_running) = self.busy.try_lock() else { ... return }`
+  skips a harvest run when another one is going on (`Harvester::run` in
+  `portitor-connector/src/harvest.rs`): a timer tick that comes during a
+  long run is dropped, not queued.
+
+### A snapshot swapped as a whole: `RwLock<Arc<View>>`
+
+```rust
+pub struct ReadCopy(Arc<RwLock<Arc<View>>>);
+
+fn view(&self) -> Arc<View> {
+    Arc::clone(&self.0.read().unwrap_or_else(PoisonError::into_inner))
+}
+```
+
+`RwLock` lets many readers in at once, or one writer. The value inside
+is itself an `Arc`, so a reader holds the lock only to copy that
+pointer, then works on its own snapshot without any lock. A harvest run
+builds a whole new `View` and swaps the pointer in one write
+(`ReadCopy::replace` in `portitor-connector/src/harvest/copy.rs`). A
+request never sees half a run, and a slow catalog request never blocks
+the next run. The old snapshot is freed when its last reader drops it.
 
 ## `SQLite` transactions
 
@@ -500,6 +523,16 @@ small. Clippy's `result_large_err` lint asks for this. Read
 - `#[serde(deserialize_with = "one_audience")]`: read this field with
   the named function instead of the default (`Claims::aud` in
   `id_token.rs` accepts a string or a list of one).
+- `Messages {}` instead of `Messages` in an enum read by serde:
+  `deny_unknown_fields` refuses extra fields only in variants written
+  with braces, so `{"type": "messages", "extra": 1}` is an error
+  (`Role` in `portitor-dcp/src/bundle.rs`). The empty braces are on
+  purpose.
+- `serde_json::value::RawValue`: JSON kept as the exact text it was read
+  from, and written out unchanged. `sign_manifest` in
+  `portitor-dcp/src/bundle.rs` signs the manifest's bytes this way, so
+  the signature covers exactly the file that is published, not a copy
+  that serde wrote again (with other spaces or field order).
 - `#[must_use]`: the caller should use the return value.
 - `#[cfg(test)]`: compiled only for tests. `#[cfg(feature = "tck")]`:
   compiled only in the DSP TCK build.
@@ -565,6 +598,16 @@ API needs (here the STS error list, `portitor-identity/src/sts.rs`).
   read when the program is built (the `OpenAPI` documents).
 - `!` on an integer flips every bit, it is not "not": `!0u32` is
   `0xFFFF_FFFF` (CRC-32 in `gzip.rs`). On a `bool`, `!` is "not".
+- `static BOOLEAN: LazyLock<Option<Regex>> = LazyLock::new(|| ...)`: a
+  value built the first time it is used, then shared by every thread for
+  the rest of the program (the XSD patterns in
+  `portitor-shacl/src/lexical.rs`). A regular expression is compiled
+  once, not on every check.
+- `list.sort_by_cached_key(f)` sorts by `f(item)` but calls `f` only
+  once per item; `sort_by_key` may call it many times. Worth it when the
+  key is costly to make, such as the text of an RDF term
+  (`portitor-shacl/src/validate.rs`, which sorts so that reports come
+  out in the same order every time).
 - `Option` values can be compared, and `None` counts as smaller than any
   `Some`, so `a.max(b)` of two `Option`s picks a `Some` over a `None`.
   That is easy to misread, so Portitor spells it out with a `match`

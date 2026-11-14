@@ -89,7 +89,7 @@ so visitors' browsers never contact third-party services.
         <h2>Minimum functionality</h2>
         <p>What a participant can do with Portitor 1.0:</p>
         <ol class="steps">
-          <li><strong>Publish a catalog</strong> of datasets with usage policies (ODRL offers), and browse other participants' catalogs.</li>
+          <li><strong>Publish a catalog</strong> of datasets with usage policies (ODRL offers), harvested from where you keep them and checked against the dataspace's shapes (for example HealthDCAT-AP), and browse other participants' catalogs.</li>
           <li><strong>Negotiate a contract</strong> for a dataset, with the policy checked on both sides.</li>
           <li><strong>Transfer the data</strong> over HTTP, push or pull, through the built-in data plane.</li>
           <li><strong>Prove who you are</strong> with a <code>did:web</code> identity and verifiable credentials (DCP), and check the credentials of others.</li>
@@ -107,18 +107,18 @@ so visitors' browsers never contact third-party services.
           <table>
             <thead><tr><th scope="col">Image</th><th scope="col">Does</th><th scope="col">Who runs it</th></tr></thead>
             <tbody>
-              <tr><td><code>portitor-connector</code></td><td>Catalog, contract negotiation, transfer and data plane; checks partners' credentials, also against offers that ask for credential claims</td><td>Every participant</td></tr>
+              <tr><td><code>portitor-connector</code></td><td>Catalog, contract negotiation, transfer and data plane; harvests the datasets into a read copy and checks them against the dataspace's SHACL shapes; checks partners' credentials, also against offers that ask for credential claims</td><td>Every participant</td></tr>
               <tr><td><code>portitor-identity</code></td><td>Holds the participant's identity, keys and credentials; asks the issuer for credentials and presents them to verifiers</td><td>Every participant using DCP (optional with an external wallet)</td></tr>
-              <tr><td><code>portitor-issuer</code></td><td>Issues and revokes credentials, such as membership, and publishes their status lists</td><td>The dataspace authority only: one per dataspace</td></tr>
+              <tr><td><code>portitor-issuer</code></td><td>Issues and revokes credentials, such as membership, and publishes their status lists; signs and serves the dataspace's schema and vocabulary bundle</td><td>The dataspace authority only: one per dataspace</td></tr>
             </tbody>
           </table>
         </div>
         <h3>Deployment order</h3>
         <ol class="steps">
-          <li><code>portitor-issuer</code>, once per dataspace, by the dataspace authority: publish its <code>did:web</code> document and register the participants.</li>
+          <li><code>portitor-issuer</code>, once per dataspace, by the dataspace authority: publish its <code>did:web</code> document, register the participants and, if the dataspace checks metadata, publish its signed bundle of shapes.</li>
           <li>For each participant, storage: a volume for each image's database file.</li>
           <li><code>portitor-identity</code>: publish the <code>did:web</code> document over HTTPS and get a membership credential from the issuer (and, for Gaia-X, a compliance credential).</li>
-          <li><code>portitor-connector</code>, pointed at the identity and the database, trusting the issuer's DID.</li>
+          <li><code>portitor-connector</code>, pointed at the identity, the database and its datasets, trusting the issuer's DID (and pinning the bundle version, if any).</li>
         </ol>
       </div>
     </section>
@@ -135,7 +135,7 @@ so visitors' browsers never contact third-party services.
           <li class="done"><span>0.4</span> Transfer process and HTTP data plane</li>
           <li class="done"><span>0.5</span> DCP identity and presentation; EDC interoperability test; Simpl-Open spike</li>
           <li class="done"><span>0.6</span> Credential issuance (<code>portitor-issuer</code>) and policies that check credential claims</li>
-          <li class="now"><span>0.7</span> Schema and vocabulary registry: the authority's signed shapes check datasets and messages</li>
+          <li class="now"><span>0.7</span> Schema and vocabulary registry: the authority's signed bundle of shapes (HealthDCAT-AP release 8 as baseline) checks datasets and messages with Portitor's own SHACL engine; datasets harvested into a read copy</li>
           <li><span>0.8</span> Gaia-X Trust Framework (Danube)</li>
           <li><span>0.9</span> Operations: health checks, logs, metrics (OpenTelemetry), a two-participant demo dataspace</li>
           <li><span>0.10</span> Hardening and release candidate for 1.0</li>

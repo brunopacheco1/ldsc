@@ -51,8 +51,12 @@ judged against it.
 8. **Stateless processes, state in a database.** The target is that any
    instance serves any request (PostgreSQL, ADR 0006); until that adapter
    exists, each image keeps its state in one SQLite file, with one replica
-   per file. Restarts lose nothing. *Check:* tests restart the connector in
-   the middle of a negotiation.
+   per file. Restarts lose nothing. Data the connector does not own lives
+   at its source: datasets are harvested into a read copy, and the
+   authority's bundle is downloaded and cached
+   ([ADR 0020](adr/0020-dataset-harvest.md), [ADR 0005](adr/0005-schema-and-vocabulary-registry.md));
+   the copy and the cache can be rebuilt from the source. *Check:* tests
+   restart the connector in the middle of a negotiation.
 9. **Seams where specs are still moving.** Code that depends on a draft
    spec (Data Plane Signaling) sits behind an interface shaped like that
    spec, so it can be split out or updated without touching protocol code.
@@ -103,7 +107,7 @@ with the files they live in:
 
 ![C3 Components of portitor-issuer](diagrams/c3-issuer-components.drawio.svg)
 
-**C4 Code**: five flows, each drawn as a hexagon: the domain service or
+**C4 Code**: seven flows, each drawn as a hexagon: the domain service or
 function in the middle, the ports (traits, dashed yellow) it uses, the
 adapters behind them, and the HTTP edge that calls it. The names are the
 real type, trait, function and file names, so you can search the code
@@ -141,6 +145,19 @@ answers another participant's presentation query.
 
 ![C4 Code: STS tokens and presentations in portitor-identity](diagrams/c4-presentation-code.drawio.svg)
 
+How the connector harvests its datasets into a read copy: the source,
+a check of each entry, one transaction per run, then the copy that the
+catalog and the data plane read ([ADR 0020](adr/0020-dataset-harvest.md)).
+
+![C4 Code: dataset harvest](diagrams/c4-harvest-code.drawio.svg)
+
+How the authority publishes the schema and vocabulary bundle, and how a
+connector loads it: `portitor-issuer bundle build` signs it offline, the
+issuer serves it, the connector verifies it through the authority's DID
+document and keeps it in a cache ([ADR 0005](adr/0005-schema-and-vocabulary-registry.md)).
+
+![C4 Code: schema and vocabulary bundle](diagrams/c4-bundle-code.drawio.svg)
+
 ## Components
 
 One mono repo, one version. Each component is a **module** of the mono
@@ -156,12 +173,12 @@ ports.
 |---|---|---|---|---|
 | 1 | Database: one SQLite file per image today; PostgreSQL (external, not built by Portitor) later | State of negotiations, transfers, credentials | Mandatory | — |
 | 2 | `portitor-identity` | Holds the participant's DID, keys and credentials (including Gaia-X credentials from 0.8); asks issuers for credentials; answers presentation queries | Mandatory for each participant, unless an external DCP wallet is used, or the participant uses Simpl-Open x509 only | DCP (credential service) |
-| 3 | `portitor-connector` | Control plane: catalog, contract negotiation, transfer; verifies DCP presentations. The data plane is its own module, linked into the connector for 0.x (see below) | Mandatory | DSP, DCP (verifier) |
-| 4 | `portitor-issuer` (from 0.6, [ADR 0018](adr/0018-issuer-component.md)) | Issues and revokes credentials (for example membership) to the participants the authority registered; publishes their status lists. Whether it also signs the schema and vocabulary bundle is decided in 0.7 ([ADR 0005](adr/0005-schema-and-vocabulary-registry.md), proposed) | Optional: one per dataspace, run by the dataspace authority, never on a participant's host | DCP (issuance) |
+| 3 | `portitor-connector` | Control plane: catalog (datasets harvested into a read copy), contract negotiation, transfer; verifies DCP presentations; checks datasets and DSP messages against the authority's SHACL shapes. The data plane is its own module, linked into the connector for 0.x (see below) | Mandatory | DSP, DCP (verifier) |
+| 4 | `portitor-issuer` (from 0.6, [ADR 0018](adr/0018-issuer-component.md)) | Issues and revokes credentials (for example membership) to the participants the authority registered; publishes their status lists. From 0.7 it also serves the signed schema and vocabulary bundle, which `portitor-issuer bundle build` signs offline ([ADR 0005](adr/0005-schema-and-vocabulary-registry.md)) | Optional: one per dataspace, run by the dataspace authority, never on a participant's host | DCP (issuance) |
 
-### Images and crates in 0.6
+### Images and crates in 0.7
 
-Release 0.6 ships three images, built from one `Dockerfile` (one build
+Release 0.7 ships three images, built from one `Dockerfile` (one build
 target per image) and released, signed and attested together
 ([RELEASING.md](RELEASING.md)). Until the PostgreSQL adapter exists, each
 image keeps its state in its own SQLite file under `/data`.
@@ -174,8 +191,9 @@ image keeps its state in its own SQLite file under `/data`.
    | 8080 DSP, data plane        |------->| 8090 DID document, STS,          |
    | 8081 management API         |  STS   |      credential service          |
    | /data/portitor.db           |        | 8091 management API              |
-   +-----------------------------+        | /data/portitor-identity.db       |
-          | (2) DSP request + token        +----------------------------------+
+   | /data/bundle-cache          |        | /data/portitor-identity.db       |
+   +-----------------------------+        +----------------------------------+
+          | (2) DSP request + token
           v                                        ^ (3) DID document,
    partner's connector ----------------------------+     presentation query
 
@@ -184,15 +202,16 @@ image keeps its state in its own SQLite file under `/data`.
    +----------------------------------+
    | portitor-issuer                  |  identities ask it for credentials
    | 8070 DID document, DCP issuer    |  (DCP issuance) and it delivers them
-   |      service, status lists       |  to their Storage API; verifiers
-   | 8071 management API              |  read its DID document and status
-   | /data/portitor-issuer.db         |  lists
+   |      service, status lists,      |  to their Storage API; verifiers
+   |      bundles                     |  read its DID document and status
+   | 8071 management API              |  lists; connectors download the
+   | /data/portitor-issuer.db         |  bundle version they pin
    +----------------------------------+
 
  crates (-> means "uses"):
 
    portitor-connector --> portitor-dsp, portitor-dps, portitor-dcp,
-                          portitor-runtime
+                          portitor-shacl, portitor-runtime
    portitor-identity  --> portitor-dcp, portitor-runtime
    portitor-issuer    --> portitor-dcp, portitor-runtime
    portitor-runtime   --> portitor-dcp, portitor-time
@@ -201,23 +220,33 @@ image keeps its state in its own SQLite file under `/data`.
                                                  logging, shutdown)
    portitor-dps       --> portitor-dsp          (DataAddress)
    portitor-dsp, portitor-dcp --> portitor-time
+   portitor-shacl     --> oxrdf, oxttl, oxjsonld (Oxigraph's RDF crates)
                                                 (domain crates: no I/O)
 ```
+<!-- verify with D: portitor-connector depends on portitor-shacl once the SHACL adapters are in -->
 
 - `portitor-connector`: binary; DSP control plane, built-in data plane,
   management API, SQLite store. Authenticates every DSP request with DCP
-  and signs its own (ADR 0016).
+  and signs its own (ADR 0016). Harvests its datasets into a read copy
+  (ADR 0020) and checks them, and DSP messages, against the authority's
+  bundle (ADR 0005); see "Datasets and shapes" below.
 - `portitor-identity`: binary; the participant's DID document, STS,
   credential service and management API (ADR 0015); asks issuers for
   credentials (holder side of DCP issuance, port `IssuerClient` in
   `issuance.rs`, ADR 0018).
 - `portitor-issuer`: binary; the dataspace authority's DID document, DCP
   issuer service (metadata, credential requests and their status),
-  delivery outbox, status lists and management API (ADR 0018).
+  delivery outbox, status lists and management API (ADR 0018). Serves
+  built bundles at `GET /bundles/{version}/{path}`, lists the bundle key
+  in its DID document, and builds and signs a bundle offline
+  (`portitor-issuer bundle build`, ADR 0005).
 - `portitor-runtime`: library of adapters the binaries share, so they are
   not copied.
 - `portitor-dsp`, `portitor-dps`, `portitor-dcp`, `portitor-time`: domain
   crates (ADR 0004); CI checks they have no I/O dependency.
+- `portitor-shacl` (0.7): our own SHACL Core subset (ADR 0005), a domain
+  crate too: no I/O, no network. Shapes that use a SHACL term it does not
+  implement are refused when they are loaded.
 
 The flow (DCP v1.0.1): (1) the connector asks its own identity's STS for
 a self-issued ID token addressed to the partner; (2) it sends that token
@@ -264,6 +293,39 @@ start the connector resolves its own DID document and checks that its STS
 signs for it. Tests use fake ports; the `tck` build maps the DSP TCK's
 fixed header to the TCK participant.
 
+### Datasets and shapes (0.7)
+
+Four ports carry the 0.7 work, each with its adapters
+(ADR 0004; C4 diagrams above):
+
+- `HarvestSource` (`harvest/source.rs`): a full snapshot of the
+  provider's datasets. `FileSource` reads `PORTITOR_DATASETS_FILE` again
+  at each run; later sources (a DCAT-AP endpoint, CKAN) are new adapters.
+- `DatasetCheck` (`harvest/check.rs`): checks one entry. `DspCheck` holds
+  the DSP catalog and ODRL rules; `BothChecks` runs it and then the SHACL
+  check for the entry's `dct:accessRights` level.
+  <!-- verify with D -->
+- `HarvestStore` (`harvest.rs`): the read copy, the jobs and their
+  errors, in the connector's SQLite file (`store/harvest.rs`). A run
+  commits in one transaction. `ReadCopy` (`harvest/copy.rs`) is the copy
+  in memory that the DSP code (`DatasetStore`) and the data plane
+  (`UpstreamSources`) read; it is replaced as a whole after a run that
+  changed it.
+- `ShapeSource` (`shape_source.rs`): the verified bundle. `UrlSource`
+  downloads one version over HTTPS and keeps it in a disk cache;
+  `FolderSource` reads a local folder. Both check the signature against
+  the authority's `did:web` document and every digest.
+
+DSP messages are checked through the `MessageGuard` port of
+`portitor-dsp` (`guard.rs`). With a bundle, a SHACL adapter checks
+messages in and out against the bundle's `messages` shapes; without one,
+`AllowAll` lets every message through. <!-- verify with D -->
+
+State: the source of truth for datasets lives outside the connector. The
+read copy is rebuilt from the source by the next run, and the bundle
+cache from the authority's issuer; neither is a place where datasets or
+shapes are edited. No API writes datasets or policies.
+
 The website is a static site published by GitHub Pages; it is not deployed
 by participants.
 
@@ -274,6 +336,11 @@ Once per dataspace, by the dataspace authority:
 1. Issuer (`portitor-issuer`): its own volume, key and `did:web`
    document; its credential definitions; then register each participant
    (DID and claims) through its management API.
+   From 0.7, if the dataspace checks dataset metadata: build and sign the
+   schema and vocabulary bundle offline with `portitor-issuer bundle
+   build`, list the bundle key in the issuer's DID document
+   (`PORTITOR_ISSUER_BUNDLE_KEY_FILE`) and publish the bundle folder
+   (`PORTITOR_ISSUER_BUNDLE_DIR`).
 
 Then for each participant:
 
@@ -283,7 +350,8 @@ Then for each participant:
    For Gaia-X (from 0.8), the participant also obtains a Compliance
    credential from a Gaia-X Digital Clearing House.
 4. Connector (`portitor-connector`): point it at the identity and the
-   database, and trust the issuer's DID.
+   database, trust the issuer's DID, give it its datasets file and, with
+   a bundle, the bundle's URL, version and authority.
 
 ## Data plane: inside the connector or separate?
 

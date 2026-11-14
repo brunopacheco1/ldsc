@@ -46,18 +46,26 @@ Check each item and keep the answers in your own runbook.
   (`PORTITOR_PUBLIC_URL`). TLS ends at your reverse proxy or load balancer;
   Portitor itself serves plain HTTP.
 - [ ] **Datasets file.** A JSON file with the datasets you offer (see the
-  [README](../README.md#interface)). The connector refuses to start if a
-  definition breaks a DSP rule or an offer uses a constraint it does not
-  understand (`dateTime`, ADR 0009, and credential claims of the types in
-  `PORTITOR_POLICY_CREDENTIALS`, ADR 0019; see
-  [Credential constraints](#credential-constraints)), so test the file
-  before a rollout.
+  [README](../README.md#interface)). From 0.7 the connector harvests it
+  into a read copy at start and every hour ([Dataset harvest](#dataset-harvest),
+  ADR 0020). A dataset that breaks a DSP rule, uses a constraint the
+  connector does not understand (`dateTime`, ADR 0009, and credential
+  claims of the types in `PORTITOR_POLICY_CREDENTIALS`, ADR 0019; see
+  [Credential constraints](#credential-constraints)) or, with a bundle,
+  fails the authority's shapes is rejected and left out of the catalog;
+  the connector still starts. Test the file before a rollout and read the
+  harvest job (`GET /v1/harvest-jobs`) after it.
+- [ ] **Schema and vocabulary bundle** (optional, from 0.7). If your
+  dataspace checks dataset metadata, its authority gives you the
+  bundle's URL, the version to pin and its DID
+  ([Schema and vocabulary bundle](#schema-and-vocabulary-bundle), ADR 0005).
 - [ ] **Data sources.** For each dataset you transfer, the URL the
   connector fetches its data from (`portitor:source` in the datasets file,
   see the README). Partners never see it. It must be reachable from the
   connector, should be internal, and must not need credentials (none are
   sent). Plain `http://` is accepted here, since you set it; prefer
-  `https://`. The log warns at start about a dataset without a source.
+  `https://`. The harvest logs a warning for each dataset it adds or
+  changes without a source.
 - [ ] **Clock.** Offer constraints such as a date limit are checked
   against the host clock (ADR 0009). Keep it synchronised (NTP); a
   container uses the host's clock.
@@ -92,7 +100,13 @@ All configuration is by environment variable. The full table is in the
 |---|---|
 | `PORTITOR_PARTICIPANT_ID` | your DID |
 | `PORTITOR_PUBLIC_URL` | your public `https://` URL |
-| `PORTITOR_DATASETS_FILE` | path of the mounted datasets file |
+| `PORTITOR_DATASETS_FILE` | path of the mounted datasets file, harvested at start and at each run |
+| `PORTITOR_HARVEST_INTERVAL_SECONDS` | leave the default, `3600` (one hour); `0` harvests only at start. A value that is not a whole number stops the start |
+| `PORTITOR_BUNDLE_URL` | with a bundle: the `https://` base URL of one bundle version folder, for example `https://issuer.example.com/bundles/2026-11/`; plain `http://` only with `PORTITOR_ALLOW_HTTP_CALLBACKS=true` |
+| `PORTITOR_BUNDLE_DIR` | unset; a local bundle version folder, for development and tests only. Not together with `PORTITOR_BUNDLE_URL` |
+| `PORTITOR_BUNDLE_VERSION` | with a bundle, **required**: the version you pin; the manifest must have exactly this version |
+| `PORTITOR_BUNDLE_AUTHORITY` | with a bundle, **required**: the authority's `did:web` DID; the manifest must name it and its bundle key must have signed it |
+| `PORTITOR_BUNDLE_CACHE_DIR` | leave the default, `bundle-cache` next to `PORTITOR_DB_FILE` (`/data/bundle-cache` in the image) |
 | `PORTITOR_DB_FILE` | leave the image default, `/data/portitor.db` |
 | `PORTITOR_BIND` | leave the default, `0.0.0.0:8080` |
 | `PORTITOR_MANAGEMENT_API_KEY_FILE` | path of the mounted key file, or unset (management API off) |
@@ -145,6 +159,110 @@ for example only data processors in the EU:
 
   (as in the Minimum Viable Dataspace, commit 17bb5b8,
   `k8s/provider/application/controlplane-config.yaml`).
+
+### Dataset harvest
+
+From 0.7 the datasets come from a source outside the connector into a
+read copy in its database (ADR 0020). Today the source is the datasets
+file (`PORTITOR_DATASETS_FILE`), in the same format as before.
+
+- A run happens at start, before the DSP port serves, so the catalog is
+  ready at once; then every `PORTITOR_HARVEST_INTERVAL_SECONDS`. One run
+  at a time: a timer tick that finds a run going on is skipped.
+- The file is read again at each run. When its SHA-256 is the last run's,
+  the run ends `unchanged` and nothing else is touched. To publish a
+  change, replace the file; it is taken at the next run (or restart).
+- Each dataset is checked on its own: JSON object, DSP `Dataset` form,
+  the DSP catalog rules, the supported ODRL constraints, a valid
+  `portitor:source` and, with a bundle, the SHACL shapes for its
+  `dct:accessRights` level. A dataset that passes is added or updated. A
+  dataset that fails is rejected with its error; its previous good
+  version, if any, stays in the catalog.
+- Two datasets with the same `@id`: the first is used, the others are
+  rejected.
+- A dataset that is no longer in the file is **withdrawn**: it leaves the
+  catalog and new contract requests for it are refused. Transfers under
+  agreements already made keep working. If it comes back and passes, it
+  is active again.
+- A file that cannot be read, or is not a JSON array, makes the run
+  `failed`: the copy stays as it was. On a first start with no copy, the
+  catalog is empty and the connector still starts.
+- When the rules change (a new bundle version, another public URL or
+  another `PORTITOR_POLICY_CREDENTIALS`), the stored datasets are checked
+  again at start (trigger `bundle`). One that now fails is **hidden**:
+  out of the catalog, kept for existing agreements, with the reason
+  stored.
+- All changes of a run are written in one transaction. The last 100 runs
+  are kept.
+
+Each run is a job on the management API (read only, API key):
+
+```sh
+curl -s localhost:8081/v1/harvest-jobs -H "authorization: Bearer $(cat key)"       # newest first
+curl -s localhost:8081/v1/harvest-jobs/42 -H "authorization: Bearer $(cat key)"    # one job, with its errors
+```
+
+A job has `trigger` (`start`, `interval`, `bundle`), `outcome`
+(`succeeded`, `partial`, `unchanged`, `failed`), `counts` (`seen`,
+`added`, `updated`, `unchanged`, `withdrawn`, `rejected`) and a one-line
+`summary`. Each error names its `position` in the file, the `datasetId`
+if readable, the `check` that failed (`json`, `dsp`, `odrl`, `shacl`), the
+`message` and, for SHACL, the `report`. Pages: `?limit=1..100`, then
+`?after=<next>`. Described in
+[api/management-openapi.json](api/management-openapi.json).
+
+To keep a strict start, as before 0.7, make your start-up probe check
+that the latest job's `outcome` is `succeeded`.
+
+### Schema and vocabulary bundle
+
+From 0.7 a dataspace authority can publish a signed bundle of SHACL
+shapes, code lists and JSON-LD contexts (ADR 0005); HealthDCAT-AP
+release 8 is the baseline. With a bundle the connector checks each
+harvested dataset against the shapes for its `dct:accessRights` value,
+and DSP messages against the message shapes; a dataset that passes
+carries `dct:conformsTo` with the bundle's profile in the catalog.
+<!-- verify with D -->
+
+- Set `PORTITOR_BUNDLE_URL`, `PORTITOR_BUNDLE_VERSION` and
+  `PORTITOR_BUNDLE_AUTHORITY` from what the authority gives you. Without
+  them nothing is checked against shapes.
+- At start the connector downloads `manifest.json` and `manifest.jws`
+  first, checks the signature (ES256) with the bundle key listed in the
+  authority's `did:web` document (`<did>#bundle-key`, under
+  `assertionMethod`), the version and the authority, then downloads each
+  file and checks its SHA-256. Limits: 1 MiB for the manifest, 64 MiB per
+  file, 256 MiB in all, 120 s per download.
+- The verified bundle is kept in `PORTITOR_BUNDLE_CACHE_DIR`. The cache
+  is used only when the authority's host or DID document cannot be
+  reached; its files and signature are then checked again, with a
+  warning. Keep the cache on the `/data` volume.
+- A bundle that was read but fails a check (signature, key, authority,
+  version or a digest) stops the start; the cache does not replace it.
+  So does a bundle that cannot be loaded at all (no download and no
+  usable cache).
+- A new version needs a restart with the new `PORTITOR_BUNDLE_VERSION`.
+  The stored datasets are then checked again; those that fail are
+  hidden.
+- JSON-LD contexts are taken only from the bundle (and the DSP contexts
+  built in); the connector never fetches a context from the network. <!-- verify with D -->
+- What the engine checks: the SHACL Core subset of `portitor-shacl`.
+  `sh:extends` and `sh:shape` are ignored with a warning, so DCAT-AP's
+  "date or date and time" check on `dct:issued` and `dct:modified` is not
+  done. Class targets apply only to nodes typed in the dataset itself.
+
+Write HealthDCAT-AP datasets as DSP 2025-1 `Dataset` objects, with the
+bundle's prefixes (for example `healthdcatap:` and `dcatap:`), as in
+[examples/healthdcat-datasets.json](../examples/healthdcat-datasets.json).
+DSP 2025-1 and DCAT-AP do not agree on everything:
+
+- The DSP context makes `dcat:endpointURL` a text, while DCAT-AP needs an
+  IRI.
+- `"format": "HttpData-PULL"` is not an IRI, so JSON-LD drops it when the
+  dataset is turned into RDF; DCAT-AP shapes do not see it.
+- DSP's examples have no `dcat:accessURL` on a `Distribution` and no
+  `dct:title` on a `DataService`; DCAT-AP requires both. Give each
+  distribution a `dcat:accessURL`.
 
 ### Private CAs
 
@@ -209,7 +327,8 @@ curl -s  https://connector.example.com/.well-known/dspace-version
 ```
 
 The log line `portitor-connector listening` shows the bind address, the number
-of datasets and the database file.
+of datasets in the catalog after the start harvest, and the database file.
+`catalog ready` comes just before it.
 `management API listening` shows its address; `management API off` means
 no key file is set. A missing, unreadable or too short key file stops the
 start with an error.
@@ -491,6 +610,13 @@ DID, so usually not).
 - **Trusted issuers.** Whoever controls a DID in
   `PORTITOR_TRUSTED_ISSUERS` can admit any participant. List only your
   dataspace's issuers.
+- **Bundle (ADR 0005).** The connector trusts only a bundle signed with
+  the bundle key that the authority's `did:web` document lists, for the
+  version you pinned; a changed file or signature stops the start. The
+  bundle key is separate from the issuer's credential key, and the issuer
+  holds only its public part. Shapes, code lists and contexts are never
+  fetched from the network apart from the pinned bundle, and no Portitor
+  binary parses RDF/XML.
 - **Outbound calls.** The connector POSTs to the `callbackAddress` that the
   partner chooses. Only `https://` is allowed, but internal addresses are
   not blocked yet. Put the connector in a network zone where it cannot
@@ -532,6 +658,17 @@ DID, so usually not).
 | `no token: ...` in a send failure (WARN) | The STS did not give a token for an outgoing DSP request | Check the identity component, `PORTITOR_STS_URL` and the shared secret |
 | `own identity checked: DID document and STS agree` (INFO, at start) | The connector's DID document resolves and the STS signs for it | Nothing |
 | `portitor-connector stopped` (ERROR) | The process could not start or stopped with an error; the message says why | Fix the cause; the container restarts |
+| `harvesting datasets` (INFO, at start) | The datasets file and the interval in use | Nothing |
+| `no datasets file (PORTITOR_DATASETS_FILE): the catalog is empty` (INFO) | No datasets file is set | Set it, if you offer datasets |
+| `harvest run` (INFO) | One per run: `job`, `trigger`, `outcome` and the counts | Nothing |
+| `harvest run` (WARN, `outcome=failed`) | The source could not be read; the catalog is unchanged | Check the file, its mount and its JSON |
+| `harvest: dataset rejected` (WARN) | One dataset failed a check: `position`, `dataset`, `check`, `error` | Fix the dataset in the source; the next run takes it |
+| `harvest: dataset has no portitor:source; its transfers will be refused` (WARN) | A dataset was added or changed without a data source | Add `portitor:source`, unless the dataset is not transferred |
+| `harvest skipped: a run is going on` (INFO) | A timer tick came while a run was going on | Nothing, unless it repeats: then lengthen the interval |
+| `harvest: cannot store the run; ...` (ERROR) | The database could not be written; the catalog keeps what it had | Check disk space and the `/data` volume |
+| `bundle downloaded and verified` (INFO, at start) | The pinned bundle was downloaded and passed every check | Nothing |
+| `bundle download failed; using the cached copy, checked again` (WARN, at start) | The authority's host or DID document could not be reached; the cached copy is used | Check the network to the authority; nothing breaks meanwhile |
+| `bundle verified, but not written to the cache` (WARN) | The cache folder is not writable | Check `PORTITOR_BUNDLE_CACHE_DIR` and the volume |
 
 ### Backup and restore
 
@@ -605,6 +742,32 @@ issued before stay valid. Before you upgrade:
    dataspace's issuer ([section 4](#4-run-the-identity-next-to-the-connector),
    "Getting a credential").
 
+#### From 0.6 to 0.7
+
+0.7 harvests the datasets into a read copy (ADR 0020) and can check them
+against the authority's signed bundle (ADR 0005).
+
+1. Back up `/data/portitor.db*`. The connector's database is migrated
+   forward at start (schema version 7: the read copy and the harvest
+   jobs), so a rollback to 0.6 needs that backup. The identity's and the
+   issuer's databases are unchanged.
+2. **Behaviour change:** a datasets file that cannot be read, or a
+   dataset that breaks a rule (including an offer with a credential
+   constraint on a type not in `PORTITOR_POLICY_CREDENTIALS`, or a
+   `portitor:source` that is not an HTTP(S) URL), no longer stops the
+   start. The dataset is rejected and logged, and the connector starts
+   without it. To keep a strict start, check `GET /v1/harvest-jobs` in a
+   start-up probe (latest `outcome` is `succeeded`).
+   `PORTITOR_DATASETS` (removed in 0.2) still stops the start.
+3. Datasets you remove from the file are withdrawn at the next run, not
+   at the next restart. `PORTITOR_HARVEST_INTERVAL_SECONDS=0` keeps the
+   0.6 rhythm (read only at start).
+4. The bundle settings are new and optional. Without them nothing
+   changes in what the catalog shows.
+5. The issuer can serve bundles and list a bundle key
+   (`PORTITOR_ISSUER_BUNDLE_DIR`, `PORTITOR_ISSUER_BUNDLE_KEY_FILE`, both
+   optional; [section 7](#7-run-the-issuer-dataspace-authority-only)).
+
 ## 7. Run the issuer (dataspace authority only)
 
 The issuer issues and revokes the dataspace's credentials with the
@@ -658,6 +821,8 @@ DID.
 | `PORTITOR_MANAGEMENT_API_KEY_FILE` | unset (management API off) | path of the mounted key file |
 | `PORTITOR_MANAGEMENT_BIND` | `127.0.0.1:8071` | `0.0.0.0:8071` in a container, published only on an internal interface |
 | `PORTITOR_ALLOW_HTTP_CALLBACKS` | unset | **unset**; `true` only for local tests with plain-HTTP DIDs |
+| `PORTITOR_ISSUER_BUNDLE_KEY_FILE` | unset | with a bundle: the **public** bundle key as a JWK (as `bundle build` prints it), so the private key stays offline; a PKCS#8 PEM is accepted too. Listed in the DID document as `<did>#bundle-key` under `assertionMethod`. The start fails if it is the credential key |
+| `PORTITOR_ISSUER_BUNDLE_DIR` | unset | with a bundle: the folder of built bundles, served read only at `GET /bundles/{version}/{path}` on the public port |
 | `PORTITOR_ISSUER_MAX_ACTIVE_PER_HOLDER` | `10` | keep; the most credentials of one definition a participant may hold that are neither revoked nor expired. A request beyond it ends `REJECTED`. It keeps one participant from filling a status list (131,072 positions) |
 | `RUST_LOG` | `info` | `info` |
 
@@ -710,11 +875,48 @@ Who gets what (ADR 0018, amended during the 0.6 review):
 - A request whose decision failed (for example the disk was full) stays
   `RECEIVED` and is decided again within a minute.
 
+### Schema and vocabulary bundle (optional)
+
+The authority can publish a signed bundle of SHACL shapes, code lists and
+JSON-LD contexts that connectors check datasets and DSP messages against
+(ADR 0005).
+
+1. Make a **bundle key**, apart from the issuer key:
+   `openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out bundle-key.pem`.
+   Keep it offline, like the issuer key backup.
+2. Put the files in a folder with a `bundle.json` that lists each file
+   and its role (`datasets` with the `dct:accessRights` values it applies
+   to, `messages`, `vocabulary`, `context` with its URL). The format is
+   documented in `crates/portitor-issuer/src/bundle_build.rs`;
+   [examples/bundle/healthdcat-ap-r8](../examples/bundle/healthdcat-ap-r8)
+   is a full example. Code lists go in as N-Triples:
+   `scripts/reduce_code_lists.py` keeps only the triples the shapes need.
+3. Build and sign it, offline:
+   ```sh
+   portitor-issuer bundle build --in ./bundle-src --out ./bundles --version 2026-11 \
+     --profile https://data.health.europa.eu/healthdcat-ap/releases/release-8/ \
+     --authority did:web:issuer.example.com --kid 'did:web:issuer.example.com#bundle-key' \
+     --key bundle-key.pem [--issued 2026-11-14]
+   ```
+   It refuses RDF/XML, paths that leave the folder, files over 64 MiB, and
+   a version folder that exists already: a published version never
+   changes. It checks its own result as a connector will, and prints the
+   public key as a JWK.
+4. Put the public JWK in `PORTITOR_ISSUER_BUNDLE_KEY_FILE` and the output
+   folder in `PORTITOR_ISSUER_BUNDLE_DIR`, and restart the issuer. Check:
+   `curl -sf https://issuer.example.com/bundles/2026-11/manifest.json`.
+5. Tell participants the URL (`https://issuer.example.com/bundles/2026-11/`),
+   the version and your DID. A new version is a new folder; connectors
+   move to it when they restart with the new version.
+
+The issuer serves only `manifest.json`, `manifest.jws` and the files the
+version's manifest lists; anything else is 404.
+
 ### Ports
 
 | Port | Serves | Reached by | Expose |
 |---|---|---|---|
-| 8070 | DID document, issuer metadata, credential requests and their status, status lists | participants' identities, verifiers | through your HTTPS reverse proxy |
+| 8070 | DID document, issuer metadata, credential requests and their status, status lists, bundles | participants' identities, verifiers, connectors | through your HTTPS reverse proxy |
 | 8071 | management API (participants, offers, revocation) | the authority's operators only | **never publicly** |
 
 The public endpoints are described in
@@ -730,6 +932,9 @@ and `curl -sf https://issuer.example.com/issuer/metadata`.
 | `credential request refused` (INFO) | A credential request was malformed and answered 400; `reason` says why |
 | `request refused` (INFO) | A caller's token was refused (401), for example a DID that is not registered |
 | `delivery given up`, `delivery refused by the holder, given up` | See "Who gets what" above |
+| `bundle key listed in the DID document` (INFO, at start) | `PORTITOR_ISSUER_BUNDLE_KEY_FILE` is set; shows the key id |
+| `serving bundles at /bundles/` (INFO, at start) | `PORTITOR_ISSUER_BUNDLE_DIR` is set |
+| `bundle file not readable`, `bundle manifest not readable` (WARN) | A request for a bundle file was answered 404 because the file or the version's manifest could not be read; check the folder |
 
 ### Order
 
@@ -764,6 +969,12 @@ In this version (see also [SECURITY-ASSURANCE.md](SECURITY-ASSURANCE.md)):
   offer (DSP `OFFERED`) that has credential constraints; requests it
   sends itself are not affected.
 - No metrics endpoint yet.
+- Datasets come only from the datasets file; no other harvest source yet.
+  No API writes datasets or policies.
+- SHACL: the subset `portitor-shacl` implements (ADR 0005). Shapes that
+  use anything else are refused when the bundle is loaded; `sh:extends`
+  and `sh:shape` are ignored with a warning. A new bundle version needs a
+  restart.
 - Transfers: pull only. A data access token ends `PORTITOR_DATA_TOKEN_SECONDS`
   after the transfer starts and is not renewed; the consumer then asks for
   a new transfer. Only `GET` of the whole source; no credentials are sent
