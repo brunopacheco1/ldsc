@@ -20,7 +20,7 @@ project checks every change. All commands run from the repository root.
 | Dependencies: advisories, licences, sources | `cargo deny check` | every PR |
 | Licence headers | `reuse lint` | every PR (`REUSE compliance`) |
 | DSP conformance (TCK) | see [below](#dsp-conformance-tck) | every PR (`TCK`) |
-| DCP conformance, identity component (TCK) | see [below](#dcp-conformance-tck) | every PR (`TCK`) |
+| DCP conformance: identity component, connector as verifier, issuer (TCK) | see [below](#dcp-conformance-tck) | every PR (`TCK`) |
 | Interoperability with EDC v1.0.0-RC7 | `scripts/edc-interop.sh`, see [below](#edc-interop-test) | PRs that touch `crates/`, `interop/edc/` or the script, and nightly (`EDC interop`) |
 | Fuzzing | see [below](#fuzzing) | every PR (short), weekly (long) |
 | Two participants authenticate with DCP, agree a contract and transfer a file | `scripts/demo.sh`, see [below](#two-connectors) | every PR (`CI`) |
@@ -143,8 +143,9 @@ properties to `tck/dsp-tck.properties`, scripted behaviour (if any) to
 ## DCP conformance (TCK)
 
 The Eclipse DCP TCK v1.2.1 checks the identity component
-(`portitor-identity`) as a credential service: the presentation tests
-(DCP sections 4 and 5) and the holder side of issuance (Storage API and
+(`portitor-identity`) as a credential service, the connector as a
+verifier, and the issuer (below). For the identity component it runs the
+presentation tests (DCP sections 4 and 5) and the holder side of issuance (Storage API and
 credential offers, section 6), 54 tests. The TCK plays the verifier and
 the issuer, serves their DID documents itself, and gets its ID tokens from
 the identity component's STS. Before each test it delivers two test
@@ -188,6 +189,26 @@ done
 DATASPACETCK_STS_CLIENT_SECRET=$(cat /tmp/id-sts.secret) \
   java -jar dcp-tck-1.2.1-all.jar -config tck/dcp-tck.properties > dcp-tck.log
 python3 scripts/dcp_tck_check.py dcp-tck.log
+```
+
+### The issuer tests
+
+The same TCK checks `portitor-issuer` with its `issuance.issuer` package,
+41 tests: endpoint discovery, issuer metadata, credential requests and
+their status (with every token check of DCP 4.3), and what is delivered
+to the holder (one `CredentialMessage` per request, signed credentials,
+the holder's access token sent back). The TCK plays the holder
+(`did:web:127.0.0.1%3A8083:holder`) and receives the deliveries itself,
+so its DID is registered as a participant before the run. The issuer
+refuses a repeated `holderPid`, so `tck/dcp-issuer-tck.properties` gives
+each test that must be accepted its own. `tck/issuer-credentials.json`
+defines two `vc11-sl2021/jwt` credentials, as the TCK's test 6.4.1
+expects. One script does it all, locally and in CI:
+
+```sh
+# the TCK jar as above; uses ports 8070, 8071 and 8083, and writes
+# dcp-issuer-tck.log and issuer.log in the current directory
+scripts/dcp-issuer-tck.sh dcp-tck-1.2.1-all.jar
 ```
 
 ## EDC interop test

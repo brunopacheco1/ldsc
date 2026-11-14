@@ -20,8 +20,31 @@ versions may change behaviour and configuration.
 - `portitor-dcp`: the DCP issuance messages `CredentialRequestMessage`
   and `CredentialStatus` (DCP v1.0.1 sections 6.4 and 6.8), checked
   against the official schemas.
-- `portitor-issuer`: new crate for the issuer component (work in
-  progress).
+- `portitor-issuer`: the issuer component (ADR 0018). Public port (8070):
+  its did:web document with an `IssuerService` entry; under
+  `PORTITOR_ISSUER_SERVICE_URL` the issuer metadata (`GET /metadata`),
+  credential requests (`POST /credentials`, `201 Created` with
+  `Location`) and their status (`GET /requests/{issuerPid}`), DCP 6.4,
+  6.7 and 6.8, and the status lists (`GET /status-lists/vc11`, `/vc20`).
+  Only participants the authority registered get credentials; an unknown
+  credential id ends `REJECTED`; a repeated `holderPid` of the same
+  holder is refused (409). Issued credentials go to the holder's Storage
+  API in one `CredentialMessage`, through an outbox with retries, with a
+  self-issued ID token that carries back the holder's access token. One
+  Bitstring Status List credential per profile (131,072 entries,
+  `revocation`), signed again on each revocation. Credential types come
+  from `PORTITOR_ISSUER_CREDENTIALS_FILE`, checked at start. Management
+  API (8071, API key): participants, offers, issued credentials,
+  revocation (`docs/api/issuer-management-openapi.json`); the public port
+  is described in `docs/api/issuer-openapi.json`.
+- `portitor-dcp`: `issuance` signs credentials of any type and claims in
+  both profiles, status list credentials and the delivery token (moved
+  from the `test-issuer` example, which stays until the demos use the
+  issuer).
+- `portitor-runtime`: `caller` checks a DCP caller's self-issued token at
+  the HTTP edge, shared by the identity component and the issuer.
+- DCP TCK v1.2.1 issuer tests (41) in the `TCK` workflow against
+  `portitor-issuer` (`scripts/dcp-issuer-tck.sh`).
 - Release pipeline for a third image, `ghcr.io/brunopacheco1/portitor-issuer`
   (ADR 0018): a `portitor-issuer` target in the `Dockerfile` (ports 8070
   and 8071, `/data/portitor-issuer.db`), built, signed, attested and

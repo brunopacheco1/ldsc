@@ -14,14 +14,17 @@
 # runs the TCK (tck/dcp-issuer-tck.properties) and checks that all 41 tests
 # passed. The TCK log is dcp-issuer-tck.log, the issuer's issuer.log, both in
 # the current directory. Needs cargo, java (21), curl, openssl and python3.
+# TCK_PORT moves the TCK from port 8083 to another (a shared machine).
 
 set -euo pipefail
 
 TCK_JAR=${1:?usage: $0 PATH/TO/dcp-tck-1.2.1-all.jar}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-HOLDER_DID='did:web:127.0.0.1%3A8083:holder'
+TCK_PORT=${TCK_PORT:-8083}
+HOLDER_DID="did:web:127.0.0.1%3A$TCK_PORT:holder"
 
 WORK=$(mktemp -d)
+sed "s/8083/$TCK_PORT/g" "$ROOT/tck/dcp-issuer-tck.properties" > "$WORK/tck.properties"
 ISSUER_PID=
 stop() {
   if [ -n "$ISSUER_PID" ]; then kill "$ISSUER_PID" 2>/dev/null || true; fi
@@ -55,5 +58,5 @@ curl -sSf -X POST http://127.0.0.1:8071/v1/participants \
   -H 'Content-Type: application/json' \
   -d "{\"did\": \"$HOLDER_DID\", \"claims\": {\"role\": \"consumer\", \"level\": \"basic\"}}" > /dev/null
 
-java -jar "$TCK_JAR" -config "$ROOT/tck/dcp-issuer-tck.properties" | tee dcp-issuer-tck.log
+java -jar "$TCK_JAR" -config "$WORK/tck.properties" | tee dcp-issuer-tck.log
 python3 "$ROOT/scripts/dcp_tck_check.py" dcp-issuer-tck.log 41
