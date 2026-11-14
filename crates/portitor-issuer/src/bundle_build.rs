@@ -52,7 +52,11 @@ pub const INPUT_FILE: &str = "bundle.json";
 
 /// The usage text of `portitor-issuer bundle build`.
 pub const USAGE: &str = "usage: portitor-issuer bundle build --in <folder> --out <folder> \
---version <version> --profile <iri> --authority <did> --kid <did-url> --key <pem file>";
+--version <version> --profile <iri> --authority <did> --kid <did-url> --key <pem file> \
+[--issued <date>] [--not-latest]";
+
+/// The flag that keeps `latest.json` as it is.
+const NOT_LATEST: &str = "--not-latest";
 
 /// The option names `bundle build` knows.
 const KNOWN_OPTIONS: [&str; 8] = [
@@ -114,6 +118,11 @@ pub struct Options {
     pub key: PathBuf,
     /// `--issued` (optional): the issue date; today (UTC) when left out.
     pub issued: Option<String>,
+    /// `--not-latest`: leave `latest.json` as it is (for example to build
+    /// a version that connectors following the newest one should not get
+    /// yet). Without it, `latest.json` names the new version, unless it
+    /// names one issued later.
+    pub not_latest: bool,
 }
 
 impl Options {
@@ -123,9 +132,15 @@ impl Options {
     /// An unknown or repeated option, a missing value or option.
     pub fn parse(args: &[OsString]) -> Result<Self, String> {
         let mut values: BTreeMap<&str, String> = BTreeMap::new();
+        let mut not_latest = false;
         let mut rest = args.iter();
         while let Some(name) = rest.next() {
             let name = name.to_string_lossy();
+            // the one flag without a value
+            if name == NOT_LATEST {
+                not_latest = true;
+                continue;
+            }
             // the option as written in KNOWN_OPTIONS, which lives as long
             // as the program (a `&'static str`)
             let Some(option) = KNOWN_OPTIONS.into_iter().find(|known| *known == name) else {
@@ -151,6 +166,7 @@ impl Options {
             key: PathBuf::from(take(&mut values, "--key")?),
             // optional: a missing --issued means today
             issued: values.remove("--issued"),
+            not_latest,
         })
     }
 }
@@ -171,6 +187,19 @@ pub struct Built {
     pub manifest: Manifest,
     /// The public key of the bundle key, for the issuer's DID document.
     pub public_key: Jwk,
+    /// What happened to `latest.json` in the output folder.
+    pub latest: LatestUpdate,
+}
+
+/// What a build did with `latest.json` ([`bundle::LATEST_FILE`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LatestUpdate {
+    /// It now names the new version.
+    Updated,
+    /// `--not-latest`: left as it was.
+    Skipped,
+    /// It names a version issued later than the new one, and stays so.
+    KeptNewer(String),
 }
 
 /// Runs `bundle <args>` and returns what to print. Only `build` exists.
@@ -183,8 +212,20 @@ pub fn run(args: &[OsString]) -> Result<String, String> {
             let options = Options::parse(options)?;
             let key = read_key(&options.key)?;
             let built = build(&options, &key)?;
+            let latest = match &built.latest {
+                LatestUpdate::Updated => {
+                    format!("{} names {}", bundle::LATEST_FILE, built.manifest.version)
+                }
+                LatestUpdate::Skipped => {
+                    format!("{} not changed ({NOT_LATEST})", bundle::LATEST_FILE)
+                }
+                LatestUpdate::KeptNewer(newer) => format!(
+                    "{} not changed: it names {newer}, issued later",
+                    bundle::LATEST_FILE
+                ),
+            };
             Ok(format!(
-                "bundle {} written to {}\nkid: {}\npublic key (for PORTITOR_ISSUER_BUNDLE_KEY_FILE): {}",
+                "bundle {} written to {}\n{latest}\nkid: {}\npublic key (for PORTITOR_ISSUER_BUNDLE_KEY_FILE): {}",
                 built.manifest.version,
                 built.folder.display(),
                 options.kid,
@@ -235,10 +276,16 @@ pub fn build(options: &Options, key: &SigningKey) -> Result<Built, String> {
         &manifest_bytes,
         &jws,
     )?;
+    let latest = if options.not_latest {
+        LatestUpdate::Skipped
+    } else {
+        update_latest(&options.output, &manifest)?
+    };
     Ok(Built {
         folder,
         manifest,
         public_key,
+        latest,
     })
 }
 
@@ -425,6 +472,41 @@ fn write_folder(
     write_file(&partial.join(SIGNATURE_FILE), jws.as_bytes())?;
     std::fs::rename(&partial, &folder).map_err(at(&folder))?;
     Ok(folder)
+}
+
+/// Makes `<output>/latest.json` name `manifest`'s version, unless it
+/// names a version whose manifest was issued later (a build of an older
+/// line never moves connectors back). The file is written next to its
+/// place and renamed, so a reader never sees half of it.
+fn update_latest(output: &Path, manifest: &Manifest) -> Result<LatestUpdate, String> {
+    let path = output.join(bundle::LATEST_FILE);
+    if let Some(current) = read_latest(output)
+        && current.version != manifest.version
+        && current.issued > manifest.issued
+    {
+        return Ok(LatestUpdate::KeptNewer(current.version));
+    }
+    let latest = bundle::Latest {
+        version: manifest.version.clone(),
+    };
+    let bytes = serde_json::to_vec(&latest).map_err(|e| e.to_string())?;
+    let partial = output.join(format!(".{}.partial", bundle::LATEST_FILE));
+    // a file left by a failed build is replaced
+    let _ = std::fs::remove_file(&partial);
+    write_file(&partial, &bytes)?;
+    std::fs::rename(&partial, &path).map_err(at(&path))?;
+    Ok(LatestUpdate::Updated)
+}
+
+/// The manifest of the version that `<output>/latest.json` names; `None`
+/// when there is no such file, or it or that manifest cannot be read (the
+/// new build then replaces it: the version folder is already written, and
+/// a broken pointer must not stop a fix).
+fn read_latest(output: &Path) -> Option<Manifest> {
+    let bytes = std::fs::read(output.join(bundle::LATEST_FILE)).ok()?;
+    let latest = bundle::Latest::parse(&bytes).ok()?;
+    let manifest_bytes = std::fs::read(output.join(&latest.version).join(MANIFEST_FILE)).ok()?;
+    serde_json::from_slice(&manifest_bytes).ok()
 }
 
 /// Writes `bytes` to `path`, which must not exist yet.

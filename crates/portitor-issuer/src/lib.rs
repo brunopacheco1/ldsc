@@ -183,13 +183,15 @@ impl Issuer {
 /// The public HTTP routes: the DID document, under the path of
 /// `PORTITOR_ISSUER_SERVICE_URL` the DCP issuer service and the status
 /// lists, and, with `PORTITOR_ISSUER_BUNDLE_DIR`, the built bundles at
-/// `/bundles/{version}/{path}`.
+/// `/bundles/{version}/{path}` and `/bundles/latest.json`.
 pub fn router(issuer: Arc<Issuer>) -> Router {
     let service = issuer.service_path.clone();
     let mut router = Router::new();
     // with PORTITOR_ISSUER_BUNDLE_DIR only (ADR 0005)
     if issuer.bundle_dir.is_some() {
-        router = router.route(bundles::ROUTE, get(bundles::serve));
+        router = router
+            .route(bundles::ROUTE, get(bundles::serve))
+            .route(bundles::LATEST_ROUTE, get(bundles::serve_latest));
     }
     router
         .route(&issuer.did_path, get(did_document::serve))

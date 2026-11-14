@@ -9,7 +9,8 @@
 //!   `<did>#bundle-key`, under `assertionMethod`, separate from the
 //!   credential signing key (`PORTITOR_ISSUER_BUNDLE_KEY_FILE`);
 //! - serving a folder of built bundles, read only, on the public port at
-//!   `GET /bundles/{version}/{path}` (`PORTITOR_ISSUER_BUNDLE_DIR`).
+//!   `GET /bundles/{version}/{path}` (`PORTITOR_ISSUER_BUNDLE_DIR`), and
+//!   its pointer to the newest version at `GET /bundles/latest.json`.
 //!
 //! The issuer never signs a bundle while it runs: signing is done offline
 //! by `portitor-issuer bundle build`. So the bundle key file may hold only
@@ -34,6 +35,10 @@ use crate::Issuer;
 
 /// The URL path under which bundles are served.
 pub const ROUTE: &str = "/bundles/{version}/{*path}";
+
+/// The URL path of the pointer to the newest version
+/// ([`bundle::LATEST_FILE`], written by `bundle build`).
+pub const LATEST_ROUTE: &str = "/bundles/latest.json";
 
 /// The media type of `manifest.jws`, a compact JWS (RFC 7515, section 9.2.1).
 pub const JWS_MEDIA_TYPE: &str = "application/jose";
@@ -225,6 +230,25 @@ pub(crate) async fn serve(
             not_found()
         }
     }
+}
+
+/// `GET /bundles/latest.json`: `PORTITOR_ISSUER_BUNDLE_DIR/latest.json`,
+/// which names the newest version; 404 when there is none. Connectors
+/// that follow the newest version read it on every check, so caches are
+/// told to ask again each time.
+pub(crate) async fn serve_latest(State(issuer): State<Arc<Issuer>>) -> Response {
+    let Some(root) = issuer.bundle_dir.as_deref() else {
+        return not_found();
+    };
+    let file = FileToServe {
+        path: root.join(bundle::LATEST_FILE),
+        media_type: "application/json",
+    };
+    let mut response = file_response(&file).await;
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    response
 }
 
 /// The file to serve for `version` and `path`; `None` when it is not a

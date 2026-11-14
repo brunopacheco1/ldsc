@@ -16,7 +16,7 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
 use portitor_dcp::bundle::{self, Expected, Manifest, MediaType};
 use portitor_dcp::{DidDocument, SigningKey};
-use portitor_issuer::bundle_build::{Options, build};
+use portitor_issuer::bundle_build::{LatestUpdate, Options, build};
 use portitor_issuer::config::Config;
 use portitor_issuer::store::SqliteStore;
 use portitor_issuer::{Issuer, Ports, bundles};
@@ -74,6 +74,7 @@ fn options(input: &Path, output: &Path) -> Options {
         kid: format!("{AUTHORITY}#bundle-key"),
         key: "unused.pem".into(),
         issued: Some("2026-11-14".to_owned()),
+        not_latest: false,
     }
 }
 
@@ -112,6 +113,98 @@ fn build_writes_a_signed_bundle() {
     // a published version is never written again
     let again = build(&options(&input, &output), &key).unwrap_err();
     assert!(again.contains("exists already"), "{again}");
+}
+
+/// The version `<output>/latest.json` names.
+fn latest_in(output: &Path) -> String {
+    let bytes = std::fs::read(output.join(bundle::LATEST_FILE)).unwrap();
+    bundle::Latest::parse(&bytes).unwrap().version
+}
+
+#[test]
+fn latest_json_names_the_newest_version() {
+    let (input, output) = (input_folder(), scratch());
+    let key = SigningKey::generate().unwrap();
+    let first = build(&options(&input, &output), &key).unwrap();
+    assert_eq!(first.latest, LatestUpdate::Updated);
+    assert_eq!(latest_in(&output), "2026.11.0");
+    // a later issue date moves it on
+    let later = Options {
+        version: "2026.12.0".to_owned(),
+        issued: Some("2026-12-01".to_owned()),
+        ..options(&input, &output)
+    };
+    assert_eq!(build(&later, &key).unwrap().latest, LatestUpdate::Updated);
+    assert_eq!(latest_in(&output), "2026.12.0");
+    // a fix of an older line, issued earlier, never moves it back
+    let older = Options {
+        version: "2026.11.1".to_owned(),
+        issued: Some("2026-11-20".to_owned()),
+        ..options(&input, &output)
+    };
+    assert_eq!(
+        build(&older, &key).unwrap().latest,
+        LatestUpdate::KeptNewer("2026.12.0".to_owned())
+    );
+    assert_eq!(latest_in(&output), "2026.12.0");
+    // --not-latest leaves it, even for a newer one
+    let held_back = Options {
+        version: "2027.01.0".to_owned(),
+        issued: Some("2027-01-05".to_owned()),
+        not_latest: true,
+        ..options(&input, &output)
+    };
+    assert_eq!(
+        build(&held_back, &key).unwrap().latest,
+        LatestUpdate::Skipped
+    );
+    assert_eq!(latest_in(&output), "2026.12.0");
+    // a broken pointer is replaced, not a reason to stop
+    std::fs::write(output.join(bundle::LATEST_FILE), "{").unwrap();
+    let next = Options {
+        version: "2027.02.0".to_owned(),
+        issued: Some("2027-02-01".to_owned()),
+        ..options(&input, &output)
+    };
+    assert_eq!(build(&next, &key).unwrap().latest, LatestUpdate::Updated);
+    assert_eq!(latest_in(&output), "2027.02.0");
+}
+
+#[test]
+fn latest_is_not_a_version() {
+    let (input, output) = (input_folder(), scratch());
+    let named_latest = Options {
+        version: "Latest".to_owned(),
+        ..options(&input, &output)
+    };
+    let error = build(&named_latest, &SigningKey::generate().unwrap()).unwrap_err();
+    assert!(error.contains("newest version"), "{error}");
+}
+
+#[test]
+fn not_latest_is_a_flag() {
+    let args: Vec<std::ffi::OsString> = [
+        "--in",
+        "i",
+        "--out",
+        "o",
+        "--version",
+        "v",
+        "--profile",
+        "p",
+        "--authority",
+        "a",
+        "--kid",
+        "k",
+        "--key",
+        "f",
+        "--not-latest",
+    ]
+    .iter()
+    .map(Into::into)
+    .collect();
+    assert!(Options::parse(&args).unwrap().not_latest);
+    assert!(!Options::parse(&args[..14]).unwrap().not_latest);
 }
 
 /// Builds from an input whose `bundle.json` lists one file, `path`.
@@ -283,6 +376,30 @@ async fn built_bundles_are_served() {
         let (status, _, _) = get(&app, refused).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{refused}");
     }
+}
+
+#[tokio::test]
+async fn latest_json_is_served_and_never_cached() {
+    let (input, output) = (input_folder(), scratch());
+    let app = portitor_issuer::router(Arc::new(issuer(Some(output.clone()))));
+    let (status, _, _) = get(&app, "/bundles/latest.json").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "no build yet");
+    build(&options(&input, &output), &SigningKey::generate().unwrap()).unwrap();
+    let request = Request::get("/bundles/latest.json")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get(header::CACHE_CONTROL).unwrap(),
+        "no-cache"
+    );
+    assert_eq!(
+        response.headers().get(header::CONTENT_TYPE).unwrap(),
+        "application/json"
+    );
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(bundle::Latest::parse(&body).unwrap().version, "2026.11.0");
 }
 
 #[tokio::test]

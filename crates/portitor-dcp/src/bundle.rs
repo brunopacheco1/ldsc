@@ -49,6 +49,20 @@ pub const MANIFEST_FILE: &str = "manifest.json";
 /// The file name of the manifest's signature in a bundle folder.
 pub const SIGNATURE_FILE: &str = "manifest.jws";
 
+/// The file at the root of a folder of bundles that names the newest
+/// version: `{"version": "2026.11.0"}` ([`Latest`]). It is not signed: a
+/// connector only uses the version it names to find a manifest, and that
+/// manifest must be signed and must not be older than the one in use.
+pub const LATEST_FILE: &str = "latest.json";
+
+/// The largest `latest.json` read, in bytes.
+pub const MAX_LATEST_BYTES: usize = 4 * 1024;
+
+/// The setting value that means "follow the newest version"
+/// (`PORTITOR_BUNDLE_VERSION=latest`). No bundle may have it as its
+/// version.
+pub const FOLLOW_LATEST: &str = "latest";
+
 /// The `typ` header of a bundle signature (RFC 8725, section 3.11:
 /// explicit typing), so a signed credential or token can never pass as a
 /// bundle signature, nor the other way round.
@@ -347,13 +361,40 @@ pub fn check_version(version: &str) -> Result<(), BundleError> {
         && version.len() <= MAX_VERSION_LEN
         && !version.starts_with('.')
         && version.chars().all(is_safe_char);
-    if fits {
-        Ok(())
-    } else {
-        Err(BundleError::Manifest(format!(
+    if !fits {
+        return Err(BundleError::Manifest(format!(
             "version must be 1 to {MAX_VERSION_LEN} letters, digits, '.', '_' or '-', \
              not starting with '.'"
-        )))
+        )));
+    }
+    if version.eq_ignore_ascii_case(FOLLOW_LATEST) {
+        return Err(BundleError::Manifest(format!(
+            "version must not be {FOLLOW_LATEST:?}: that word means \"the newest version\" in a connector's settings"
+        )));
+    }
+    Ok(())
+}
+
+/// `latest.json` ([`LATEST_FILE`]): the newest version in a folder of
+/// bundles.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Latest {
+    /// The newest version; the name of its folder.
+    pub version: String,
+}
+
+impl Latest {
+    /// Reads `latest.json`.
+    ///
+    /// # Errors
+    /// Not this JSON object, or a version that [`check_version`] refuses.
+    pub fn parse(bytes: &[u8]) -> Result<Self, BundleError> {
+        let latest: Self = serde_json::from_slice(bytes)
+            .map_err(|e| BundleError::Manifest(format!("{LATEST_FILE}: {e}")))?;
+        check_version(&latest.version)
+            .map_err(|e| BundleError::Manifest(format!("{LATEST_FILE}: {e}")))?;
+        Ok(latest)
     }
 }
 
