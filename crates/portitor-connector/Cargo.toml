@@ -38,7 +38,8 @@ jsonschema.workspace = true
 # tests/bundle_cache.rs)
 portitor-issuer = { path = "../portitor-issuer" }
 tower = { version = "0.5", features = ["util"] }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# test-util: a paused clock for the harvest schedule test (src/harvest/tests.rs)
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 # reads the log lines a test expects (src/outbox.rs)
 tracing-subscriber.workspace = true
 

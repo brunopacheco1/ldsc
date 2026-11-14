@@ -574,22 +574,28 @@ fn one_run_at_a_time() {
     ));
 }
 
-#[tokio::test]
+/// On a paused clock (`start_paused`): time moves only when every task
+/// waits, and not while a `spawn_blocking` run is going on, so each
+/// `sleep` below lets exactly the runs that fall due in it happen.
+#[tokio::test(start_paused = true)]
 async fn the_schedule_runs_again_and_zero_means_only_at_start() {
     let store = memory();
     let source = Source::with(vec![entry("a")]);
     let harvester = Arc::new(started(&source, &store, dsp()));
     assert!(harvester.schedule(Duration::ZERO).is_none());
-    let schedule = harvester.schedule(Duration::from_millis(10)).unwrap();
-    for _ in 0..200 {
-        if store.jobs(None, 10).unwrap().len() >= 3 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    let job_count = || store.jobs(None, 10).unwrap().len();
+    assert_eq!(job_count(), 1, "the start run");
+
+    let schedule = harvester.schedule(Duration::from_secs(60)).unwrap();
+    tokio::time::sleep(Duration::from_secs(59)).await;
+    assert_eq!(job_count(), 1, "nothing before the first interval");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(job_count(), 2, "one run at 60 s");
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    assert_eq!(job_count(), 3, "one more at 120 s");
     schedule.abort();
+
     let jobs = store.jobs(None, 10).unwrap();
-    assert!(jobs.len() >= 3, "{jobs:?}");
     assert_eq!(jobs[0].record.trigger, Trigger::Interval);
     assert_eq!(jobs[0].record.outcome, JobOutcome::Unchanged);
 }
