@@ -170,19 +170,23 @@ def shape_classes(paths):
     return classes
 
 
+def iri_triples(path):
+    """The triples of a file whose subject and object are both IRIs."""
+    return ((s, p, o) for s, p, o in triples(path) if is_iri(s) and is_iri(o))
+
+
 def read_sources(folder):
     """Code list triples to keep, ontology subclass edges, ontology individuals."""
     kept = set()
     subclass = []  # (sub, super) edges of the ontologies
     individuals = []  # (subject, class) rdf:type triples of the ontologies
     for name, kind, _, _ in SOURCES:
-        for s, p, o in triples(folder / f"{name}.nt"):
-            if not (is_iri(s) and is_iri(o)):
-                continue
-            if kind == CODE_LIST:
-                if p in (RDF_TYPE, IN_SCHEME):
-                    kept.add(f"{s} <{p}> {o} .")
-            elif p == SUBCLASS:
+        path = folder / f"{name}.nt"
+        if kind == CODE_LIST:
+            kept.update(f"{s} <{p}> {o} ." for s, p, o in iri_triples(path) if p in (RDF_TYPE, IN_SCHEME))
+            continue
+        for s, p, o in iri_triples(path):
+            if p == SUBCLASS:
                 subclass.append((s[1:-1], o[1:-1]))
             elif p == RDF_TYPE and not o[1:-1].startswith(SCHEMA_NAMESPACES):
                 individuals.append((s, o[1:-1]))
