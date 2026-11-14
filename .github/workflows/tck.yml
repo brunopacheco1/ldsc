@@ -3,8 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Runs the Eclipse DSP TCK (built from source at a pinned tag) against Portitor,
-# the DCP TCK's credential service tests against portitor-identity, and its
-# verifier tests against the connector.
+# the DCP TCK's credential service tests against portitor-identity, its
+# verifier tests against the connector, and its issuer tests against
+# portitor-issuer.
 # Must pass: metadata (MET), catalog (CAT), contract negotiation (CN, CN_C)
 # and transfer process (TP, TP_C), as provider and as consumer. The
 # connector is built with the test-only `tck` feature, which scripts
@@ -212,4 +213,38 @@ jobs:
             dcp-verifier-tck.log
             identity.log
             portitor.log
+          retention-days: 14
+
+  # DCP TCK v1.2.1, issuer: the issuance.issuer package, 41 tests, against
+  # portitor-issuer (ADR 0018). The TCK plays the holder, serves its DID
+  # and credential service at 127.0.0.1:8083, and receives the
+  # deliveries; scripts/dcp-issuer-tck.sh registers its DID as a
+  # participant first.
+  dcp-issuer-tck:
+    name: DCP TCK (issuer)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Download TCK
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/dcp-tck.jar" "$DCP_TCK_JAR"
+          echo "$DCP_TCK_SHA256  $RUNNER_TEMP/dcp-tck.jar" | sha256sum -c -
+      - name: Run TCK against portitor-issuer
+        run: scripts/dcp-issuer-tck.sh "$RUNNER_TEMP/dcp-tck.jar"
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dcp-issuer-tck-log
+          path: |
+            dcp-issuer-tck.log
+            issuer.log
           retention-days: 14
