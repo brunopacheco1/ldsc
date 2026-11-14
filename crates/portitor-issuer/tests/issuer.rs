@@ -267,6 +267,8 @@ impl World {
             management: None,
             allow_http: false,
             max_active_per_holder: setup.max_active_per_holder,
+            bundle_key_file: None,
+            bundle_dir: None,
         };
         let store = Arc::new(setup.store);
         let ports = Ports {

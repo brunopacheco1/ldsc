@@ -16,6 +16,7 @@
 //! re-exported here, so other crates use them as `portitor_dcp::Jws`,
 //! `portitor_dcp::DidDocument` and so on.
 
+pub mod bundle;
 pub mod credential;
 mod did;
 mod gzip;

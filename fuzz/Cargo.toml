@@ -99,3 +99,10 @@ path = "fuzz_targets/dcp_did_document.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "bundle_manifest"
+path = "fuzz_targets/bundle_manifest.rs"
+test = false
+doc = false
+bench = false
