@@ -36,6 +36,7 @@
 //! changes). It writes the files, `manifest.json` and `manifest.jws`
 //! into `<out>/<version>/`.
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
@@ -52,6 +53,24 @@ pub const INPUT_FILE: &str = "bundle.json";
 /// The usage text of `portitor-issuer bundle build`.
 pub const USAGE: &str = "usage: portitor-issuer bundle build --in <folder> --out <folder> \
 --version <version> --profile <iri> --authority <did> --kid <did-url> --key <pem file>";
+
+/// The option names `bundle build` knows.
+const KNOWN_OPTIONS: [&str; 8] = [
+    "--in",
+    "--out",
+    "--version",
+    "--profile",
+    "--authority",
+    "--kid",
+    "--key",
+    "--issued",
+];
+
+/// One input file's path in the bundle and its bytes.
+type FileBytes = (String, Vec<u8>);
+
+/// The error for an RDF/XML input file.
+const RDF_XML_REFUSED: &str = "RDF/XML is not accepted (convert it to Turtle or N-Triples)";
 
 /// `bundle.json`: the files of the bundle.
 #[derive(Debug, Clone, Deserialize)]
@@ -103,22 +122,13 @@ impl Options {
     /// # Errors
     /// An unknown or repeated option, a missing value or option.
     pub fn parse(args: &[OsString]) -> Result<Self, String> {
-        let mut values: std::collections::BTreeMap<&str, String> =
-            std::collections::BTreeMap::new();
-        let known = [
-            "--in",
-            "--out",
-            "--version",
-            "--profile",
-            "--authority",
-            "--kid",
-            "--key",
-            "--issued",
-        ];
+        let mut values: BTreeMap<&str, String> = BTreeMap::new();
         let mut rest = args.iter();
         while let Some(name) = rest.next() {
             let name = name.to_string_lossy();
-            let Some(&option) = known.iter().find(|known| **known == name) else {
+            // the option as written in KNOWN_OPTIONS, which lives as long
+            // as the program (a `&'static str`)
+            let Some(option) = KNOWN_OPTIONS.into_iter().find(|known| *known == name) else {
                 return Err(format!("unknown option {name}\n{USAGE}"));
             };
             let Some(value) = rest.next() else {
@@ -131,22 +141,25 @@ impl Options {
                 return Err(format!("{option} given twice"));
             }
         }
-        let mut take = |option: &str| {
-            values
-                .remove(option)
-                .ok_or_else(|| format!("{option} is required\n{USAGE}"))
-        };
         Ok(Self {
-            input: PathBuf::from(take("--in")?),
-            output: PathBuf::from(take("--out")?),
-            version: take("--version")?,
-            profile: take("--profile")?,
-            authority: take("--authority")?,
-            kid: take("--kid")?,
-            key: PathBuf::from(take("--key")?),
-            issued: take("--issued").ok(),
+            input: PathBuf::from(take(&mut values, "--in")?),
+            output: PathBuf::from(take(&mut values, "--out")?),
+            version: take(&mut values, "--version")?,
+            profile: take(&mut values, "--profile")?,
+            authority: take(&mut values, "--authority")?,
+            kid: take(&mut values, "--kid")?,
+            key: PathBuf::from(take(&mut values, "--key")?),
+            // optional: a missing --issued means today
+            issued: values.remove("--issued"),
         })
     }
+}
+
+/// Takes the value of a required `option` out of `values`.
+fn take(values: &mut BTreeMap<&str, String>, option: &str) -> Result<String, String> {
+    values
+        .remove(option)
+        .ok_or_else(|| format!("{option} is required\n{USAGE}"))
 }
 
 /// What a build wrote.
@@ -199,28 +212,7 @@ pub fn build(options: &Options, key: &SigningKey) -> Result<Built, String> {
     check_kid(options)?;
     let input_folder = std::fs::canonicalize(&options.input)
         .map_err(|e| format!("--in: {}: {e}", options.input.display()))?;
-    let input = read_input(&input_folder)?;
-    let mut entries = Vec::new();
-    let mut contents = Vec::new();
-    let mut total: usize = 0;
-    for file in input.files {
-        let bytes = read_input_file(&input_folder, &file.path)?;
-        total = total.saturating_add(bytes.len());
-        if total > MAX_BUNDLE_BYTES {
-            return Err("the files together are larger than 256 MiB".to_owned());
-        }
-        let media_type = match file.media_type {
-            Some(given) => given,
-            None => media_type_from_extension(&file.path)?,
-        };
-        entries.push(FileEntry {
-            sha256: bundle::sha256_hex(&bytes),
-            path: file.path.clone(),
-            media_type,
-            role: file.role,
-        });
-        contents.push((file.path, bytes));
-    }
+    let (entries, contents) = read_entries(&input_folder)?;
     let manifest = Manifest {
         version: options.version.clone(),
         issued: options.issued.clone().unwrap_or_else(today),
@@ -234,16 +226,8 @@ pub fn build(options: &Options, key: &SigningKey) -> Result<Built, String> {
     let manifest_bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
     let jws =
         bundle::sign_manifest(&manifest_bytes, key, &options.kid).map_err(|e| e.to_string())?;
-    // check what will be written, as a connector will
-    let expected = Expected {
-        authority: &options.authority,
-        version: &options.version,
-    };
     let public_key = key.public_jwk();
-    let verified = bundle::verify(&manifest_bytes, &jws, &public_key, expected)
-        .map_err(|e| format!("self-check failed: {e}"))?;
-    let by_path: std::collections::BTreeMap<String, Vec<u8>> = contents.iter().cloned().collect();
-    bundle::check_files(verified, by_path).map_err(|e| format!("self-check failed: {e}"))?;
+    self_check(&manifest_bytes, &jws, &public_key, options, &contents)?;
     let folder = write_folder(
         &options.output,
         &options.version,
@@ -256,6 +240,57 @@ pub fn build(options: &Options, key: &SigningKey) -> Result<Built, String> {
         manifest,
         public_key,
     })
+}
+
+/// Reads `bundle.json` and every file it lists: the manifest entries
+/// (with each file's SHA-256 and media type) and the files' bytes, by
+/// path. The files together must not pass [`MAX_BUNDLE_BYTES`].
+fn read_entries(input_folder: &Path) -> Result<(Vec<FileEntry>, Vec<FileBytes>), String> {
+    let input = read_input(input_folder)?;
+    let mut entries = Vec::new();
+    let mut contents = Vec::new();
+    let mut total: usize = 0;
+    for file in input.files {
+        let bytes = read_input_file(input_folder, &file.path)?;
+        total = total.saturating_add(bytes.len());
+        if total > MAX_BUNDLE_BYTES {
+            return Err(format!(
+                "the files together are larger than {MAX_BUNDLE_BYTES} bytes"
+            ));
+        }
+        let media_type = match file.media_type {
+            Some(given) => given,
+            None => media_type_from_extension(&file.path)?,
+        };
+        entries.push(FileEntry {
+            sha256: bundle::sha256_hex(&bytes),
+            path: file.path.clone(),
+            media_type,
+            role: file.role,
+        });
+        contents.push((file.path, bytes));
+    }
+    Ok((entries, contents))
+}
+
+/// Checks what will be written as a connector will: the signature with
+/// the public key, the manifest, and every file's digest.
+fn self_check(
+    manifest_bytes: &[u8],
+    jws: &str,
+    public_key: &Jwk,
+    options: &Options,
+    contents: &[(String, Vec<u8>)],
+) -> Result<(), String> {
+    let expected = Expected {
+        authority: &options.authority,
+        version: &options.version,
+    };
+    let verified = bundle::verify(manifest_bytes, jws, public_key, expected)
+        .map_err(|e| format!("self-check failed: {e}"))?;
+    let by_path: BTreeMap<String, Vec<u8>> = contents.iter().cloned().collect();
+    bundle::check_files(verified, by_path).map_err(|e| format!("self-check failed: {e}"))?;
+    Ok(())
 }
 
 /// `--kid` is the authority's bundle key, `<authority>#bundle-key`. The
@@ -276,14 +311,15 @@ fn check_kid(options: &Options) -> Result<(), String> {
 /// Today's date in UTC, `YYYY-MM-DD`.
 fn today() -> String {
     let now = portitor_runtime::system::xsd_date_time(portitor_runtime::system::now_secs());
+    // the first 10 characters of `YYYY-MM-DDThh:mm:ssZ` are the date
     now.get(..10).unwrap_or_default().to_owned()
 }
 
 /// Reads and parses `bundle.json`.
 fn read_input(folder: &Path) -> Result<Input, String> {
     let path = folder.join(INPUT_FILE);
-    let text = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    serde_json::from_slice(&text).map_err(|e| format!("{}: {e}", path.display()))
+    let text = std::fs::read(&path).map_err(at(&path))?;
+    serde_json::from_slice(&text).map_err(at(&path))
 }
 
 /// Reads one listed file: the path must be allowed in a bundle, stay
@@ -292,9 +328,7 @@ fn read_input(folder: &Path) -> Result<Input, String> {
 fn read_input_file(folder: &Path, path: &str) -> Result<Vec<u8>, String> {
     bundle::check_path(path).map_err(|e| e.to_string())?;
     if has_rdf_xml_extension(path) {
-        return Err(format!(
-            "{path}: RDF/XML is not accepted (convert it to Turtle or N-Triples)"
-        ));
+        return Err(format!("{path}: {RDF_XML_REFUSED}"));
     }
     let full = std::fs::canonicalize(folder.join(path)).map_err(|e| format!("{path}: {e}"))?;
     if !full.starts_with(folder) {
@@ -304,13 +338,11 @@ fn read_input_file(folder: &Path, path: &str) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("{path}: {e}"))?
         .len();
     if size > MAX_FILE_BYTES as u64 {
-        return Err(format!("{path}: larger than 64 MiB"));
+        return Err(format!("{path}: larger than {MAX_FILE_BYTES} bytes"));
     }
     let bytes = std::fs::read(&full).map_err(|e| format!("{path}: {e}"))?;
     if starts_like_rdf_xml(&bytes) {
-        return Err(format!(
-            "{path}: RDF/XML is not accepted (convert it to Turtle or N-Triples)"
-        ));
+        return Err(format!("{path}: {RDF_XML_REFUSED}"));
     }
     Ok(bytes)
 }
@@ -332,6 +364,7 @@ fn has_rdf_xml_extension(path: &str) -> bool {
 /// Whether the content starts, after a byte order mark and white space,
 /// with `<?xml` or `<rdf:RDF`.
 fn starts_like_rdf_xml(bytes: &[u8]) -> bool {
+    // `b"..."` is a byte string; EF BB BF is the UTF-8 byte order mark
     let without_bom = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
     let start = without_bom
         .iter()
@@ -354,6 +387,8 @@ fn media_type_from_extension(path: &str) -> Result<MediaType, String> {
 }
 
 /// Writes the bundle to `<output>/<version>/`, which must not exist yet.
+/// (The connector's bundle cache, `shape_source.rs`, writes its copy the
+/// same way, but replaces an older copy instead of refusing.)
 /// Everything is written to `<output>/.<version>.partial/` first and the
 /// folder renamed at the end, so a failed build never leaves a version
 /// folder that looks complete.
@@ -378,17 +413,17 @@ fn write_folder(
             partial.display()
         ));
     }
-    std::fs::create_dir_all(&partial).map_err(|e| format!("{}: {e}", partial.display()))?;
+    std::fs::create_dir_all(&partial).map_err(at(&partial))?;
     for (path, bytes) in contents {
         let target = partial.join(path);
         if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+            std::fs::create_dir_all(parent).map_err(at(parent))?;
         }
         write_file(&target, bytes)?;
     }
     write_file(&partial.join(MANIFEST_FILE), manifest_bytes)?;
     write_file(&partial.join(SIGNATURE_FILE), jws.as_bytes())?;
-    std::fs::rename(&partial, &folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    std::fs::rename(&partial, &folder).map_err(at(&folder))?;
     Ok(folder)
 }
 
@@ -399,9 +434,14 @@ fn write_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .write(true)
         .create_new(true)
         .open(path)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    file.write_all(bytes)
-        .map_err(|e| format!("{}: {e}", path.display()))
+        .map_err(at(path))?;
+    file.write_all(bytes).map_err(at(path))
+}
+
+/// Turns an error about `path` into the text `<path>: <error>`, for
+/// `map_err(at(path))`.
+fn at<E: std::fmt::Display>(path: &Path) -> impl Fn(E) -> String + '_ {
+    move |error| format!("{}: {error}", path.display())
 }
 
 #[cfg(test)]
