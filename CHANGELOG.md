@@ -12,6 +12,12 @@ versions may change behaviour and configuration.
 
 ## [Unreleased]
 
+### Added
+
+- ADR 0020 (datasets harvested into a read copy) proposed, and ADR 0005
+  updated with the bundle format for 0.7; ROADMAP 0.7 rewritten for the
+  approved plan. New empty crate `portitor-shacl`.
+
 ### Changed
 
 - ADR 0018 (issuer component, with its amendment from the 0.6 review) and

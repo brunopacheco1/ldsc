@@ -6,8 +6,9 @@ SPDX-License-Identifier: Apache-2.0
 
 # ADR 0005: Schema and vocabulary registry
 
-- Status: **Proposed**
-- Date: 2026-11-12
+- Status: **Proposed** (engine decided 2026-11-14; bundle format proposed
+  for 0.7)
+- Date: 2026-11-12, updated 2026-11-14
 - Build: release 0.7 (planned for 0.6 with the authority image on
   2026-11-12; moved to 0.7 by the maintainer, 2026-11-14)
 
@@ -119,14 +120,57 @@ example the EU Interoperability Test Bed SHACL validator, or Apache Jena.
   adapter, if a spike at the start of 0.6 shows that it validates
   HealthDCAT-AP release 7 sample data correctly. Option 2 is the
   fallback.
-- In 0.6:
-  - The connector refuses to publish a dataset that fails the shapes of
-    the pinned bundle version. A dataset that passes is published with
-    the profile's `dct:conformsTo`.
-  - Checking other participants' catalogs is optional, and only produces
-    warnings.
-  - The SHACL `MessageGuard` adapter checks negotiation and transfer
-    messages against the bundle's shapes for each message `@type`.
+- In 0.7 (updated 2026-11-14 for the maintainer's decisions on dataset
+  harvest, ADR 0020):
+  - Each harvested dataset is checked against the shapes of the pinned
+    bundle for its `dct:accessRights` level. A dataset that fails is not
+    published, and the error is stored with the harvest job; the
+    connector keeps running. A dataset that passes is published with the
+    bundle's profile as `dct:conformsTo`.
+  - Checking other participants' catalogs is not in 0.7.
+  - The SHACL `MessageGuard` adapter checks DSP messages against the
+    bundle's `messages` shapes.
+
+### Bundle format (proposed for 0.7)
+
+Facts checked 2026-11-14: HealthDCAT-AP release 8 publishes its SHACL
+shapes in section 15 of its specification
+([release 8](https://data.health.europa.eu/healthdcat-ap/releases/release-8/),
+CC-BY 4.0). There are shapes and recommended-property shapes for each of
+three access levels (public, restricted, non-public), vocabulary shapes,
+and `owl:imports` of the DCAT-AP 3.0.0 shapes, ontologies and code
+lists, some only as RDF/XML. Only SHACL Core is used, plus two terms
+outside it: `sh:extends` (release 8) and `sh:shape` (DCAT-AP 3.0.0,
+SHACL 1.2 draft).
+
+- A bundle is a folder: the files, `manifest.json` and
+  `manifest.jws`.
+- `manifest.json` (JSON Schema in `docs/schemas/bundle-manifest.schema.json`)
+  holds: the bundle version, issue date, the authority's DID, the profile
+  IRI used as `dct:conformsTo`, and one entry per file with its path,
+  SHA-256, media type (`text/turtle`, `application/n-triples` or
+  `application/ld+json`) and role:
+  - `datasets`: shapes for dataset metadata, with the `dct:accessRights`
+    values they apply to;
+  - `messages`: shapes for DSP messages;
+  - `vocabulary`: ontologies and code lists, as data for `sh:class`
+    checks;
+  - `context`: a JSON-LD context, with the URL it stands for.
+- `manifest.jws` is a compact JWS (ES256) over the bytes of
+  `manifest.json`, signed with a **bundle key** of the authority: its own
+  verification method in the authority's `did:web` document, separate
+  from the credential signing key (maintainer, 2026-11-14).
+- Code lists travel as reduced N-Triples (`rdf:type` and
+  `skos:inScheme` triples only). The build tool accepts only Turtle,
+  N-Triples and JSON-LD contexts, so no Portitor binary parses RDF/XML.
+- `portitor-issuer bundle build` signs a folder offline; the issuer can
+  also serve a bundle folder on its public port.
+- The connector pins one bundle version (URL and version), verifies the
+  signature against the authority's DID document and every digest, and
+  keeps the verified bundle in a disk cache, so a restart works while the
+  authority's host is down. A new version needs a restart.
+- The engine ignores `sh:extends` and `sh:shape` with a warning when the
+  bundle is loaded, and refuses any other term it does not implement.
 
 ## Spike result (2026-11-14)
 
