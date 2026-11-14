@@ -18,7 +18,8 @@ miniz_oxide.workspace = true
 portitor-time = { path = "../portitor-time" }
 ring.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+# raw_value: a bundle manifest is signed as the exact bytes of manifest.json
+serde_json = { workspace = true, features = ["raw_value"] }
 thiserror.workspace = true
 
 [dev-dependencies]

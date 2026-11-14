@@ -59,6 +59,9 @@ pub mod management;
 pub mod negotiation;
 mod outbox;
 pub mod ports;
+// the signed schema and vocabulary bundle (ADR 0005); its settings are
+// read by `shape_source::BundleConfig`, not by `Config`
+pub mod shape_source;
 pub mod store;
 pub mod system;
 #[cfg(feature = "tck")]

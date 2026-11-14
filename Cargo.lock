@@ -798,6 +798,7 @@ dependencies = [
  "portitor-dcp",
  "portitor-dps",
  "portitor-dsp",
+ "portitor-issuer",
  "portitor-runtime",
  "ring",
  "rusqlite",

@@ -8,6 +8,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use portitor_connector::auth::{AuthSettings, CallerVerifier, Prover, dcp_adapters};
+use portitor_connector::shape_source::{BundleConfig, load_bundle};
 use portitor_runtime::serve::{
     MAX_CONCURRENT_REQUESTS, REQUEST_TIMEOUT, bind_management, init_logging, serve, with_limits,
 };
@@ -43,6 +44,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     ports.use_sqlite(&store);
     let settings = AuthSettings::from_env(&config.participant_id, config.allow_http_callbacks)?;
     (ports.verifier, ports.prover) = auth_adapters(settings).await?;
+    // the authority's signed shapes bundle (ADR 0005); none configured: None,
+    // and nothing changes. Not used for validation yet.
+    let bundle_config = BundleConfig::from_env(&config.db_file, config.allow_http_callbacks)?;
+    let _bundle = load_bundle(bundle_config).await?;
     let (app, negotiator) = portitor_connector::build(&config, ports)?;
     // messages saved but not acknowledged before the last stop
     match negotiator.resume() {
