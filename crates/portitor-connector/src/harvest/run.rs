@@ -98,7 +98,7 @@ pub fn outcome_of(counts: &Counts) -> JobOutcome {
 /// error was stored ([`MAX_STORED_ERRORS`]).
 #[must_use]
 pub fn summary(counts: &Counts) -> String {
-    let mut line = format!(
+    let line = format!(
         "{} seen, {} added, {} updated, {} unchanged, {} withdrawn, {} rejected",
         counts.seen,
         counts.added,
@@ -108,9 +108,9 @@ pub fn summary(counts: &Counts) -> String {
         counts.rejected
     );
     if counts.rejected > count(MAX_STORED_ERRORS) {
-        line.push_str(&format!(
-            "; only the first {MAX_STORED_ERRORS} errors are stored, the others are in the log"
-        ));
+        return format!(
+            "{line}; only the first {MAX_STORED_ERRORS} errors are stored, the others are in the log"
+        );
     }
     line
 }
