@@ -6,7 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # ADR 0018: Issuer component (`portitor-issuer`)
 
-- Status: **Proposed**
+- Status: **Accepted** (2026-11-14, by the maintainer)
 - Date: 2026-11-14
 - Scope: release 0.6. Builds on ADR 0003 (three images; the issuer is
   the third), ADR 0004 (hexagonal architecture), ADR 0007 (outbox) and
